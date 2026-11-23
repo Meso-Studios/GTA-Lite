@@ -451,12 +451,37 @@ export default function App() {
           <div className={`absolute left-1/2 -translate-x-1/2 whitespace-nowrap rounded bg-black/85 px-4 py-1.5 text-xs font-semibold tracking-wide text-white hud-text ${isMobileHud ? 'bottom-[242px]' : 'bottom-[26%] text-sm py-2'}`}>{hud.prompt}</div>
         )}
 
-        {/* subtitles */}
+        {/* subtitles (story/mission takes priority over ambient NPC chatter) */}
         {hud?.subtitle && !hud.scope && (
           <div className={`absolute left-1/2 w-[min(780px,88vw)] -translate-x-1/2 text-center ${isMobileHud ? 'bottom-[228px]' : 'bottom-20'}`}>
             <span className={`rounded bg-black/75 px-3 py-1 font-semibold leading-snug text-white hud-text ${isMobileHud ? 'text-xs' : 'text-base leading-relaxed'}`}>
               <span className="mr-1.5 font-black text-amber-300">{hud.subtitle.who}:</span>
               {hud.subtitle.text}
+            </span>
+          </div>
+        )}
+        {!hud?.subtitle && hud?.ambientSubtitle && !hud.scope && (
+          <div
+            data-ambient-subtitle="true"
+            className={`absolute left-1/2 w-[min(680px,86vw)] -translate-x-1/2 text-center ${isMobileHud ? 'bottom-[228px]' : 'bottom-20'}`}
+          >
+            <span className={`inline-block rounded-md border border-white/15 bg-black/75 px-3.5 py-1.5 font-medium leading-snug text-white/95 shadow-lg hud-text ${isMobileHud ? 'text-xs' : 'text-[15px]'}`}>
+              <span
+                className={`mr-1.5 font-extrabold uppercase tracking-wider ${
+                  hud.ambientSubtitle.kind === 'cop'
+                    ? 'text-sky-300'
+                    : hud.ambientSubtitle.kind === 'tourist'
+                      ? 'text-cyan-300'
+                      : hud.ambientSubtitle.kind === 'gang'
+                        ? 'text-rose-300'
+                        : hud.ambientSubtitle.kind === 'ally'
+                          ? 'text-emerald-300'
+                          : 'text-amber-200'
+                }`}
+              >
+                {hud.ambientSubtitle.who}:
+              </span>
+              <span className="italic">“{hud.ambientSubtitle.text}”</span>
             </span>
           </div>
         )}

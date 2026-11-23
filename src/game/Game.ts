@@ -27,6 +27,7 @@ import { SpawnOpts, deployCops as doDeploy, removeVehicle, spawnVehicle as doSpa
 import { MISSIONS, MissionDef } from './missions';
 import { Look } from './humans';
 import { Collider } from './world';
+import { AmbientCandidate, AmbientDialogueController, AmbientSubtitle } from './ambientDialogue';
 
 export interface Quality { traffic: number; parked: number; peds: number; shadows: boolean; bloom: boolean; pr: number; msaa: number; shadowSize: number }
 export const QUALITY: Record<string, Quality> = {
@@ -41,6 +42,7 @@ export interface HudState {
   weapon: string; weaponIdx: number; weaponCount: number; ammo: number | null; time: string;
   mission: { title: string; objective: string; timer: number | null; timerLabel: string; progress: number | null } | null;
   subtitle: { who: string; text: string } | null;
+  ambientSubtitle: { who: string; text: string; kind: string } | null;
   prompt: string | null;
   speed: number | null; vehicleName: string | null; vehicleHp: number | null; radio: string | null;
   packages: [number, number];
@@ -201,6 +203,9 @@ export class Game {
   progress: number | null = null;
   subQ: { who: string; text: string; dur: number; after?: () => void }[] = [];
   sub: { who: string; text: string; t: number } | null = null;
+  ambientDialogue = new AmbientDialogueController();
+  ambientSub: AmbientSubtitle | null = null;
+  private ambientCandidates: AmbientCandidate[] = [];
   markers: THREE.Group[] = [];
   packagesFound = 0;
   packagesTotal = 0;
@@ -1628,6 +1633,43 @@ export class Game {
       this.sub = { who: q.who, text: q.text, t: q.dur };
       q.after?.();
     }
+    // Proximity-based ambient NPC dialogue when walking on foot (yields to mission subtitles)
+    const p = this.player;
+    this.ambientCandidates.length = 0;
+    if (p.alive && !p.vehicle && !this.sub && !this.subQ.length) {
+      for (const ped of this.peds) {
+        if (ped.dead) continue;
+        if (Math.abs(ped.x - p.x) > 25 || Math.abs(ped.z - p.z) > 25) continue;
+        this.ambientCandidates.push({
+          id: ped.id,
+          kind: ped.kind,
+          x: ped.x,
+          y: ped.y,
+          z: ped.z,
+          dead: ped.dead,
+          panicking: ped.state === 'flee' || ped.state === 'cower' || ped.panicT > 0.2,
+        });
+      }
+    }
+    const moving = Math.hypot(p.move.vx, p.move.vz) > 0.6;
+    const armed = !isMeleeWeapon(p.weapon) && (p.ammo[p.weapon] ?? 0) > 0;
+    const district = this.interior ? this.interior.name.toUpperCase() : districtNameAt(p.x, p.z, p.y);
+    this.ambientSub = this.ambientDialogue.step(
+      {
+        playerX: p.x,
+        playerY: p.y,
+        playerZ: p.z,
+        playerMoving: moving,
+        inVehicle: Boolean(p.vehicle),
+        playerAlive: p.alive,
+        playerArmed: armed,
+        missionSubActive: Boolean(this.sub || this.subQ.length),
+        district,
+        isNight: this.night > 0.45,
+        candidates: this.ambientCandidates,
+      },
+      dt,
+    );
   }
   updateRoute(dt: number) {
     this.routeT -= dt;
@@ -2034,6 +2076,7 @@ export class Game {
       time: this.clockString,
       mission: m ? { title: m.def.title, objective: this.objective, timer: this.timer.t, timerLabel: this.timer.label, progress: this.progress } : null,
       subtitle: this.sub ? { who: this.sub.who, text: this.sub.text } : null,
+      ambientSubtitle: this.ambientSub ? { who: this.ambientSub.who, text: this.ambientSub.text, kind: this.ambientSub.kind } : null,
       prompt: this.prompts(),
       speed: pv ? Math.round(Math.abs(pv.fwd) * 3.6) : null,
       vehicleName: pv ? pv.spec.name : null,

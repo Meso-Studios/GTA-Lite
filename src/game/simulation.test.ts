@@ -34,6 +34,7 @@ import {
   computeRagdollImpulse,
   type AircraftSpec,
 } from './physics';
+import { AmbientDialogueController, speakerLabelFor } from './ambientDialogue';
 
 test('10km x 10km world bounds span -5000..+5000 on both axes', () => {
   assert.equal(WORLD_HALF, 5000);
@@ -372,4 +373,71 @@ test('gore/blood ballistics and ragdoll impulse scale with weapon damage, headsh
   const impBoom = computeRagdollImpulse(1, 0, 150, false, true);
   assert.ok(impHead.headWhip > impBody.headWhip * 3);
   assert.ok(impBoom.vy > impBody.vy * 2);
+});
+
+test('AmbientDialogueController triggers randomized overheard subtitles near walking player, respects cooldowns, and yields to vehicles/missions', () => {
+  const ctrl = new AmbientDialogueController({ triggerRadius: 12, dismissRadius: 20, perPedCooldown: 20 });
+  let seed = 42;
+  const rng = () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296);
+
+  // Far away NPC (> 12m) does not trigger
+  let sub = null;
+  for (let i = 0; i < 40; i++) {
+    sub = ctrl.step({
+      playerX: 0, playerY: 0, playerZ: 0, playerMoving: true,
+      inVehicle: false, playerAlive: true, playerArmed: false,
+      missionSubActive: false, district: 'OCEAN BEACH ART DECO', isNight: false,
+      candidates: [{ id: 10, kind: 'tourist', x: 30, y: 0, z: 0, dead: false, panicking: false }],
+    }, 0.1, rng);
+  }
+  assert.equal(sub, null, 'NPC beyond triggerRadius should not trigger subtitle');
+
+  // Walking within 5m of a tourist triggers an ambient subtitle
+  for (let i = 0; i < 30 && !sub; i++) {
+    sub = ctrl.step({
+      playerX: 0, playerY: 0, playerZ: 0, playerMoving: true,
+      inVehicle: false, playerAlive: true, playerArmed: false,
+      missionSubActive: false, district: 'OCEAN BEACH ART DECO', isNight: false,
+      candidates: [{ id: 10, kind: 'tourist', x: 4, y: 0, z: 2, dead: false, panicking: false }],
+    }, 0.1, rng);
+  }
+  assert.ok(sub !== null, 'Nearby NPC should trigger ambient subtitle');
+  assert.equal(sub!.pedId, 10);
+  assert.equal(sub!.who, speakerLabelFor(10, 'tourist'));
+  assert.ok(sub!.text.length > 8);
+
+  // Entering a vehicle immediately suppresses ambient subtitle
+  const inCarSub = ctrl.step({
+    playerX: 0, playerY: 0, playerZ: 0, playerMoving: true,
+    inVehicle: true, playerAlive: true, playerArmed: false,
+    missionSubActive: false, district: 'OCEAN BEACH ART DECO', isNight: false,
+    candidates: [{ id: 10, kind: 'tourist', x: 4, y: 0, z: 2, dead: false, panicking: false }],
+  }, 0.1, rng);
+  assert.equal(inCarSub, null);
+
+  // Same ped (10) is on per-ped cooldown, while a different panicking ped (22) can speak once global cooldown elapses
+  let secondSub = null;
+  for (let i = 0; i < 90 && !secondSub; i++) {
+    secondSub = ctrl.step({
+      playerX: 0, playerY: 0, playerZ: 0, playerMoving: true,
+      inVehicle: false, playerAlive: true, playerArmed: false,
+      missionSubActive: false, district: 'LITTLE HAVANA', isNight: true,
+      candidates: [
+        { id: 10, kind: 'tourist', x: 3, y: 0, z: 0, dead: false, panicking: false },
+        { id: 22, kind: 'civ', x: 6, y: 0, z: 1, dead: false, panicking: true },
+      ],
+    }, 0.1, rng);
+  }
+  assert.ok(secondSub !== null);
+  assert.equal(secondSub!.pedId, 22, 'Should pick eligible ped #22 while ped #10 is on cooldown');
+  assert.notEqual(secondSub!.text, sub!.text);
+
+  // Active mission subtitle suppresses ambient chatter immediately
+  const duringMission = ctrl.step({
+    playerX: 0, playerY: 0, playerZ: 0, playerMoving: true,
+    inVehicle: false, playerAlive: true, playerArmed: false,
+    missionSubActive: true, district: 'LITTLE HAVANA', isNight: true,
+    candidates: [{ id: 22, kind: 'civ', x: 6, y: 0, z: 1, dead: false, panicking: true }],
+  }, 0.1, rng);
+  assert.equal(duringMission, null);
 });
