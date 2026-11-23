@@ -2,8 +2,9 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { Batcher, Collector, box, cone, cyl, finish, flat, gable, place, sign, sph, walls } from './geo';
-import { INNER_HALF, Rng } from './config';
+import { DECK, INNER_HALF, Rng } from './config';
 import { BAY, FLOOR_H, FacadeStyle, signUV } from './textures';
+import { STORES, StoreDef } from './stores';
 import { World } from './world';
 
 export interface MapRect { x0: number; z0: number; x1: number; z1: number; c: string }
@@ -21,18 +22,43 @@ export interface BCtx {
   collect: Place[];
   lampBulbs: { x: number; y: number; z: number }[];
   doors: Door[];
+  storeUsed: Set<number>;
+  storeCursor: number;
+}
+
+/** Allocates the next unique GTA-6 / Leonida store, prioritizing unused stores matching the neighborhood district. */
+export function allocateStore(c: BCtx, preferredDistrict?: StoreDef['district']): StoreDef {
+  if (preferredDistrict) {
+    for (let i = 16; i < STORES.length; i++) {
+      if (!c.storeUsed.has(i) && STORES[i].district === preferredDistrict) {
+        c.storeUsed.add(i);
+        return STORES[i];
+      }
+    }
+  }
+  // Pick any remaining unused store so all 320+ unique brands appear across the city
+  for (let i = 8; i < STORES.length; i++) {
+    const idx = ((c.storeCursor + i) % (STORES.length - 8)) + 8;
+    if (!c.storeUsed.has(idx)) {
+      c.storeUsed.add(idx);
+      c.storeCursor = (idx + 1) % STORES.length;
+      return STORES[idx];
+    }
+  }
+  const fallback = STORES[8 + (c.storeCursor++ % (STORES.length - 8))];
+  return fallback;
 }
 
 export function doorKind(name: string): Door['kind'] {
-  if (name === 'BANK') return 'bank';
+  if (name === 'BANK' || name.includes('BANK') || name.includes('CAPITAL') || name.includes('CHECKS')) return 'bank';
   if (name === 'POLICE') return 'police';
-  if (name === 'HOSPITAL') return 'hospital';
-  if (name === 'AMMO') return 'gun';
-  if (name === 'PAY N SPRAY') return 'garage';
-  if (['PIZZA', 'DINER', 'CAFE', 'BURGERS', 'NOODLES', 'SUSHI BAR', 'TACOS'].includes(name)) return 'diner';
-  if (['HOTEL', 'MOTEL'].includes(name)) return 'apartment';
-  if (name === 'BANK') return 'office';
-  return name.length >= 5 ? 'shop' : 'office';
+  if (name === 'HOSPITAL' || name.includes('CLINIC') || name.includes('DENTAL')) return 'hospital';
+  if (name === 'AMMO' || name.includes('GUN') || name.includes('TACTICAL') || name.includes('SURPLUS')) return 'gun';
+  if (name === 'PAY N SPRAY' || name.includes('CUSTOMS') || name.includes('MOTOR') || name.includes('AUTOS') || name.includes('GARAGE') || name.includes('HANGAR')) return 'garage';
+  if (/(PIZZA|DINER|CAFE|COFFEE|BURGER|SUSHI|TACO|NOODLE|RAMEN|CLUB|BAR|LOUNGE|BAKERY|GRILL|DELI|STEAK|SEAFOOD|BBQ|WAFFLE|DONUT|JUICE|TEA|GELATO|CANTINA|PUB|BISTRO|DISCO|TAPROOM|CHICKEN|WINGS|CLUCKIN|EMPANADA|AREPA|CEVICHE|BRUNCH|CREAM)/i.test(name)) return 'diner';
+  if (/(HOTEL|MOTEL|INN|RESORT|SUITES|LODGE|PALACE)/i.test(name)) return 'apartment';
+  if (/(OFFICE|REALTY|LAW|NEWS|MEDIA|STUDIOS|TICKETS|TERMINAL|CHARTER|LOGISTICS|INSURANCE|TRAVEL|FLIGHT|AVIATION)/i.test(name)) return 'office';
+  return 'shop';
 }
 const TINTS: Record<FacadeStyle, number[]> = {
   brick: [0xffffff, 0xf2d9c8, 0xd9b8a0, 0xc9c0b8, 0xe8c4b0],
@@ -274,11 +300,13 @@ export interface BOpts {
   cx: number; cz: number; w: number; d: number; floors: number; style: FacadeStyle;
   tint?: number; store?: boolean; faces?: number; sign?: string | null; roof?: 'small' | 'big' | 'tower' | 'none';
   fire?: boolean; heli?: boolean; y0?: number; noCollide?: boolean; ad?: boolean;
+  district?: StoreDef['district'];
+  neonTrim?: number;
 }
 export function addBuilding(c: BCtx, o: BOpts) {
   const r = c.rng;
-  const SHOP_NAMES = ['PIZZA', 'DINER', 'CAFE', 'BARBER', 'BURGERS', 'SUSHI BAR', 'PHARMACY', 'TACOS', 'GYM', 'ARCADE', 'RECORDS', 'LIQUOR', 'NOODLES', 'BOOKS', 'TATTOO', 'COFFEE', 'PUB', 'LAUNDRY', '24H MART', 'CINEMA'];
-  const shopName = o.sign ?? r.pick(SHOP_NAMES);
+  const primaryStore = o.sign ? null : allocateStore(c, o.district);
+  const shopName = o.sign ?? primaryStore!.name;
   let doorDone = false;
   const w = Math.max(BAY * 2, Math.round(o.w / BAY) * BAY), d = Math.max(BAY * 2, Math.round(o.d / BAY) * BAY);
   const { cx, cz, floors, style } = o;
@@ -288,24 +316,52 @@ export function addBuilding(c: BCtx, o: BOpts) {
   const tint = o.tint ?? r.pick(TINTS[style]);
   const uOff = [0, 1, 2, 3].map(() => r.int(0, 7) / 8);
   c.b.add('f_' + style, walls(w, H, d, cx, y0, cz, tint, uOff), ch);
+  if (o.neonTrim && y0 === 0) {
+    // Glowing Vice/Art-Deco architectural neon trim band
+    c.b.add('emit', box(w + 0.5, 0.24, d + 0.5, cx, Math.min(H - 0.6, 4.7), cz, o.neonTrim), ch);
+    if (H > 10) c.b.add('emit', box(w + 0.45, 0.22, d + 0.45, cx, H - 0.35, cz, o.neonTrim), ch);
+  }
   if (o.store && y0 === 0) {
     const st = r.pick(SHELLS);
     c.b.add('store', walls(w + 0.3, 4.4, d + 0.3, cx, 0, cz, st, [r.range(0, 1), r.range(0, 1), r.range(0, 1), r.range(0, 1)], 7, 4.4), ch);
     c.b.add('prop', box(w + 0.7, 0.35, d + 0.7, cx, 4.4, cz, 0x6a6b70), ch);
     const faces = o.faces ?? 15;
+    let firstUsed = false;
     for (let f = 0; f < 4; f++) {
       const bit = [1, 2, 4, 8][f];
       if (!(faces & bit)) continue;
-      if (floors >= 2 && o.sign !== null) addSign(c, cx, cz, w, d, f, shopName, 5.55);
-      if (!doorDone) {
+      const fi = faceInfo(cx, cz, w, d, f);
+      const tx = Math.cos(fi.yaw), tz = -Math.sin(fi.yaw);
+      // Pack 1 to 3 distinct GTA-6 storefronts per street-facing facade!
+      const bays = o.sign !== undefined ? 1 : Math.max(1, Math.min(3, Math.floor(fi.len / 9.5)));
+      const baySpan = fi.len / bays;
+      for (let bIdx = 0; bIdx < bays; bIdx++) {
+        const sDef = (!firstUsed && o.sign)
+          ? null
+          : (!firstUsed && primaryStore)
+            ? primaryStore
+            : allocateStore(c, o.district);
+        firstUsed = true;
+        const unitName = sDef ? sDef.name : shopName;
+        const unitKind = sDef ? sDef.doorKind : doorKind(unitName);
+        const off = -fi.len / 2 + baySpan * (bIdx + 0.5);
+        const sx = fi.px + fi.nx * 0.16 + tx * off;
+        const sz = fi.pz + fi.nz * 0.16 + tz * off;
+        if (o.sign !== null) {
+          const signW = Math.min(6.4, baySpan * 0.84);
+          const signY = floors >= 2 ? 5.35 : 3.95;
+          c.b.add('sign', sign(signW, 1.35, sx, signY, sz, fi.yaw, signUV(sDef ? sDef.id : unitName)), ch);
+        }
         doorDone = true;
-        const fi = faceInfo(cx, cz, w, d, f);
-        const side = r.chance(0.5) ? 1 : -1;
-        const off = Math.min(fi.len * 0.28, 7) * side;
-        const tx = Math.cos(fi.yaw), tz = -Math.sin(fi.yaw);
-        c.doors.push({ x: fi.px + fi.nx * 0.55 + tx * off, z: fi.pz + fi.nz * 0.55 + tz * off, yaw: fi.yaw, name: shopName, kind: doorKind(shopName) });
+        c.doors.push({
+          x: fi.px + fi.nx * 0.65 + tx * off,
+          z: fi.pz + fi.nz * 0.65 + tz * off,
+          yaw: fi.yaw,
+          name: unitName,
+          kind: unitKind,
+        });
       }
-      if (r.chance(0.6)) awning(c, cx, cz, w, d, f, 3.55);
+      if (r.chance(0.65)) awning(c, cx, cz, w, d, f, 3.55);
     }
   }
   if (!o.store && !doorDone && y0 === 0 && floors > 0) {
@@ -373,7 +429,7 @@ export function addTower(c: BCtx, lot: Lot, floors: number) {
   const lw = lot.x1 - lot.x0, ld = lot.z1 - lot.z0;
   const cx = (lot.x0 + lot.x1) / 2, cz = (lot.z0 + lot.z1) / 2;
   const podF = r.int(3, 4);
-  const podium = addBuilding(c, { cx, cz, w: lw, d: ld, floors: podF, style: 'stone', store: true, faces: lot.faces, roof: 'none' });
+  const podium = addBuilding(c, { cx, cz, w: lw, d: ld, floors: podF, style: 'stone', store: true, faces: lot.faces, roof: 'none', district: 'downtown' });
   // shaft tiers
   const shaftStyle: FacadeStyle = r.pick(['glass', 'glass', 'glass', 'office', 'office', 'stone']);
   const tint = r.pick(TINTS[shaftStyle]);
@@ -710,17 +766,243 @@ export function addPark(c: BCtx, bx: number, bz: number) {
 
 export function addBeachfront(c: BCtx, bx: number, bz: number, i: number) {
   const r = c.rng;
-  const lots = splitLots(r, 2, 1, 6);
-  for (const lot of lots) {
+  const ch = c.chunk(bx, bz);
+  const pastelTints = [0xffc6d9, 0xbef5ea, 0xffe4b5, 0xc7e6ff, 0xf2d1ff, 0xfff3d4];
+  const neonAccents = [0xff3d9a, 0x2ef2e8, 0xffd23d, 0x62ff9b, 0xff7043];
+  const lots = splitLots(r, 3, 1, 5);
+  lots.forEach((lot, idx) => {
     const style: FacadeStyle = r.pick(['apartment', 'stone', 'apartment', 'office']);
-    const floors = r.int(3, 9);
-    buildingInLot(c, { x0: lot.x0 + bx, x1: lot.x1 + bx, z0: lot.z0 + bz, z1: lot.z1 + bz, faces: lot.faces | 1 } as Lot, {
-      floors, style, store: true, tint: style === 'office' ? r.pick([0xfff2dd, 0xffe0e0, 0xe0f2ff]) : undefined, roof: floors > 5 ? 'big' : 'small',
-      sign: floors > 6 ? r.pick(['HOTEL', 'MOTEL', 'CASINO', 'CLUB NOVA']) : undefined, ad: r.chance(0.3),
+    const floors = r.int(3, 8);
+    const tint = pastelTints[(i * 3 + idx) % pastelTints.length];
+    const neon = neonAccents[(i + idx) % neonAccents.length];
+    const worldLot: Lot = { x0: lot.x0 + bx, x1: lot.x1 + bx, z0: lot.z0 + bz, z1: lot.z1 + bz, faces: lot.faces | 1 };
+    const b = buildingInLot(c, worldLot, {
+      floors, style, store: true, tint, roof: floors > 5 ? 'big' : 'small',
+      ad: r.chance(0.25), district: 'ocean', neonTrim: neon,
     });
+    // Stepped Art Deco parapet crown + vertical glowing neon fin facing Ocean Drive
+    const lcx = (worldLot.x0 + worldLot.x1) / 2;
+    c.b.add('prop', box(b.w * 0.42, 2.4, 1.4, lcx, b.H + 0.5, worldLot.z1 - 0.9, tint), ch);
+    c.b.add('prop', box(b.w * 0.24, 1.6, 1.2, lcx, b.H + 2.9, worldLot.z1 - 0.9, 0xffffff), ch);
+    c.b.add('emit', box(0.32, b.H * 0.72, 0.35, lcx, 4.6, worldLot.z1 + 0.22, neon), ch);
+  });
+  // Tropical palms & sidewalk cafe umbrellas along the Ocean Beach strip
+  for (let k = 0; k < 7; k++) addTree(c, bx - 40 + k * 13.3 + r.range(-2, 2), bz - 41, 3, 1.05);
+  for (let k = 0; k < 4; k++) {
+    const ux = bx - 30 + k * 20, uz = bz + 44.5;
+    c.b.add('propMetal', cyl(0.04, 0.04, 2.3, ux, 0.16, uz, 0xd8dce0, 6), ch);
+    c.b.add('prop', cone(1.3, 0.45, ux, 2.3, uz, neonAccents[k % neonAccents.length], 8), ch);
   }
-  for (let k = 0; k < 6; k++) addTree(c, bx - 40 + k * 16 + r.range(-3, 3), bz - 40, 3);
-  void i;
+}
+
+/** Hand-built GTA-6 / Leonida Neon Strip Mall Plaza (L/U-shaped retail row + central parking + glowing marquee totem). */
+export function addStripMallBlock(c: BCtx, bx: number, bz: number) {
+  const r = c.rng;
+  const ch = c.chunk(bx, bz);
+  const neonCols = [0xff3d9a, 0x29e8ff, 0xffd23d, 0x6dff6a, 0xff7a2a];
+  // Asphalt plaza lot + parking stripes
+  c.b.add('g_asph', flat(bx - 40, bz - 40, bx + 40, bz + 40, 0.2, (px, pz) => [px / 6, pz / 6]), ch);
+  for (let sx = -24; sx <= 24; sx += 4) {
+    c.b.add('prop', box(0.14, 0.03, 5.2, bx + sx, 0.21, bz + 16, 0xebedf0), ch);
+  }
+  // North main strip building (70m wide -> 6 distinct side-by-side strip-mall stores!)
+  const northW = 70, northD = 17.5, northZ = bz - 27;
+  c.b.add('f_apartment', walls(northW, 5.6, northD, bx, 0, northZ, 0xf2e4cc, [0, 0.2, 0.4, 0.6]), ch);
+  c.b.add('store', walls(northW + 0.3, 4.4, northD + 0.3, bx, 0, northZ, 0xffffff, [0, 0.3, 0.6, 0.9], 7, 4.4), ch);
+  c.b.add('prop', box(northW + 1.2, 0.7, northD + 1.2, bx, 5.6, northZ, 0xc9b89c), ch);
+  c.b.add('emit', box(northW + 0.8, 0.24, 0.25, bx, 5.8, northZ + northD / 2 + 0.5, r.pick(neonCols)), ch);
+  c.world.addBox(bx - northW / 2, bx + northW / 2, northZ - northD / 2, northZ + northD / 2, 6.2);
+  pushRect(c, bx, northZ, northW, northD, '#8c7e6d');
+  // 6 distinct strip-mall bays facing the parking plaza (+Z)
+  for (let i = 0; i < 6; i++) {
+    const sDef = allocateStore(c, 'strip');
+    const sx = bx - 29 + i * 11.6;
+    const sz = northZ + northD / 2 + 0.22;
+    c.b.add('sign', sign(9.2, 1.35, sx, 5.05, sz, 0, signUV(sDef.id)), ch);
+    c.doors.push({ x: sx, z: sz + 0.6, yaw: 0, name: sDef.name, kind: sDef.doorKind });
+  }
+  // West wing retail strip (3 more distinct stores facing +X into the plaza)
+  const wingW = 14, wingD = 42, wingX = bx - 31, wingZ = bz + 8;
+  c.b.add('f_stone', walls(wingW, 5.2, wingD, wingX, 0, wingZ, 0xeadcc8, [0.1, 0.3, 0.5, 0.7]), ch);
+  c.b.add('store', walls(wingW + 0.3, 4.4, wingD + 0.3, wingX, 0, wingZ, 0xfff0d8, [0.2, 0.4, 0.6, 0.8], 7, 4.4), ch);
+  c.b.add('prop', box(wingW + 0.9, 0.6, wingD + 0.9, wingX, 5.2, wingZ, 0x9e8f7a), ch);
+  c.world.addBox(wingX - wingW / 2, wingX + wingW / 2, wingZ - wingD / 2, wingZ + wingD / 2, 5.8);
+  pushRect(c, wingX, wingZ, wingW, wingD, '#8c7e6d');
+  for (let i = 0; i < 3; i++) {
+    const sDef = allocateStore(c, 'strip');
+    const sz = wingZ - 14 + i * 14;
+    const sx = wingX + wingW / 2 + 0.22;
+    c.b.add('sign', sign(9.8, 1.35, sx, 4.9, sz, Math.PI / 2, signUV(sDef.id)), ch);
+    c.doors.push({ x: sx + 0.6, z: sz, yaw: Math.PI / 2, name: sDef.name, kind: sDef.doorKind });
+  }
+  // Iconic freestanding glowing strip-mall plaza totem sign near street corner
+  const tx = bx + 32, tz = bz + 34;
+  c.b.add('propMetal', box(0.65, 9.5, 0.65, tx, 0, tz, 0x2c323a), ch);
+  c.b.add('prop', box(5.4, 6.2, 0.6, tx, 3.6, tz, 0x161922), ch);
+  c.b.add('emit', box(5.6, 0.2, 0.68, tx, 9.8, tz, 0xff3d9a), ch);
+  for (let k = 0; k < 3; k++) {
+    const ts = allocateStore(c, 'strip');
+    c.b.add('sign', sign(4.8, 1.15, tx, 4.6 + k * 1.65, tz + 0.34, 0, signUV(ts.id)), ch);
+  }
+  c.world.addBox(tx - 1.5, tx + 1.5, tz - 0.8, tz + 0.8, 9.5);
+  addTree(c, bx + 34, bz - 10, 3, 1.1);
+  addTree(c, bx + 34, bz + 12, 3, 1.0);
+}
+
+/** Hand-built Little Havana / Calle Nova neighborhood: colorful low-rise stucco, striped awnings, bodegas & domino courtyard. */
+export function addLittleHavanaBlock(c: BCtx, bx: number, bz: number) {
+  const r = c.rng;
+  const ch = c.chunk(bx, bz);
+  const havanaTints = [0xffc99e, 0xffe49e, 0xa8e8dc, 0xffb3aa, 0xc2d8ff, 0xf7d8b5];
+  const lots = splitLots(r, 3, 2, 4.5);
+  lots.forEach((lot, idx) => {
+    const worldLot: Lot = { x0: lot.x0 + bx, x1: lot.x1 + bx, z0: lot.z0 + bz, z1: lot.z1 + bz, faces: lot.faces };
+    buildingInLot(c, worldLot, {
+      floors: r.int(2, 4),
+      style: idx % 2 === 0 ? 'apartment' : 'stone',
+      tint: havanaTints[idx % havanaTints.length],
+      store: true,
+      fire: false,
+      district: 'havana',
+      neonTrim: idx % 3 === 0 ? 0xffa62b : undefined,
+    });
+  });
+  // Central palm & colorful street bollards
+  addTree(c, bx, bz, 3, 1.05);
+  c.b.add('prop', box(4.5, 0.45, 4.5, bx, 0.18, bz, 0xd8a26a), ch);
+}
+
+/** Hand-built Wynwood Arts & Nightlife District: bold geometric mural walls, vibrant neon studios, streetwear & breweries. */
+export function addWynwoodArtsBlock(c: BCtx, bx: number, bz: number) {
+  const r = c.rng;
+  const ch = c.chunk(bx, bz);
+  const muralPalette = [0xff2e88, 0x00e5ff, 0xffd60a, 0x8338ec, 0x06d6a0, 0xfb5607];
+  const lots = splitLots(r, 2, 2, 5);
+  lots.forEach((lot, idx) => {
+    const worldLot: Lot = { x0: lot.x0 + bx, x1: lot.x1 + bx, z0: lot.z0 + bz, z1: lot.z1 + bz, faces: lot.faces };
+    const b = buildingInLot(c, worldLot, {
+      floors: r.int(2, 5),
+      style: idx % 2 === 0 ? 'brick' : 'industrial',
+      store: true,
+      ad: idx === 0,
+      district: 'wynwood',
+      neonTrim: muralPalette[idx % muralPalette.length],
+    });
+    // Vivid geometric Wynwood street-art mural bands along upper walls
+    const lcx = (worldLot.x0 + worldLot.x1) / 2;
+    const lcz = (worldLot.z0 + worldLot.z1) / 2;
+    for (let m = 0; m < 3; m++) {
+      c.b.add('prop', box(b.w * 0.25, 2.2, b.d + 0.32, lcx + (m - 1) * (b.w * 0.26), 5.2 + (m % 2) * 1.4, lcz, muralPalette[(idx + m) % muralPalette.length]), ch);
+    }
+  });
+}
+
+/** Iconic glowing Vice Pier Observation Wheel along Ocean Beach. */
+export function addBoardwalkWheel(c: BCtx, x: number, z: number) {
+  const ch = c.chunk(x, z);
+  const R = 17, cy = 21;
+  // A-frame support legs
+  for (const s of [-1, 1]) {
+    c.b.add('propMetal', box(0.8, 22, 0.8, x + s * 6.5, 0, z - 3.2, 0xe8edf2, 0, 0, -s * 0.26), ch);
+    c.b.add('propMetal', box(0.8, 22, 0.8, x + s * 6.5, 0, z + 3.2, 0xe8edf2, 0, 0, -s * 0.26), ch);
+  }
+  c.b.add('propMetal', cyl(1.2, 1.2, 8.2, x, cy, z, 0xff3d9a, 12).rotateX(Math.PI / 2), ch);
+  // Spokes, glowing neon rim segments & passenger gondolas
+  const N = 16;
+  const cols = [0xff3d9a, 0x2ef2e8, 0xffd23d, 0x9b5de5];
+  for (let i = 0; i < N; i++) {
+    const a = (i / N) * Math.PI * 2;
+    const gx = x + Math.cos(a) * R;
+    const gy = cy + Math.sin(a) * R;
+    c.b.add('propMetal', box(R * 2, 0.22, 0.22, x, cy, z - 1.6, 0xd8dfe6, 0, 0, a), ch);
+    c.b.add('propMetal', box(R * 2, 0.22, 0.22, x, cy, z + 1.6, 0xd8dfe6, 0, 0, a), ch);
+    c.b.add('emit', box(0.45, 0.45, 3.6, gx, gy, z, cols[i % cols.length]), ch);
+    // Gondola cabin
+    c.b.add('prop', box(1.9, 2.1, 2.2, gx, gy - 1.6, z, cols[(i + 1) % cols.length]), ch);
+  }
+  c.world.addBox(x - 11, x + 11, z - 5, z + 5, 6, 'ferriswheel');
+  // Boardwalk waterfront seafood & kiosk stalls beside the wheel
+  for (let k = 0; k < 4; k++) {
+    const kx = x + 22 + k * 14, kz = z - 8;
+    const sDef = allocateStore(c, 'marina');
+    c.b.add('store', walls(10.5, 4.2, 7, kx, 0, kz, 0xfff2dc, [0, 0, 0, 0], 7, 4.4), ch);
+    c.b.add('prop', box(11.4, 0.5, 8.0, kx, 4.2, kz, 0x2ec4b6), ch);
+    c.b.add('sign', sign(8.2, 1.3, kx, 4.95, kz + 3.65, 0, signUV(sDef.id)), ch);
+    c.doors.push({ x: kx, z: kz + 4.2, yaw: 0, name: sDef.name, kind: sDef.doorKind });
+    c.world.addBox(kx - 5.3, kx + 5.3, kz - 3.6, kz + 3.6, 4.8);
+  }
+}
+
+/** Hand-built San Nova International Airport: 820m paved runway, taxiway, terminal, ATC tower, 3 aircraft hangars & runway beacons. */
+export function addAirport(c: BCtx) {
+  const ap = DECK.AIRPORT;
+  const cx = (ap.x0 + ap.x1) / 2; // 1700
+  const rwZ = ap.runwayZ; // -260
+  const rwLen = ap.x1 - ap.x0 - 80; // 880m
+  const ch = c.chunk(cx, rwZ);
+
+  // Tarmac apron & taxiway linking south to East Coast Expressway (z = 0)
+  c.b.add('g_asph', flat(ap.x0, ap.z0, ap.x1, ap.z1, 0.05, (px, pz) => [px / 10, pz / 10]), ch);
+  c.b.add('g_asph', flat(1420, ap.z1, 1480, 14, 0.06, (px, pz) => [px / 8, pz / 8]), ch);
+
+  // Main paved runway strip (mapped with dedicated runway texture in city.ts via 'runway' batch)
+  c.b.add('runway', flat(ap.x0 + 40, rwZ - ap.runwayW / 2, ap.x1 - 40, rwZ + ap.runwayW / 2, 0.09, (px, pz) => [(pz - (rwZ - ap.runwayW / 2)) / ap.runwayW, (px - (ap.x0 + 40)) / 36]), ch);
+
+  // Runway threshold piano keys & edge lighting beacons
+  for (const endX of [ap.x0 + 54, ap.x1 - 54]) {
+    for (let k = -4; k <= 4; k++) {
+      c.b.add('prop', box(14, 0.04, 2.2, endX, 0.11, rwZ + k * 4.5, 0xf2f5f8), ch);
+    }
+  }
+  for (let rx = ap.x0 + 50; rx <= ap.x1 - 50; rx += 55) {
+    c.b.add('emit', sph(0.32, rx, 0.45, rwZ - ap.runwayW / 2 - 2.5, 0x38e8ff), ch);
+    c.b.add('emit', sph(0.32, rx, 0.45, rwZ + ap.runwayW / 2 + 2.5, 0x38e8ff), ch);
+  }
+
+  // Main Glass Passenger Terminal (north side of tarmac at z = -375)
+  const termX = 1660, termZ = -375, termW = 140, termD = 26;
+  c.b.add('f_glass', walls(termW, 13, termD, termX, 0, termZ, 0xc2e6ff, [0, 0.25, 0.5, 0.75]), ch);
+  c.b.add('propMetal', box(termW + 8, 1.4, termD + 10, termX, 13.0, termZ, 0xe2e8f0), ch);
+  c.b.add('emit', box(termW + 6, 0.3, 0.3, termX, 13.5, termZ + termD / 2 + 5.1, 0x38bdf8), ch);
+  c.world.addBox(termX - termW / 2, termX + termW / 2, termZ - termD / 2, termZ + termD / 2, 14.5, 'terminal');
+  // Airport terminal storefronts (San Nova Intl Terminal, FlyUS, Elitas Travel, Duty Free, Jetstream Cafe, etc.)
+  for (let i = 0; i < 6; i++) {
+    const sDef = allocateStore(c, 'airport');
+    const sx = termX - 52 + i * 20.8;
+    const sz = termZ + termD / 2 + 0.35;
+    c.b.add('sign', sign(13.5, 2.0, sx, 6.2, sz, 0, signUV(sDef.id)), ch);
+    c.doors.push({ x: sx, z: sz + 1.1, yaw: 0, name: sDef.name, kind: sDef.doorKind });
+  }
+
+  // Air Traffic Control (ATC) Tower
+  const atcX = 1545, atcZ = -368;
+  c.b.add('prop', cyl(3.4, 4.6, 30, atcX, 0, atcZ, 0xd8dce0, 12), ch);
+  c.b.add('prop', cyl(7.2, 4.8, 3.2, atcX, 30, atcZ, 0xc8cfd6, 12), ch);
+  c.b.add('glass', cyl(6.8, 6.4, 4.4, atcX, 33.2, atcZ, 0x387898, 12), ch);
+  c.b.add('propMetal', cyl(7.6, 7.6, 1.2, atcX, 37.6, atcZ, 0xe8edf2, 12), ch);
+  c.b.add('propMetal', cyl(0.25, 0.4, 8, atcX, 38.8, atcZ, 0x9aa2a8, 8), ch);
+  c.b.add('red', sph(0.55, atcX, 47.0, atcZ, 0xff2222), ch);
+  c.world.addCircle(atcX, atcZ, 5.2, 42, 'atc');
+
+  // 3 Open-Front Aircraft Hangars along the east apron (z = -370)
+  for (let h = 0; h < 3; h++) {
+    const hx = 1825 + h * 72, hz = -368, hw = 44, hd = 32, hh = 13;
+    // Back + side walls + arched roof (front facing +Z runway is open!)
+    c.b.add('f_industrial', box(hw, hh, 1.4, hx, 0, hz - hd / 2, 0xc8d2da), ch);
+    c.b.add('f_industrial', box(1.4, hh, hd, hx - hw / 2, 0, hz, 0xc8d2da), ch);
+    c.b.add('f_industrial', box(1.4, hh, hd, hx + hw / 2, 0, hz, 0xc8d2da), ch);
+    c.b.add('propMetal', box(hw + 1, 1.2, hd + 1, hx, hh, hz, 0x475569), ch);
+    const hs = allocateStore(c, 'airport');
+    c.b.add('sign', sign(16, 2.2, hx, hh - 1.2, hz + hd / 2 + 0.3, 0, signUV(hs.id)), ch);
+    c.world.addBox(hx - hw / 2, hx + hw / 2, hz - hd / 2 - 1, hz - hd / 2 + 1, hh);
+    c.world.addBox(hx - hw / 2 - 1, hx - hw / 2 + 1, hz - hd / 2, hz + hd / 2, hh);
+    c.world.addBox(hx + hw / 2 - 1, hx + hw / 2 + 1, hz - hd / 2, hz + hd / 2, hh);
+  }
+
+  c.mapRects.push({ x0: ap.x0, z0: ap.z0, x1: ap.x1, z1: ap.z1, c: '#3a404a' });
+  c.mapRects.push({ x0: ap.x0 + 40, z0: rwZ - ap.runwayW / 2, x1: ap.x1 - 40, z1: rwZ + ap.runwayW / 2, c: '#1f242c' });
+  c.places.airport = { x: 1450, z: rwZ };
+  void rwLen;
 }
 
 export function beachProps(c: BCtx, pierX: number) {

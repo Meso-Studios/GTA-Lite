@@ -685,7 +685,10 @@ export function createHuman(L: Look): HumanRig {
   return {
     root, hips, spine, head, armL, armR, elL, elR, legL, legR, knL, knR, handR, shadow,
     weapon: null, weaponKind: null, phase: Math.random() * 6, meshes, look: L,
-    pose: { hipL: 0, hipR: 0, knL: 0, knR: 0, aLx: 0, aLz: 0, aRx: 0, aRz: 0, elL: 0, elR: 0, lean: 0, headX: 0, hipsY: 0.92, twist: 0 },
+    pose: {
+      hipL: 0, hipR: 0, knL: 0, knR: 0, aLx: 0, aLz: 0, aRx: 0, aRz: 0, elL: 0, elR: 0,
+      lean: 0, headX: 0, headY: 0, hipsY: 0.92, hipsX: 0, twist: 0, bank: 0,
+    },
   };
 }
 
@@ -714,114 +717,191 @@ export interface AnimIn {
   slide?: boolean;
   airborne?: boolean;
   photo?: boolean;
+  flinch?: number;   // 0..1 hit stagger reaction
+  recoil?: number;   // 0..1 firearm recoil kick
+  turnRate?: number; // rad/s yaw rate for natural turn banking
 }
+
+const TWO_HANDED_GUNS = new Set<GunKind>(['shotgun', 'autoshotgun', 'rifle', 'carbine', 'lmg', 'sniper']);
 
 export function animateHuman(r: HumanRig, dt: number, a: AnimIn) {
   const T: Record<string, number> = {
-    hipL: 0, hipR: 0, knL: 0.04, knR: 0.04, aLx: 0, aLz: 0.05, aRx: 0, aRz: -0.05, elL: -0.15, elR: -0.15,
-    lean: 0, headX: 0, hipsY: 0.92, twist: 0,
+    hipL: 0, hipR: 0, knL: 0.04, knR: 0.04, aLx: 0, aLz: 0.06, aRx: 0, aRz: -0.06, elL: -0.16, elR: -0.16,
+    lean: 0, headX: 0, headY: 0, hipsY: 0.92, hipsX: 0, twist: 0, bank: 0,
   };
   const holding = !!r.weapon;
+  const wk = r.weaponKind;
   r.shadow.visible = a.mode === 'stand' && !a.airborne;
   let rate = 16;
+
   if (a.mode === 'drive') {
-    T.hipL = -1.3; T.hipR = -1.3; T.knL = 1.3; T.knR = 1.3;
-    T.aLx = -0.95 + (a.steer ?? 0) * 0.15; T.aRx = -0.95 - (a.steer ?? 0) * 0.15; T.elL = -0.7; T.elR = -0.7;
-    T.aLz = 0.15; T.aRz = -0.15;
-    T.lean = -0.08; T.hipsY = 0;
+    const st = a.steer ?? 0;
+    T.hipL = -1.32; T.hipR = -1.32; T.knL = 1.32; T.knR = 1.32;
+    T.aLx = -0.96 + st * 0.22; T.aRx = -0.96 - st * 0.22; T.elL = -0.68; T.elR = -0.68;
+    T.aLz = 0.16; T.aRz = -0.16;
+    T.lean = -0.08; T.bank = -st * 0.1; T.hipsY = 0; T.headY = -st * 0.22;
   } else if (a.mode === 'dead' || a.mode === 'sprawl') {
     T.hipL = -0.25; T.hipR = 0.15; T.knL = 0.4; T.knR = 0.1;
     T.aLx = -0.4; T.aRx = 0.5; T.aLz = 0.9; T.aRz = -0.8; T.elL = -0.5; T.elR = -0.3; T.hipsY = 0.92;
     T.headX = 0.2;
     rate = 8;
   } else if (a.slide) {
-    // Low tactical slide pose
+    // Low tactical slide pose with trailing knee tucked
     T.hipsY = 0.42;
-    T.lean = -0.48;
-    T.hipL = -1.25; T.knL = 0.25;
-    T.hipR = -0.35; T.knR = 1.45;
-    T.aLx = -0.6; T.aLz = 0.45; T.elL = -0.5;
-    T.aRx = -0.9; T.aRz = -0.3; T.elR = -0.4;
-    T.headX = 0.35;
-    rate = 22;
+    T.lean = -0.5;
+    T.hipL = -1.28; T.knL = 0.22;
+    T.hipR = -0.32; T.knR = 1.48;
+    T.aLx = -0.6; T.aLz = 0.48; T.elL = -0.5;
+    T.aRx = -0.9; T.aRz = -0.32; T.elR = -0.4;
+    T.headX = 0.36;
+    rate = 24;
   } else {
     const sp = a.speed;
     if (a.airborne) {
-      T.hipL = -0.52; T.knL = 0.72;
-      T.hipR = 0.25; T.knR = 0.45;
-      T.aLx = -0.5; T.aLz = 0.35; T.aRx = -0.4; T.aRz = -0.35;
-      T.elL = -0.5; T.elR = -0.5;
-      T.lean = 0.1;
+      T.hipL = -0.56; T.knL = 0.78;
+      T.hipR = 0.28; T.knR = 0.48;
+      T.aLx = -0.55; T.aLz = 0.38; T.aRx = -0.45; T.aRz = -0.38;
+      T.elL = -0.52; T.elR = -0.52;
+      T.lean = 0.12;
       rate = 14;
     } else if (sp > 0.15) {
-      r.phase += dt * (4.5 + sp * 1.1);
+      // Realistic stride cycle: double-bounce hip lift, lateral weight shift, heel-strike shin extension, elbow-lag arm swing
+      const sprintBlend = clamp((sp - 4.2) / 3.5, 0, 1);
+      r.phase += dt * (4.4 + sp * 1.12);
       const ph = r.phase;
-      const A = clamp(0.2 + sp * 0.12, 0, 1.0);
-      const K = 0.35 + Math.min(sp, 7) * 0.12;
-      T.hipL = -Math.sin(ph) * A; T.hipR = Math.sin(ph) * A;
-      T.knL = K * Math.max(0, Math.cos(ph)) + 0.05; T.knR = K * Math.max(0, -Math.cos(ph)) + 0.05;
-      const aa = A * 0.85;
-      T.aLx = Math.sin(ph) * aa; T.aRx = -Math.sin(ph) * aa;
-      T.elL = -0.3 - sp * 0.07; T.elR = -0.3 - sp * 0.07;
-      T.lean = Math.min(sp, 8) * 0.028;
-      T.hipsY = 0.92 - Math.abs(Math.cos(ph)) * 0.025 * Math.min(sp, 6) * 0.5 - Math.min(sp, 6) * 0.004;
-      T.twist = Math.sin(ph) * 0.12 * Math.min(1, sp / 3);
+      const sPh = Math.sin(ph);
+      const cPh = Math.cos(ph);
+      const A = clamp(0.18 + sp * 0.125, 0, 1.08);
+      const K = 0.38 + Math.min(sp, 8) * 0.135;
+      // Asymmetric hip/knee curve mimics push-off and heel-strike
+      T.hipL = -sPh * A + (sPh > 0 ? 0.06 * sprintBlend : 0);
+      T.hipR = sPh * A + (sPh < 0 ? 0.06 * sprintBlend : 0);
+      T.knL = K * Math.max(0, cPh + 0.15) + 0.04 + sprintBlend * 0.18 * Math.max(0, sPh);
+      T.knR = K * Math.max(0, -cPh + 0.15) + 0.04 + sprintBlend * 0.18 * Math.max(0, -sPh);
+      // Elbow-lagged arm swing (forearms bend more on forward swing)
+      const aa = A * (0.82 + sprintBlend * 0.22);
+      T.aLx = sPh * aa;
+      T.aRx = -sPh * aa;
+      T.elL = -0.26 - sp * 0.075 - Math.max(0, -sPh) * (0.28 + sprintBlend * 0.35);
+      T.elR = -0.26 - sp * 0.075 - Math.max(0, sPh) * (0.28 + sprintBlend * 0.35);
+      T.aLz = 0.07 + sprintBlend * 0.08;
+      T.aRz = -0.07 - sprintBlend * 0.08;
+      // Torso forward sprint lean + counter-twist + natural hip sway + double-bounce vertical bob
+      T.lean = Math.min(sp, 9) * 0.032 + sprintBlend * 0.06;
+      const bounce = Math.abs(Math.sin(ph)) * (0.022 + sprintBlend * 0.024);
+      T.hipsY = 0.92 - Math.min(sp, 7) * 0.008 + bounce - 0.014;
+      T.hipsX = cPh * 0.024 * clamp(sp / 2.2, 0, 1);
+      T.twist = sPh * (0.13 + sprintBlend * 0.08) * Math.min(1, sp / 2.6);
+      T.bank = clamp(-(a.turnRate ?? 0) * 0.075 * Math.min(1, sp / 3.5), -0.22, 0.22) - cPh * 0.025;
+      T.headX = -T.lean * 0.45;
     } else {
-      const bt = performance.now() * 0.0016 + r.look.build * 3;
-      T.lean = Math.sin(bt) * 0.012;
-      T.aLx = Math.sin(bt) * 0.02;
-      T.aRx = -Math.sin(bt) * 0.02;
-      T.headX = Math.sin(bt * 0.5) * 0.03;
+      // Natural idle breathing, weight-shift sway & subtle ambient look-around
+      const bt = performance.now() * 0.0017 + r.look.build * 3.7;
+      T.lean = Math.sin(bt) * 0.015;
+      T.hipsY = 0.92 + Math.sin(bt) * 0.006;
+      T.hipsX = Math.sin(bt * 0.45) * 0.014;
+      T.bank = Math.sin(bt * 0.45) * 0.016;
+      T.aLx = Math.sin(bt) * 0.025;
+      T.aRx = -Math.sin(bt) * 0.025;
+      T.aLz = 0.06 + Math.sin(bt) * 0.01;
+      T.aRz = -0.06 - Math.sin(bt) * 0.01;
+      T.headX = Math.sin(bt * 0.55) * 0.03;
+      T.headY = Math.sin(bt * 0.32) * 0.12;
     }
+
     if (a.crouch && !a.airborne) {
-      T.hipsY = 0.72;
-      T.lean += 0.2;
-      T.hipL = T.hipL * 0.6 - 0.48;
-      T.hipR = T.hipR * 0.6 - 0.48;
-      T.knL = Math.max(0.7, T.knL + 0.62);
-      T.knR = Math.max(0.7, T.knR + 0.62);
+      T.hipsY = 0.7;
+      T.lean += 0.22;
+      T.hipL = T.hipL * 0.58 - 0.5;
+      T.hipR = T.hipR * 0.58 - 0.5;
+      T.knL = Math.max(0.72, T.knL + 0.66);
+      T.knR = Math.max(0.72, T.knR + 0.66);
     }
     if (a.photo && !a.panic) {
-      // Tourist raising camera / phone to take a sightseeing photo
       T.aLx = -1.25; T.elL = -0.95; T.aLz = -0.25;
       T.aRx = -1.25; T.elR = -0.95; T.aRz = 0.25;
       T.headX = -0.14;
       rate = 10;
     }
     if (a.panic) {
-      T.aLx = -2.7 + Math.sin(r.phase * 2) * 0.3; T.aRx = -2.7 - Math.sin(r.phase * 2) * 0.3;
-      T.aLz = 0.35; T.aRz = -0.35; T.elL = -0.5; T.elR = -0.5;
+      T.aLx = -2.72 + Math.sin(r.phase * 2.2) * 0.32;
+      T.aRx = -2.72 - Math.sin(r.phase * 2.2) * 0.32;
+      T.aLz = 0.36; T.aRz = -0.36; T.elL = -0.48; T.elR = -0.48;
     }
     if (holding && !a.panic) {
-      if (a.aim > 0.5) {
+      const rec = a.recoil ?? 0;
+      if (wk === 'rpg' && a.aim > 0.3) {
+        // Shoulder-mounted rocket launcher stance
         const up = a.aimPitch;
-        T.aRx = -(1.5 + up * 0.9); T.elR = -0.12; T.aRz = -0.02;
-        T.aLx = -(1.35 + up * 0.9); T.elL = -0.6; T.aLz = -0.42;
-        T.lean = T.lean * 0.5 - 0.02;
-        T.twist = -0.25;
+        T.aRx = -(1.72 + up * 0.85) - rec * 0.35; T.elR = -0.45; T.aRz = -0.08;
+        T.aLx = -(1.55 + up * 0.85) - rec * 0.25; T.elL = -0.82; T.aLz = -0.34;
+        T.lean = -0.06 - rec * 0.12;
+        T.twist = -0.34;
+        T.headX = -up * 0.35;
+        rate = 24;
+      } else if (wk && TWO_HANDED_GUNS.has(wk) && a.aim > 0.4) {
+        // Firm two-handed rifle/shotgun/LMG combat stance with recoil kick
+        const up = a.aimPitch;
+        T.aRx = -(1.42 + up * 0.9) - rec * 0.28; T.elR = -0.22 - rec * 0.15; T.aRz = -0.04;
+        T.aLx = -(1.28 + up * 0.9) - rec * 0.24; T.elL = -0.78; T.aLz = -0.48;
+        T.lean = T.lean * 0.45 + 0.06 - rec * 0.08;
+        T.twist = -0.34;
+        T.headX = -up * 0.42;
+        rate = 24;
+      } else if (a.aim > 0.5) {
+        // Pistol / SMG aiming stance
+        const up = a.aimPitch;
+        T.aRx = -(1.52 + up * 0.9) - rec * 0.32; T.elR = -0.14; T.aRz = -0.02;
+        T.aLx = -(1.38 + up * 0.9) - rec * 0.2; T.elL = -0.58; T.aLz = -0.4;
+        T.lean = T.lean * 0.5 - 0.02 - rec * 0.06;
+        T.twist = -0.24;
         T.headX = -up * 0.4;
-        rate = 22;
+        rate = 24;
+      } else if (wk === 'katana' || wk === 'bat') {
+        // Ready melee carry pose
+        T.aRx = -0.48; T.elR = -0.75; T.aRz = -0.18;
       } else {
-        T.aRx = -0.35; T.elR = -1.1; T.aRz = -0.1;
+        // Low-ready firearm carry
+        T.aRx = -0.38; T.elR = -1.08; T.aRz = -0.1;
       }
     }
     if (a.punch > 0) {
       const s = Math.sin(a.punch * Math.PI);
-      T.aRx = -1.55 * s; T.elR = -0.2 * s; T.twist = -0.5 * s; T.lean = 0.1 * s;
-      T.aLx = 0.5 * s;
-      rate = 40;
+      if (wk === 'katana') {
+        // Wide diagonal two-hand katana cleave slash
+        const sweep = (a.punch - 0.5) * 2.2;
+        T.aRx = -1.65 * s; T.aRz = -0.65 + sweep * 0.95; T.elR = -0.18 * s;
+        T.aLx = -1.25 * s; T.aLz = -0.35 + sweep * 0.5; T.elL = -0.45;
+        T.twist = -0.82 * s + sweep * 0.35; T.lean = 0.22 * s;
+        rate = 48;
+      } else {
+        T.aRx = -1.62 * s; T.elR = -0.18 * s; T.twist = -0.58 * s; T.lean = 0.14 * s;
+        T.aLx = 0.52 * s;
+        rate = 42;
+      }
+    }
+    // Hit flinch stagger overlay
+    if (a.flinch && a.flinch > 0.01) {
+      const fl = clamp(a.flinch, 0, 1);
+      T.lean -= 0.34 * fl;
+      T.headX -= 0.28 * fl;
+      T.twist += 0.28 * fl;
+      T.aLx -= 0.32 * fl;
+      T.aRx -= 0.32 * fl;
+      rate = Math.max(rate, 32);
     }
   }
+
   const P = r.pose;
   const k = 1 - Math.exp(-rate * dt);
   for (const key in T) P[key] += (T[key] - P[key]) * k;
-  r.hips.position.y = P.hipsY;
+  r.hips.position.set(P.hipsX, P.hipsY, 0);
   r.legL.rotation.x = P.hipL; r.legR.rotation.x = P.hipR;
   r.knL.rotation.x = P.knL; r.knR.rotation.x = P.knR;
   r.armL.rotation.set(P.aLx, 0, P.aLz); r.armR.rotation.set(P.aRx, 0, P.aRz);
   r.elL.rotation.x = P.elL; r.elR.rotation.x = P.elR;
-  r.spine.rotation.set(P.lean, P.twist, 0);
-  r.head.rotation.set(P.headX, -P.twist * 0.6, 0);
+  r.spine.rotation.set(P.lean, P.twist, P.bank);
+  r.head.rotation.set(P.headX, P.headY - P.twist * 0.55, -P.bank * 0.45);
   if (a.mode === 'dead' || a.mode === 'sprawl') {
     r.legL.rotation.z = 0.25; r.legR.rotation.z = -0.15;
   } else {
@@ -863,7 +943,12 @@ const _v2 = new THREE.Vector3();
 const _up = new THREE.Vector3(0, 1, 0);
 const _down = new THREE.Vector3(0, -1, 0);
 
-/** Multi-particle verlet ragdoll: head, chest, pelvis, hands, knees, feet with joint constraints. */
+export interface RagdollWorld {
+  resolve(x: number, z: number, r: number, y: number, out: { x: number; z: number; nx: number; nz: number; hit: boolean; depth: number }): void;
+}
+const _rpo = { x: 0, z: 0, nx: 0, nz: 0, hit: false, depth: 0 };
+
+/** Multi-particle verlet ragdoll: head, chest, pelvis, hands, knees, feet with joint constraints, wall bounce & blood impact events. */
 export class Ragdoll {
   parts: RP[] = [];
   cons: [number, number, number, number][] = [];
@@ -872,7 +957,9 @@ export class Ragdoll {
   t = 0;
   rig: HumanRig;
   gy: number;
-  constructor(rig: HumanRig, wish: number, vx: number, vy: number, vz: number) {
+  private bloodImpactCount = 0;
+
+  constructor(rig: HumanRig, wish: number, vx: number, vy: number, vz: number, headWhip = 1.0) {
     this.rig = rig;
     rig.shadow.visible = false;
     this.gy = rig.root.position.y;
@@ -890,10 +977,15 @@ export class Ragdoll {
     const P: [THREE.Vector3, number][] = [[head, 0.13], [chest, 0.16], [pelvis, 0.15], [hL, 0.06], [hR, 0.06], [kL, 0.07], [kR, 0.07], [fL, 0.06], [fR, 0.06]];
     const rnd = () => (Math.random() - 0.5);
     P.forEach(([p, r], i) => {
-      const fall = (i === 0 ? 0.6 : i === 1 ? 1 : 0.5) * wish;
+      const whip = i === 0 ? headWhip : i === 1 ? 0.5 + headWhip * 0.25 : 1;
+      const fall = (i === 0 ? 0.65 : i === 1 ? 1.0 : 0.5) * wish;
       this.parts.push({
         p: p.clone(),
-        v: new THREE.Vector3(vx * (0.7 + i * 0.04) + rnd() * fall + rnd() * 0.9, vy * 0.55 + fall * 1.1 + Math.random() * 0.6, vz * (0.7 + i * 0.04) + rnd() * fall + rnd() * 0.9),
+        v: new THREE.Vector3(
+          vx * (0.72 + i * 0.04) * whip + rnd() * fall + rnd() * 0.9,
+          vy * 0.65 + fall * 1.15 + (i === 0 ? (headWhip - 1) * 1.1 : 0) + Math.random() * 0.6,
+          vz * (0.72 + i * 0.04) * whip + rnd() * fall + rnd() * 0.9,
+        ),
         r,
       });
     });
@@ -906,15 +998,15 @@ export class Ragdoll {
     this.update(0.001);
   }
 
-  update(dt: number) {
+  update(dt: number, world?: RagdollWorld, onImpact?: (x: number, y: number, z: number, speed: number) => void) {
     if (!this.active) return;
     this.t += dt;
     const n = this.parts.length;
-    const g = -17;
+    const g = -17.5;
     for (let i = 0; i < n; i++) {
       const a = this.parts[i];
       a.v.y += g * dt;
-      a.v.multiplyScalar(Math.exp(-0.5 * dt));
+      a.v.multiplyScalar(Math.exp(-0.48 * dt));
       a.p.addScaledVector(a.v, dt);
     }
     for (let it = 0; it < 6; it++) {
@@ -922,7 +1014,7 @@ export class Ragdoll {
         const a = this.parts[i], b = this.parts[j];
         _v1.subVectors(b.p, a.p);
         const d = _v1.length() || 0.0001;
-        const diff = (d - rest) / d * 0.5 * stiff;
+        const diff = ((d - rest) / d) * 0.5 * stiff;
         _v1.multiplyScalar(diff);
         a.p.add(_v1); b.p.sub(_v1);
         if (it === 0) {
@@ -931,17 +1023,39 @@ export class Ragdoll {
       }
       for (let i = 0; i < n; i++) {
         const a = this.parts[i];
+        // Building / wall collision for core body parts on first solver pass
+        if (it === 0 && world && i <= 2) {
+          world.resolve(a.p.x, a.p.z, a.r + 0.08, a.p.y, _rpo);
+          if (_rpo.hit) {
+            a.p.x = _rpo.x;
+            a.p.z = _rpo.z;
+            const vn = a.v.x * _rpo.nx + a.v.z * _rpo.nz;
+            if (vn < 0) {
+              const imp = -vn;
+              a.v.x -= 1.38 * vn * _rpo.nx;
+              a.v.z -= 1.38 * vn * _rpo.nz;
+              if (onImpact && imp > 3.2 && this.bloodImpactCount < 3) {
+                this.bloodImpactCount++;
+                onImpact(a.p.x, a.p.y, a.p.z, imp);
+              }
+            }
+          }
+        }
         const floor = this.gy + a.r;
         if (a.p.y < floor) {
           a.p.y = floor;
-          if (a.v.y < 0) a.v.y *= -0.22;
-          a.v.x *= 0.62; a.v.z *= 0.62;
+          if (a.v.y < -2.6 && i <= 2 && onImpact && this.bloodImpactCount < 3) {
+            this.bloodImpactCount++;
+            onImpact(a.p.x, this.gy, a.p.z, -a.v.y);
+          }
+          if (a.v.y < 0) a.v.y *= -0.25;
+          a.v.x *= 0.64; a.v.z *= 0.64;
         }
       }
     }
     let motion = 0;
     for (const a of this.parts) motion += a.v.lengthSq();
-    if (motion < 0.06) { this.settled = true; this.active = false; }
+    if (motion < 0.05) { this.settled = true; this.active = false; }
     if (this.t > 22) { this.active = false; this.settled = true; }
     this.apply();
   }

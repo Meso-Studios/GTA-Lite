@@ -2,6 +2,7 @@
 import * as THREE from 'three';
 import { CORNER, NB, applySandFootPhysics, clamp, dampAngle, nearestNode, redRemaining, roadLine, sandFactorAt, signalState } from './config';
 import { AnimIn, GunKind, HumanRig, Look, Ragdoll, animateHuman, createHuman, muzzleWorld, setWeapon } from './humans';
+import { computeRagdollImpulse } from './physics';
 import type { Game } from './Game';
 import type { PushOut } from './world';
 
@@ -63,6 +64,7 @@ export class Ped {
   crowdHome: { x: number; z: number; r: number } | null = null;
   photoT = 0;
   sandPuffT = 0;
+  flinchT = 0;
 
   constructor(kind: PedKind, look: Look) {
     this.kind = kind;
@@ -170,24 +172,48 @@ export class Ped {
   }
 
   /** applies damage; returns true if died */
-  hit(g: Game, dmg: number, dx: number, dz: number, byPlayer: boolean, headshot = false): boolean {
+  hit(
+    g: Game,
+    dmg: number,
+    dx: number,
+    dz: number,
+    byPlayer: boolean,
+    headshot = false,
+    opts?: { shotgun?: boolean; explosive?: boolean; katana?: boolean },
+  ): boolean {
     if (this.dead) return false;
-    this.hp -= dmg * (headshot ? 2.5 : 1);
+    const effDmg = dmg * (headshot ? 2.5 : 1);
+    this.hp -= effDmg;
+    this.flinchT = 0.28;
     if (byPlayer) {
       if (this.kind === 'civ' || this.kind === 'tourist') g.crime(1, 'assault');
       else if (this.kind === 'cop') g.crime(2, 'assault');
       if (this.hostile) { this.aggro = true; g.alertAround(this, 28); }
     }
-    g.fx.blood(this.x, 1.2 + (headshot ? 0.4 : 0), this.z, dx, dz);
+    const groundY = g.groundAt(this.x, this.z);
+    g.fx.bloodBurst(
+      this.x,
+      this.y + (headshot ? 1.62 : 1.18),
+      this.z,
+      dx,
+      headshot ? 0.35 : 0.15,
+      dz,
+      effDmg,
+      headshot,
+      !!opts?.explosive,
+      !!opts?.shotgun || !!opts?.katana,
+      groundY,
+    );
     if (this.hp <= 0) {
-      this.kill(g, dx * 3, 2.2, dz * 3, byPlayer);
+      const imp = computeRagdollImpulse(dx, dz, effDmg, headshot, !!opts?.explosive);
+      this.kill(g, imp.vx, imp.vy, imp.vz, byPlayer, imp.headWhip);
       return true;
     }
     if (!this.hostile) this.flee(g, this.x - dx * 5, this.z - dz * 5, 10);
     return false;
   }
 
-  kill(g: Game, vx: number, vy: number, vz: number, byPlayer: boolean) {
+  kill(g: Game, vx: number, vy: number, vz: number, byPlayer: boolean, headWhip = 1.0) {
     if (this.dead) return;
     this.dead = true;
     this.wasKilledByPlayer = byPlayer;
@@ -199,8 +225,10 @@ export class Ped {
     this.rotX = 0;
     this.deadT = 0;
     const dx = vx, dz = vz;
-    this.rag = new Ragdoll(this.rig, Math.min(1.0, Math.hypot(vx, vz) * 0.16 + 0.3), dx, vy * 0.4, dz);
+    this.rag = new Ragdoll(this.rig, Math.min(1.25, Math.hypot(vx, vz) * 0.16 + 0.35), dx, vy * 0.55, dz, headWhip);
     this.rig.hips.position.y = 0;
+    const gh = g.groundAt(this.x, this.z);
+    g.fx.bloodPuddle(this.x, gh, this.z, headWhip > 2 ? 1.35 : 0.95);
     if (this.tag === 'playerbody') return;
     if (byPlayer) {
       if (this.kind === 'civ' || this.kind === 'tourist') g.crime(1, 'murder');
@@ -220,20 +248,24 @@ export class Ped {
   knock(g: Game, vx: number, vz: number, dmg: number, byPlayer: boolean) {
     if (this.dead) return;
     this.hp -= dmg;
-    g.fx.blood(this.x, 1, this.z, vx * 0.1, vz * 0.1);
+    this.flinchT = 0.35;
+    const sp = Math.hypot(vx, vz);
+    const groundY = g.groundAt(this.x, this.z);
+    g.fx.bloodBurst(this.x, this.y + 1.0, this.z, vx, 1.5, vz, dmg * 1.4, false, sp > 22, sp > 14, groundY);
     if (byPlayer) {
       if (this.kind === 'civ' || this.kind === 'tourist') g.crime(1, 'roadkill');
       else if (this.kind === 'cop') g.crime(2, 'roadkill');
     }
     if (this.hp <= 0 || dmg > 20) {
       this.hp = Math.min(this.hp, 0);
-      this.kill(g, vx * 1.05, 4 + Math.min(5, Math.hypot(vx, vz) * 0.2), vz * 1.05, byPlayer);
+      this.kill(g, vx * 1.15, 4.2 + Math.min(6.5, sp * 0.25), vz * 1.15, byPlayer, sp > 18 ? 3.2 : 1.5);
     } else this.flee(g, this.x - vx, this.z - vz, 8);
   }
 
   // ------------------------------------------------------------------ update
   update(dt: number, g: Game) {
     if (this.dead) { this.ragdoll(dt, g); return; }
+    if (this.flinchT > 0) this.flinchT = Math.max(0, this.flinchT - dt);
     if (this.kind === 'ally') { this.allyUpdate(dt, g); return; }
     const px = g.playerX, pz = g.playerZ;
     const dxp = px - this.x, dzp = pz - this.z;
@@ -400,7 +432,16 @@ export class Ped {
   }
 
   animate(dt: number, speed: number, panic: boolean, aim = 0, photo = false) {
-    const a: AnimIn = { mode: 'stand', speed, aim, aimPitch: 0, punch: 0, panic: panic || this.handsUp > 0, photo };
+    const a: AnimIn = {
+      mode: 'stand',
+      speed,
+      aim,
+      aimPitch: 0,
+      punch: 0,
+      panic: panic || this.handsUp > 0,
+      photo,
+      flinch: this.flinchT > 0 ? this.flinchT / 0.28 : 0,
+    };
     animateHuman(this.rig, dt, a);
   }
 
@@ -432,7 +473,10 @@ export class Ped {
     if (this.rag) {
       this.rag.gy = gh;
       if (this.rag.active) {
-        this.rag.update(dt);
+        this.rag.update(dt, g.world, (ix, iy, iz, impSp) => {
+          g.fx.blood(ix, iy + 0.15, iz, (Math.random() - 0.5) * 1.4, (Math.random() - 0.5) * 1.4);
+          g.fx.bloodPuddle(ix, g.groundAt(ix, iz), iz, clamp(0.45 + impSp * 0.08, 0.45, 1.3));
+        });
         // keep collision roughly in sync for world edges
         this.x = this.rag.parts[2].p.x;
         this.z = this.rag.parts[2].p.z;

@@ -90,7 +90,7 @@ export function streamTraffic(g: Game, dt: number) {
     if (v.mode === 'ai') {
       count++;
       const d = Math.hypot(v.x - g.playerX, v.z - g.playerZ);
-      if ((d > 330 || (d > 190 && !g.inView(v.x, v.z, 8))) && !v.mission) { removeVehicle(g, v); count--; }
+      if ((d > 330 || (d > 190 && !g.inView(v.x, v.z, 8))) && !v.mission && !v.spec.isAircraft) { removeVehicle(g, v); count--; }
     }
   }
   if (count < g.quality.traffic) trySpawnTraffic(g, 'ai', pickType(), 70, 260);
@@ -105,7 +105,7 @@ export function streamParked(g: Game, dt: number) {
     if (v.mode === 'parked') {
       parked++;
       const d = Math.hypot(v.x - g.playerX, v.z - g.playerZ);
-      if ((d > 280 || (d > 200 && !g.inView(v.x, v.z, 8))) && !v.mission) { removeVehicle(g, v); parked--; }
+      if ((d > 280 || (d > 200 && !g.inView(v.x, v.z, 8))) && !v.mission && !v.spec.isAircraft) { removeVehicle(g, v); parked--; }
     }
   }
   if (parked >= g.quality.parked) return;

@@ -6,6 +6,9 @@ import {
 import {
   SPECS, VehicleModel, VehicleSpec, VehicleType, buildVehicle, dentModel, tailBright, tailDim, wreckMat, sirenRed, sirenBlue,
 } from './vehicles';
+import {
+  FlightState, SuspensionState, createFlightState, createSuspensionState, stepFlightPhysics, stepSuspensionPhysics,
+} from './physics';
 import { driverBust } from './humans';
 import type { Game } from './Game';
 import type { HumanRig } from './humans';
@@ -71,6 +74,18 @@ export class Vehicle {
   sandSprayT = 0;
   slopePitch = 0;
   slopeRoll = 0;
+  // Enhanced car suspension & drift FX
+  susp: SuspensionState = createSuspensionState(0);
+  bodyYOffset = 0;
+  driftSmokeT = 0;
+  // Aircraft flight physics state & controls
+  flight: FlightState | null = null;
+  pitchIn = 0;
+  rollIn = 0;
+  yawIn = 0;
+  throttleDelta = 0;
+  contrailT = 0;
+  propSpin = 0;
 
   constructor(type: VehicleType, paint: number) {
     this.type = type;
@@ -79,10 +94,13 @@ export class Vehicle {
     this.group = this.model.group;
     this.hp = this.maxHp = this.spec.hp;
     this.ai = { nk: 0, nl: 0, dx: 1, dz: 0, lane: LANE_OUTER, next: null, turning: null, cruise: 14, route: null, routeIdx: 0, finished: false, direct: false, reverseT: 0, reverseSteer: 0, copsOut: false, honkT: 0, finishAfter: false };
+    if (this.spec.isAircraft) {
+      this.flight = createFlightState(0, 0, 0, 0);
+    }
     for (const m of this.group.children) m.traverse((o) => { o.matrixAutoUpdate = true; });
   }
 
-  get speed() { return Math.hypot(this.vx, this.vz); }
+  get speed() { return this.spec.isAircraft ? Math.hypot(this.vx, this.vy, this.vz) : Math.hypot(this.vx, this.vz); }
   get fx() { return Math.sin(this.yaw); }
   get fz() { return Math.cos(this.yaw); }
   get radius() { return this.spec.W / 2; }
@@ -105,10 +123,16 @@ export class Vehicle {
     this.driverKind = null;
   }
 
-  place(x: number, z: number, yaw: number) {
-    this.x = x; this.z = z; this.yaw = yaw;
-    this.group.position.set(x, 0, z);
-    this.group.rotation.y = yaw;
+  place(x: number, z: number, yaw: number, y = 0) {
+    this.x = x; this.z = z; this.y = y; this.yaw = yaw;
+    this.susp.worldY = y;
+    if (this.flight) {
+      this.flight.x = x; this.flight.y = y; this.flight.z = z; this.flight.yaw = yaw;
+      this.flight.vx = 0; this.flight.vy = 0; this.flight.vz = 0;
+      this.flight.pitch = 0; this.flight.roll = 0; this.flight.throttle = 0; this.flight.onGround = true;
+    }
+    this.group.position.set(x, y, z);
+    this.group.rotation.set(0, yaw, 0);
   }
 
   /** put on a road lane before node (nk,nl) heading (dx,dz) */
@@ -438,6 +462,21 @@ export class Vehicle {
     this.z += this.vz * dt;
     this.fwd = vf;
 
+    // Drift & burnout tire smoke on paved surfaces
+    if (g && !this.onSand && (this.hand || Math.abs(vl) > 3.6) && this.speed > 4.5 && !this.susp.airborne) {
+      this.driftSmokeT -= dt;
+      if (this.driftSmokeT <= 0) {
+        this.driftSmokeT = 0.04;
+        const rearDist = s.L * 0.36;
+        const trackHalf = s.W * 0.44;
+        for (const side of [-1, 1]) {
+          const wx = this.x - fx * rearDist + rx * side * trackHalf;
+          const wz = this.z - fz * rearDist + rz * side * trackHalf;
+          g.fx.tireSmoke(wx, this.y + 0.06, wz, -fx * 1.4 - rx * vl * 0.18, -fz * 1.4 - rz * vl * 0.18);
+        }
+      }
+    }
+
     // terrain slope pitch & roll alignment on dunes and hills
     const onDeck = deckHeight(this.x, this.z, this.y) > 0;
     let tgtSlopePitch = 0, tgtSlopeRoll = 0;
@@ -450,12 +489,31 @@ export class Vehicle {
     this.slopePitch += (tgtSlopePitch - this.slopePitch) * sk;
     this.slopeRoll += (tgtSlopeRoll - this.slopeRoll) * sk;
 
-    // visual dynamics
+    // 4-wheel spring-damper suspension & weight transfer
     const acc = (vf - this.lastSpeed) / Math.max(dt, 0.001);
     this.lastSpeed = vf;
-    this.accelSmooth += (acc - this.accelSmooth) * (1 - Math.exp(-6 * dt));
-    this.pitch += (clamp(this.accelSmooth * 0.006, -0.06, 0.06) - this.pitch) * sk;
-    this.roll += (clamp(-this.omega * vf * 0.0045 - vl * 0.004, -0.09, 0.09) - this.roll) * sk;
+    this.accelSmooth += (acc - this.accelSmooth) * (1 - Math.exp(-7 * dt));
+    const latAccel = -this.omega * vf - vl * 1.1;
+    const groundY = g ? g.groundAt(this.x, this.z, this.y) : 0;
+    const suspRes = stepSuspensionPhysics(this.susp, {
+      groundY,
+      longAccel: this.accelSmooth,
+      latAccel,
+      speed: Math.abs(vf),
+      roughness: this.onSand ? 0.65 : 0.04,
+      stiffness: this.type === 'sports' ? 88 : this.type === 'suv' || this.type === 'pickup' ? 54 : 68,
+      damping: this.type === 'sports' ? 13 : 10.5,
+    }, dt);
+    this.y = this.susp.worldY;
+    this.bodyYOffset = suspRes.bodyYOffset;
+    this.pitch = suspRes.pitch;
+    this.roll = suspRes.roll;
+    if (g && suspRes.landed && suspRes.landingSpeed > 4.2) {
+      for (let i = 0; i < 6; i++) {
+        g.fx.spark(this.x + (Math.random() - 0.5) * s.W, this.y + 0.25, this.z + (Math.random() - 0.5) * s.L * 0.6, (Math.random() - 0.5) * 2, 0.6, (Math.random() - 0.5) * 2);
+      }
+      if (this.mode === 'player') g.shake(Math.min(0.45, suspRes.landingSpeed * 0.035));
+    }
     this.wheelRot += (vf * dt) / s.wheelR;
   }
 
@@ -550,9 +608,95 @@ export class Vehicle {
   step(dt: number, g: Game) {
     this.age += dt;
     if (this.mode === 'hw') { this.updateVisual(g); return; }
+
+    // Flyable Aircraft 6-DOF aerodynamics path
+    if (this.spec.isAircraft && this.flight && this.spec.flight) {
+      if (this.mode === 'wreck') {
+        this.vx *= Math.exp(-1.5 * dt);
+        this.vz *= Math.exp(-1.5 * dt);
+        this.vy -= 16 * dt;
+        this.x += this.vx * dt;
+        this.y += this.vy * dt;
+        this.z += this.vz * dt;
+        const fl = Math.max(this.type === 'seaplane' ? -0.35 : 0, g.groundAt(this.x, this.z, this.y));
+        if (this.y < fl) { this.y = fl; this.vy = 0; }
+        this.wreckT += dt;
+        if (Math.random() < dt * 16) g.fx.smoke(this.x + (Math.random() - 0.5) * 2, this.y + 1.4, this.z + (Math.random() - 0.5) * 2, 1.4, true);
+        if (this.wreckT < 45 && Math.random() < dt * 6) g.fx.fire(this.x + (Math.random() - 0.5) * 2, this.y + 1.1, this.z + (Math.random() - 0.5) * 2);
+        this.updateVisual(g);
+        return;
+      }
+      const f = this.flight;
+      f.x = this.x; f.y = this.y; f.z = this.z;
+      const gY = g.groundAt(this.x, this.z, this.y);
+      // Seaplane floats smoothly on ocean water (y = -0.35), other planes collide with water
+      const floorY = this.type === 'seaplane' ? Math.max(-0.35, gY) : gY;
+      const active = this.mode === 'player';
+      const res = stepFlightPhysics(f, this.spec.flight, {
+        throttleDelta: active ? this.throttleDelta : -0.8,
+        pitchIn: active ? this.pitchIn : 0,
+        rollIn: active ? this.rollIn : 0,
+        yawIn: active ? this.yawIn : 0,
+        brake: active ? (this.brake > 0.2 || this.hand) : true,
+        groundY: floorY,
+      }, dt);
+      this.x = f.x; this.y = f.y; this.z = f.z;
+      this.vx = f.vx; this.vy = f.vy; this.vz = f.vz;
+      this.yaw = f.yaw; this.pitch = f.pitch; this.roll = f.roll;
+      this.fwd = f.airspeed;
+      this.throttle = f.throttle;
+      this.propSpin += (4 + f.throttle * 34 + f.airspeed * 0.4) * dt;
+      this.wheelRot += (f.airspeed * dt) / Math.max(0.25, this.spec.wheelR);
+
+      // Wingtip contrails when flying fast
+      if (!f.onGround && f.airspeed > 26) {
+        this.contrailT -= dt;
+        if (this.contrailT <= 0) {
+          this.contrailT = 0.03;
+          const halfW = this.spec.W * 0.46;
+          const rx = Math.cos(this.yaw), rz = -Math.sin(this.yaw);
+          const tiltY = Math.sin(this.roll) * halfW;
+          g.fx.contrail(this.x + rx * halfW, this.y + 1.5 + tiltY, this.z + rz * halfW);
+          g.fx.contrail(this.x - rx * halfW, this.y + 1.5 - tiltY, this.z - rz * halfW);
+        }
+      }
+      // Building / static obstacle collision while flying low
+      if (this.y < 140) {
+        g.world.resolve(this.x, this.z, this.spec.radius, this.y + 1.2, _po);
+        if (_po.hit) {
+          if (f.airspeed > 20) {
+            this.explode(g);
+            return;
+          }
+          this.x = _po.x; this.z = _po.z;
+          f.x = this.x; f.z = this.z;
+          f.vx *= -0.25; f.vz *= -0.25;
+        }
+      }
+      if (res.crashed) {
+        this.explode(g);
+        return;
+      }
+      if (res.touchedDown && this.mode === 'player') {
+        g.shake(0.22);
+        g.fx.tireSmoke(this.x, this.y + 0.15, this.z, -this.vx * 0.1, -this.vz * 0.1);
+      }
+      if (this.burning) {
+        this.burnT -= dt;
+        if (Math.random() < dt * 28) g.fx.fire(this.x, this.y + 1.4, this.z);
+        if (Math.random() < dt * 22) g.fx.smoke(this.x, this.y + 1.6, this.z, 1.3, true);
+        if (this.burnT <= 0) this.explode(g);
+      }
+      this.updateVisual(g);
+      return;
+    }
+
     let deckY = g.groundAt(this.x, this.z, this.y);
     if (deckY === 0 && this.y > 4) deckY = g.groundAt(this.x, this.z, 9.4);
-    if (Math.abs(deckY - this.y) < 5) this.y += (deckY - this.y) * Math.min(1, dt * (Math.abs(deckY - this.y) > 1.2 ? 34 : 14));
+    if (!this.susp.airborne && Math.abs(deckY - this.y) < 5) {
+      this.y += (deckY - this.y) * Math.min(1, dt * (Math.abs(deckY - this.y) > 1.2 ? 34 : 14));
+      this.susp.worldY = this.y;
+    }
     if (this.mode === 'ai' || this.mode === 'police' || this.mode === 'racer') this.aiControl(dt, g);
     else if (this.mode === 'parked' || this.mode === 'idle' || this.mode === 'wreck') {
       this.throttle = 0; this.brake = 0.8; this.steerIn = 0;
@@ -576,6 +720,7 @@ export class Vehicle {
       this.y += this.vy * dt;
       const floorY = g.groundAt(this.x, this.z, this.y);
       if (this.y <= floorY) { this.y = floorY; this.vy = 0; }
+      this.susp.worldY = this.y;
     }
     // burning / smoke
     if (this.burning) {
@@ -591,19 +736,40 @@ export class Vehicle {
 
   updateVisual(_g: Game) {
     const m = this.model;
+    if (this.spec.isAircraft) {
+      this.group.position.set(this.x, this.y, this.z);
+      this.group.rotation.set(-this.pitch, this.yaw, this.roll, 'YXZ');
+      m.tiltGroup.rotation.set(0, 0, 0);
+      m.tiltGroup.position.y = 0;
+      if (m.propeller) {
+        m.propeller.rotation.z = this.propSpin;
+      }
+      if (m.afterburner) {
+        const th = this.mode === 'wreck' ? 0 : this.throttle;
+        const mat = m.afterburner.material as THREE.MeshBasicMaterial;
+        mat.opacity = th > 0.15 ? clamp(th * 0.88, 0, 0.9) : 0;
+        m.afterburner.visible = th > 0.15;
+        m.afterburner.scale.set(0.75 + th * 0.45, 0.75 + th * 0.45, 0.5 + th * 1.35);
+      }
+      for (const w of m.wheels) {
+        w.spin.rotation.x = this.wheelRot;
+      }
+      m.beam.visible = this.lightsOn && this.mode !== 'wreck' && (this.flight?.onGround ?? true);
+      return;
+    }
     this.group.position.set(this.x, this.y - this.sandSink, this.z);
-    this.group.rotation.y = this.yaw;
+    this.group.rotation.set(0, this.yaw, 0);
     m.tiltGroup.rotation.set(this.pitch + this.slopePitch + (this.mode === 'wreck' ? 0.04 : 0), 0, this.roll + this.slopeRoll + (this.mode === 'wreck' ? 0.05 : 0));
-    m.tiltGroup.position.y = 0;
+    m.tiltGroup.position.y = this.bodyYOffset;
     for (const w of m.wheels) {
       w.spin.rotation.x = this.wheelRot;
       if (w.front) w.pivot.rotation.y = this.steerAng;
       w.pivot.position.y = this.spec.wheelR;
     }
-    const braking = (this.brake > 0.2 && Math.abs(this.fwd) > 0.3) || (this.throttle < 0 && this.fwd > 0.5) || this.mode === 'parked' && false;
+    const braking = (this.brake > 0.2 && Math.abs(this.fwd) > 0.3) || (this.throttle < 0 && this.fwd > 0.5);
     if (braking !== this.braking) {
       this.braking = braking;
-      m.tail.material = braking || this.mode === 'player' && this.brake > 0.1 ? tailBright : tailDim;
+      m.tail.material = braking || (this.mode === 'player' && this.brake > 0.1) ? tailBright : tailDim;
     }
     if (m.bar) {
       const on = this.siren;

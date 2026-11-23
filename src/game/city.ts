@@ -9,8 +9,9 @@ import { Batcher, box, cyl, finish, flat, sph } from './geo';
 import * as T from './textures';
 import { World } from './world';
 import {
-  BCtx, Door, Lot, MapRect, Place, PropSpawn, addBank, addBeachfront, addContainers, addCrane, addGas, addGunShop,
-  addHospital, addHouse, addLamp, addPark, addPaySpray, addPolice, addSilos, addTower, addTree, addWarehouse, addBuilding,
+  BCtx, Door, Lot, MapRect, Place, PropSpawn, addAirport, addBank, addBeachfront, addBoardwalkWheel, addBuilding,
+  addContainers, addCrane, addGas, addGunShop, addHospital, addHouse, addLamp, addLittleHavanaBlock, addPark,
+  addPaySpray, addPolice, addSilos, addStripMallBlock, addTower, addTree, addWarehouse, addWynwoodArtsBlock,
   beachProps, buildingInLot, splitLots,
 } from './buildings';
 import type { FacadeStyle } from './textures';
@@ -30,6 +31,7 @@ export interface CityData {
   rooms: Room[];
   update(dt: number, time: number): void;
   setNight(n: number): void;
+  setRtx(enabled: boolean): void;
   ocean: THREE.Mesh;
 }
 
@@ -39,30 +41,40 @@ export function buildCity(): CityData {
   const rng = new Rng(20240611);
   const batch = new Batcher();
   const chunk = (x: number, z: number) => `${Math.floor((x + WORLD_HALF + 200) / 420)}_${Math.floor((z + WORLD_HALF + 200) / 420)}`;
-  const ctx: BCtx = { b: batch, world, rng, mapRects: [], places: {}, props: [], chunk, collect: [], lampBulbs: [], doors: [] };
+  const ctx: BCtx = {
+    b: batch, world, rng, mapRects: [], places: {}, props: [], chunk, collect: [], lampBulbs: [], doors: [],
+    storeUsed: new Set<number>(), storeCursor: 0,
+  };
   const mapRects = ctx.mapRects;
 
-  // ---------------------------------------------------------------- PBR materials with bump relief
+  // ---------------------------------------------------------------- PBR & Simulated RTX materials
   const mats: Record<string, THREE.Material> = {};
   const facadeMats: THREE.MeshStandardMaterial[] = [];
   (['brick', 'office', 'glass', 'stone', 'apartment', 'industrial'] as FacadeStyle[]).forEach((s, i) => {
     const t = T.makeFacade(s, 100 + i * 17);
-    const m = new THREE.MeshStandardMaterial({
-      map: t.map, bumpMap: t.bump, bumpScale: s === 'glass' ? 0.04 : 0.16,
-      emissiveMap: t.emissive, emissive: 0xffffff, emissiveIntensity: 0, vertexColors: true,
-      roughness: s === 'glass' ? 0.16 : 0.82, metalness: s === 'glass' ? 0.58 : 0.04, envMapIntensity: s === 'glass' ? 1.4 : 0.65,
-    });
+    const m = s === 'glass'
+      ? new THREE.MeshPhysicalMaterial({
+        map: t.map, bumpMap: t.bump, bumpScale: 0.04,
+        emissiveMap: t.emissive, emissive: 0xffffff, emissiveIntensity: 0, vertexColors: true,
+        roughness: 0.1, metalness: 0.72, clearcoat: 1.0, clearcoatRoughness: 0.08, envMapIntensity: 1.85,
+      })
+      : new THREE.MeshStandardMaterial({
+        map: t.map, bumpMap: t.bump, bumpScale: 0.16,
+        emissiveMap: t.emissive, emissive: 0xffffff, emissiveIntensity: 0, vertexColors: true,
+        roughness: 0.8, metalness: 0.05, envMapIntensity: 0.75,
+      });
     mats['f_' + s] = m;
     facadeMats.push(m);
   });
   const st = T.makeStorefront(55);
-  mats.store = new THREE.MeshStandardMaterial({
+  mats.store = new THREE.MeshPhysicalMaterial({
     map: st.map, bumpMap: st.bump, bumpScale: 0.1,
-    emissiveMap: st.emissive, emissive: 0xffffff, emissiveIntensity: 0, vertexColors: true, roughness: 0.48, metalness: 0.12,
+    emissiveMap: st.emissive, emissive: 0xffffff, emissiveIntensity: 0, vertexColors: true,
+    roughness: 0.36, metalness: 0.16, clearcoat: 0.45, clearcoatRoughness: 0.18, envMapIntensity: 1.15,
   });
   facadeMats.push(mats.store as THREE.MeshStandardMaterial);
   const atlas = T.makeSignAtlas();
-  const signMat = new THREE.MeshStandardMaterial({ map: atlas, emissiveMap: atlas, emissive: 0xffffff, emissiveIntensity: 0.75, vertexColors: true, roughness: 0.55 });
+  const signMat = new THREE.MeshStandardMaterial({ map: atlas, emissiveMap: atlas, emissive: 0xffffff, emissiveIntensity: 0.85, vertexColors: true, roughness: 0.42 });
   mats.sign = signMat;
   signMat.userData.cast = false;
   const hwAtlas = T.makeHighwaySignAtlas();
@@ -76,39 +88,50 @@ export function buildCity(): CityData {
   mats.leaf = new THREE.MeshStandardMaterial({ map: leafAtlas, alphaTest: 0.45, side: THREE.DoubleSide, vertexColors: true, roughness: 0.88, metalness: 0 });
   mats.leaf.userData.cast = false;
   mats.emit = new THREE.MeshBasicMaterial({ vertexColors: true, toneMapped: false });
-  mats.glass = new THREE.MeshPhysicalMaterial({ vertexColors: true, color: 0x9fb8c4, roughness: 0.08, metalness: 0.22, transparent: true, opacity: 0.42, envMapIntensity: 1.3 });
+  mats.glass = new THREE.MeshPhysicalMaterial({ vertexColors: true, color: 0x9fb8c4, roughness: 0.06, metalness: 0.35, clearcoat: 1.0, clearcoatRoughness: 0.05, transparent: true, opacity: 0.44, envMapIntensity: 1.7 });
   mats.intWall = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.84 });
   mats.intCeil = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9 });
-  mats.intTrim = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.55 });
-  mats.intWood = new THREE.MeshStandardMaterial({ map: T.makeWood(), vertexColors: true, roughness: 0.52 });
-  mats.intAccent = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.38, metalness: 0.25 });
+  mats.intTrim = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.52 });
+  mats.intWood = new THREE.MeshStandardMaterial({ map: T.makeWood(), vertexColors: true, roughness: 0.46 });
+  mats.intAccent = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.32, metalness: 0.3 });
   mats.carpet = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.98 });
   mats.carpet2 = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.94 });
   const intTileTex = T.makeInteriorTile();
   intTileTex.repeat.set(6, 5);
-  mats.intTile = new THREE.MeshStandardMaterial({ map: intTileTex, vertexColors: true, roughness: 0.28, metalness: 0.06, envMapIntensity: 0.85 });
+  mats.intTile = new THREE.MeshPhysicalMaterial({ map: intTileTex, vertexColors: true, roughness: 0.22, metalness: 0.08, clearcoat: 0.45, clearcoatRoughness: 0.2, envMapIntensity: 1.05 });
   const marbleTex = T.makeInteriorMarble();
   marbleTex.repeat.set(4, 3);
-  mats.intMarble = new THREE.MeshStandardMaterial({ map: marbleTex, color: 0xf0eae0, vertexColors: true, roughness: 0.14, metalness: 0.16, envMapIntensity: 1.25 });
+  mats.intMarble = new THREE.MeshPhysicalMaterial({ map: marbleTex, color: 0xf0eae0, vertexColors: true, roughness: 0.1, metalness: 0.18, clearcoat: 0.85, clearcoatRoughness: 0.08, envMapIntensity: 1.55 });
   const gravel = T.makeGravel();
   mats.roof = new THREE.MeshStandardMaterial({ map: gravel, vertexColors: true, roughness: 0.98 });
-  mats.prop = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.82, metalness: 0.04 });
-  mats.propMetal = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.38, metalness: 0.65, envMapIntensity: 1.1 });
+  mats.prop = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.8, metalness: 0.05 });
+  mats.propMetal = new THREE.MeshPhysicalMaterial({ vertexColors: true, roughness: 0.26, metalness: 0.78, clearcoat: 0.35, clearcoatRoughness: 0.18, envMapIntensity: 1.45 });
   mats.red = new THREE.MeshBasicMaterial({ color: new THREE.Color(3, 0.15, 0.1), toneMapped: false });
-  const gSidewalk = new THREE.MeshStandardMaterial({ map: T.makeSidewalk(), bumpMap: T.makeSidewalkBump(), bumpScale: 0.08, vertexColors: true, roughness: 0.92 });
-  const gConc = new THREE.MeshStandardMaterial({ map: T.makeConcrete(), vertexColors: true, roughness: 0.92 });
-  const gAsph = new THREE.MeshStandardMaterial({ map: T.makeAsphaltLot(), vertexColors: true, roughness: 0.9 });
+  const gSidewalk = new THREE.MeshStandardMaterial({ map: T.makeSidewalk(), bumpMap: T.makeSidewalkBump(), bumpScale: 0.08, vertexColors: true, roughness: 0.88 });
+  const gConc = new THREE.MeshStandardMaterial({ map: T.makeConcrete(), vertexColors: true, roughness: 0.9 });
+  const gAsph = new THREE.MeshStandardMaterial({ map: T.makeAsphaltLot(), vertexColors: true, roughness: 0.86 });
   const gGrass = new THREE.MeshStandardMaterial({ map: T.makeGrass(), vertexColors: true, roughness: 0.98 });
   const gSand = new THREE.MeshStandardMaterial({ map: T.makeSand(), bumpMap: T.makeSandBump(), bumpScale: 0.14, vertexColors: true, roughness: 0.95 });
   const gWood = new THREE.MeshStandardMaterial({ map: T.makeWood(), vertexColors: true, roughness: 0.85 });
-  for (const m of [gSidewalk, gConc, gAsph, gGrass, gSand, gWood]) m.userData.cast = false;
-  Object.assign(mats, { g_sidewalk: gSidewalk, conc: gConc, g_asph: gAsph, g_grass: gGrass, g_sand: gSand, wood: gWood });
-  mats.water = new THREE.MeshStandardMaterial({ color: 0x2c7ea6, roughness: 0.08, metalness: 0.3, vertexColors: true, envMapIntensity: 1.5 });
-  mats.pool = new THREE.MeshStandardMaterial({ color: 0x35c4e6, roughness: 0.05, metalness: 0.1, emissive: 0x0a4a5a, emissiveIntensity: 0.6 });
+  const runwayMat = new THREE.MeshStandardMaterial({ map: T.makeRunwayTexture(), bumpMap: T.makeRoadBump(), bumpScale: 0.07, vertexColors: true, roughness: 0.78 });
+  for (const m of [gSidewalk, gConc, gAsph, gGrass, gSand, gWood, runwayMat]) m.userData.cast = false;
+  Object.assign(mats, { g_sidewalk: gSidewalk, conc: gConc, g_asph: gAsph, g_grass: gGrass, g_sand: gSand, wood: gWood, runway: runwayMat });
+  mats.water = new THREE.MeshPhysicalMaterial({ color: 0x2c7ea6, roughness: 0.06, metalness: 0.35, clearcoat: 0.9, clearcoatRoughness: 0.06, vertexColors: true, envMapIntensity: 1.8 });
+  mats.pool = new THREE.MeshPhysicalMaterial({ color: 0x35c4e6, roughness: 0.05, metalness: 0.12, clearcoat: 0.8, emissive: 0x0a4a5a, emissiveIntensity: 0.65 });
   mats.water.userData.cast = false; mats.pool.userData.cast = false;
   const roadBump = T.makeRoadBump();
-  const roadMat = new THREE.MeshStandardMaterial({ map: T.makeRoad(), bumpMap: roadBump, bumpScale: 0.09, vertexColors: true, roughness: 0.84 });
-  const interMat = new THREE.MeshStandardMaterial({ map: T.makeIntersection(), bumpMap: roadBump, bumpScale: 0.09, vertexColors: true, roughness: 0.84 });
+  const roadRough = T.makeRoadRoughness();
+  roadRough.repeat.set(1, 1);
+  const roadMat = new THREE.MeshPhysicalMaterial({
+    map: T.makeRoad(), bumpMap: roadBump, bumpScale: 0.09,
+    roughnessMap: roadRough, roughness: 0.86, metalness: 0.14,
+    clearcoat: 0.55, clearcoatRoughness: 0.16, envMapIntensity: 1.55, vertexColors: true,
+  });
+  const interMat = new THREE.MeshPhysicalMaterial({
+    map: T.makeIntersection(), bumpMap: roadBump, bumpScale: 0.09,
+    roughnessMap: roadRough, roughness: 0.86, metalness: 0.14,
+    clearcoat: 0.55, clearcoatRoughness: 0.16, envMapIntensity: 1.55, vertexColors: true,
+  });
   const xwMat = new THREE.MeshStandardMaterial({ map: T.makeCrosswalk(), vertexColors: true, roughness: 0.85, transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 });
   for (const m of [roadMat, interMat, xwMat]) m.userData.cast = false;
   Object.assign(mats, { road: roadMat, inter: interMat, xwalk: xwMat });
@@ -313,9 +336,10 @@ export function buildCity(): CityData {
           break;
         }
         case 'M': {
+          const dist: 'havana' | 'wynwood' | 'downtown' = bi <= 2 ? 'havana' : bi >= 6 ? 'wynwood' : 'downtown';
           for (const lot of lotsOf(rng.chance(0.5) ? 2 : 3, 2, 4)) {
             const style = styleMid();
-            buildingInLot(ctx, lot, { floors: rng.int(6, 14), style, store: true, fire: true, ad: rng.chance(0.25) });
+            buildingInLot(ctx, lot, { floors: rng.int(6, 14), style, store: true, fire: true, ad: rng.chance(0.25), district: dist });
           }
           break;
         }
@@ -323,6 +347,21 @@ export function buildCity(): CityData {
         case 'G':
         case 'T': {
           if (t === 'T') { addBeachfront(ctx, bx, bz, bi); break; }
+          if (t === 'C') {
+            // Hand-crafted Leonida / GTA-6 neighborhood diversity across commercial blocks!
+            if (bj <= 1 || (bj === 6 && bi === 5) || (bj === 7 && bi === 5)) {
+              addStripMallBlock(ctx, bx, bz);
+              break;
+            }
+            if (bi <= 2) {
+              addLittleHavanaBlock(ctx, bx, bz);
+              break;
+            }
+            if (bi >= 6) {
+              addWynwoodArtsBlock(ctx, bx, bz);
+              break;
+            }
+          }
           let lots: Lot[];
           if (t === 'G') {
             addGunShop(ctx, bx, bz);
@@ -331,12 +370,12 @@ export function buildCity(): CityData {
             ].map((l) => shift(l, bx, bz));
           } else lots = lotsOf(3, rng.chance(0.5) ? 2 : 3, 4);
           for (const lot of lots) {
-            if (rng.chance(0.08)) {
-              addTree(ctx, (lot.x0 + lot.x1) / 2, (lot.z0 + lot.z1) / 2, 0);
+            if (rng.chance(0.05)) {
+              addTree(ctx, (lot.x0 + lot.x1) / 2, (lot.z0 + lot.z1) / 2, 3);
               continue;
             }
             const style = rng.pick(['brick', 'apartment', 'stone', 'brick'] as FacadeStyle[]);
-            buildingInLot(ctx, lot, { floors: rng.int(2, 5), style, store: true, fire: true, ad: rng.chance(0.15) });
+            buildingInLot(ctx, lot, { floors: rng.int(2, 5), style, store: true, fire: true, ad: rng.chance(0.15), district: 'strip' });
           }
           break;
         }
@@ -396,8 +435,9 @@ export function buildCity(): CityData {
   buildInfrastructure(ctx);
   const rooms = buildInteriors(ctx);
 
-  // ---------------------------------------------------------------- beach / pier + tourist umbrellas
+  // ---------------------------------------------------------------- beach / pier + Vice Wheel + tourist umbrellas
   beachProps(ctx, PIER_X);
+  addBoardwalkWheel(ctx, 78, 560);
   buildBeachTouristZone(ctx, rng);
 
   // ---------------------------------------------------------------- street furniture along every road segment
@@ -548,8 +588,47 @@ export function buildCity(): CityData {
       adMat.emissiveIntensity = 0.22 + n * 0.9;
       const k = 0.35 + n * 3.3;
       bulbMat.color.setRGB(k, k * 0.88, k * 0.62);
-      poolMat.opacity = n * 0.52;
+      poolMat.opacity = n * 0.56;
       pools.visible = n > 0.04;
+    },
+    setRtx(enabled: boolean) {
+      // Toggle Simulated RTX wet-street reflections, high-gloss clearcoat & mirror facades
+      const cc = enabled ? 0.68 : 0.0;
+      const rEnv = enabled ? 1.85 : 0.45;
+      roadMat.clearcoat = cc;
+      roadMat.clearcoatRoughness = enabled ? 0.12 : 0.65;
+      roadMat.roughnessMap = enabled ? roadRough : null;
+      roadMat.roughness = enabled ? 0.82 : 0.9;
+      roadMat.metalness = enabled ? 0.18 : 0.02;
+      roadMat.envMapIntensity = rEnv;
+      roadMat.needsUpdate = true;
+      interMat.clearcoat = cc;
+      interMat.clearcoatRoughness = enabled ? 0.12 : 0.65;
+      interMat.roughnessMap = enabled ? roadRough : null;
+      interMat.roughness = enabled ? 0.82 : 0.9;
+      interMat.metalness = enabled ? 0.18 : 0.02;
+      interMat.envMapIntensity = rEnv;
+      interMat.needsUpdate = true;
+      const fGlass = mats.f_glass as THREE.MeshPhysicalMaterial;
+      if (fGlass) {
+        fGlass.clearcoat = enabled ? 1.0 : 0.0;
+        fGlass.roughness = enabled ? 0.08 : 0.28;
+        fGlass.envMapIntensity = enabled ? 2.1 : 0.7;
+      }
+      const pm = mats.propMetal as THREE.MeshPhysicalMaterial;
+      if (pm) {
+        pm.clearcoat = enabled ? 0.45 : 0.0;
+        pm.envMapIntensity = enabled ? 1.6 : 0.65;
+      }
+      const stM = mats.store as THREE.MeshPhysicalMaterial;
+      if (stM) {
+        stM.clearcoat = enabled ? 0.55 : 0.0;
+        stM.envMapIntensity = enabled ? 1.35 : 0.55;
+      }
+      if (ocean.material instanceof THREE.MeshStandardMaterial) {
+        ocean.material.roughness = enabled ? 0.06 : 0.22;
+        ocean.material.envMapIntensity = enabled ? 2.0 : 0.9;
+      }
     },
     update(dt: number, time: number) {
       void dt;
@@ -602,8 +681,11 @@ function buildBeachTouristZone(c: BCtx, rng: Rng) {
   }
 }
 
-/** Populates outer-map landmarks across the 10km x 10km world (Nova Keys Resort, Golden Dunes Oasis, North Observatory, East Port). */
+/** Populates outer-map landmarks across the 10km x 10km world (San Nova Intl Airport, Nova Keys Resort, Golden Dunes Oasis, North Observatory). */
 function buildOuterLandmarks(c: BCtx, rng: Rng) {
+  // 0. San Nova International Airport (Eastern Coastal Plains, x = 1220..2180, z = -410..-110)
+  addAirport(c);
+
   // 1. Nova Keys Resort Island (south across the cable-stayed ocean causeway)
   const isl = DECK.ISLAND;
   {

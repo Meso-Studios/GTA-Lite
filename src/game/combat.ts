@@ -73,11 +73,23 @@ export function castRay(g: Game, ox: number, oy: number, oz: number, dx: number,
   return best;
 }
 
-export function applyHit(g: Game, h: Hit, ox: number, oy: number, oz: number, dx: number, dy: number, dz: number, dmg: number, byPlayer: boolean) {
+export function applyHit(
+  g: Game,
+  h: Hit,
+  ox: number,
+  oy: number,
+  oz: number,
+  dx: number,
+  dy: number,
+  dz: number,
+  dmg: number,
+  byPlayer: boolean,
+  shotgun = false,
+) {
   const x = ox + dx * h.t, y = oy + dy * h.t, z = oz + dz * h.t;
   switch (h.kind) {
     case 'ped':
-      h.ped!.hit(g, dmg, dx, dz, byPlayer, h.head);
+      h.ped!.hit(g, dmg, dx, dz, byPlayer, h.head, { shotgun });
       if (h.ped!.dead) { h.ped!.rvx += dx * 2; h.ped!.rvz += dz * 2; }
       break;
     case 'veh':
@@ -158,7 +170,7 @@ export function playerFire(g: Game) {
     const l = Math.hypot(dx, dy, dz);
     dx /= l; dy /= l; dz /= l;
     const h = castRay(g, ox, oy, oz, dx, dy, dz, w.range, p.vehicle, null);
-    applyHit(g, h, ox, oy, oz, dx, dy, dz, w.dmg, true);
+    applyHit(g, h, ox, oy, oz, dx, dy, dz, w.dmg, true, w.pellets > 1);
     if (i < 3 || w.pellets === 1) g.fx.tracer(mx, my, mzz, ox + dx * h.t, oy + dy * h.t, oz + dz * h.t);
   }
   const silenced = 'silenced' in w && w.silenced;
@@ -188,7 +200,7 @@ export function playerMelee(g: Game) {
     const d = Math.hypot(dx, dz);
     if (d > reach || (dx * fx + dz * fz) / (d || 1) < cone) continue;
     const l = d || 1;
-    o.hit(g, w.dmg + Math.random() * 6, dx / l, dz / l, true);
+    o.hit(g, w.dmg + Math.random() * 6, dx / l, dz / l, true, false, { katana: p.weapon === 'katana' });
     o.vx += (dx / l) * (p.weapon === 'katana' ? 4.2 : 3);
     o.vz += (dz / l) * (p.weapon === 'katana' ? 4.2 : 3);
     if (o.dead) { o.rvx = (dx / l) * 5.5; o.rvz = (dz / l) * 5.5; }
@@ -231,8 +243,10 @@ export function explode(g: Game, x: number, y: number, z: number, radius: number
     const k = 1 - d / R;
     const l = d || 1;
     if (p.dead) { p.rvx += (dx / l) * k * 10; p.rvz += (dz / l) * k * 10; p.rvy = 4 * k; p.landed = false; continue; }
-    p.hp -= dmg * k * 1.3;
-    if (p.hp <= 0) p.kill(g, (dx / l) * 12 * k + 2, 6 + 6 * k, (dz / l) * 12 * k, byPlayer);
+    const edmg = dmg * k * 1.35;
+    p.hp -= edmg;
+    g.fx.bloodBurst(p.x, p.y + 1.1, p.z, dx / l, 0.8, dz / l, edmg, false, true, false, g.groundAt(p.x, p.z));
+    if (p.hp <= 0) p.kill(g, (dx / l) * 14 * k + 2, 7.2 + 6.5 * k, (dz / l) * 14 * k, byPlayer, 3.6);
     else p.flee(g, x, z, 10);
   }
   for (const v of g.vehicles) {

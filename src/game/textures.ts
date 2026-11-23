@@ -1,6 +1,7 @@
 // Procedural PBR canvas textures with paired bump/roughness maps (100% runtime, zero external assets).
 import * as THREE from 'three';
 import { Rng } from './config';
+import { STORES, getStoreIndexByName } from './stores';
 
 type Ctx = CanvasRenderingContext2D;
 
@@ -448,6 +449,77 @@ export function makeRoadBump(seed = 55) {
   return toTex(c, { srgb: false, aniso: 8 });
 }
 
+/** Procedural wet-puddle & polished asphalt roughness map for Simulated RTX street reflections. */
+export function makeRoadRoughness(seed = 58) {
+  const rng = new Rng(seed);
+  const S = 512;
+  const [c, d] = mk(S, S);
+  // Base dry asphalt roughness (~0.84 -> 214)
+  d.fillStyle = '#d4d4d4';
+  d.fillRect(0, 0, S, S);
+  addNoise(d, S, S, 26, rng);
+  // Tire polish tracks slightly glossier (~0.58)
+  for (const x of [90, 180, 330, 420]) {
+    const g = d.createLinearGradient(x - 36, 0, x + 36, 0);
+    g.addColorStop(0, 'rgba(145,145,145,0)');
+    g.addColorStop(0.5, 'rgba(135,135,135,0.45)');
+    g.addColorStop(1, 'rgba(145,145,145,0)');
+    d.fillStyle = g;
+    d.fillRect(x - 36, 0, 72, S);
+  }
+  // Organic glossy rain puddles / RTX wet reflection patches (roughness ~0.08 -> #161616)
+  for (let k = 0; k < 18; k++) {
+    const px = rng.range(35, S - 35);
+    const py = rng.range(35, S - 35);
+    const rx = rng.range(26, 78);
+    const ry = rng.range(18, 62);
+    const rot = rng.range(0, Math.PI);
+    d.save();
+    d.translate(px, py);
+    d.rotate(rot);
+    const g = d.createRadialGradient(0, 0, rx * 0.15, 0, 0, rx);
+    g.addColorStop(0, 'rgba(18,18,18,0.92)');
+    g.addColorStop(0.65, 'rgba(32,32,32,0.75)');
+    g.addColorStop(1, 'rgba(210,210,210,0)');
+    d.fillStyle = g;
+    d.scale(1, ry / rx);
+    d.beginPath();
+    d.arc(0, 0, rx, 0, Math.PI * 2);
+    d.fill();
+    d.restore();
+  }
+  return toTex(c, { srgb: false, aniso: 8 });
+}
+
+/** Crisp airport asphalt runway texture with painted edge lines and centerline dashes. */
+export function makeRunwayTexture(seed = 88) {
+  const rng = new Rng(seed);
+  const W = 512, H = 512;
+  const [c, d] = mk(W, H);
+  d.fillStyle = '#2d3036';
+  d.fillRect(0, 0, W, H);
+  addNoise(d, W, H, 24, rng);
+  // Rubber tire skid marks down the center
+  for (let k = 0; k < 22; k++) {
+    d.fillStyle = 'rgba(14,15,18,0.22)';
+    const x = W / 2 + rng.range(-70, 70);
+    d.fillRect(x, 0, rng.range(4, 14), H);
+  }
+  // Solid white runway side stripes
+  d.fillStyle = '#eef2f6';
+  d.fillRect(22, 0, 10, H);
+  d.fillRect(W - 32, 0, 10, H);
+  // Bold white centerline dashes
+  d.fillRect(W / 2 - 6, 40, 12, 220);
+  d.fillRect(W / 2 - 6, 320, 12, 160);
+  // Touchdown aim bars
+  d.fillStyle = 'rgba(240,244,248,0.75)';
+  for (const s of [-1, 1]) {
+    d.fillRect(W / 2 + s * 115 - 12, 80, 24, 140);
+  }
+  return toTex(c, { aniso: 12 });
+}
+
 export function makeIntersection(seed = 6) {
   const rng = new Rng(seed);
   const S = 512;
@@ -709,53 +781,90 @@ export function makeContactShadow() {
   return toTex(c, { repeat: false, aniso: 1 });
 }
 
-// ---------------------------------------------------------------- neon sign atlas (4 cols x 8 rows, 256x64 cells)
-export const SIGN_NAMES = [
-  'PIZZA', 'BANK', 'HOTEL', 'DINER', '24H MART', 'CAFE', 'BARBER', 'BURGERS',
-  'SUSHI BAR', 'PHARMACY', 'TACOS', 'GYM', 'ARCADE', 'RECORDS', 'LIQUOR', 'NOODLES',
-  'POLICE', 'HOSPITAL', 'AMMO', 'PAY N SPRAY', 'GAS', 'MOTEL', 'CINEMA', 'BOOKS',
-  'TATTOO', 'COFFEE', 'PUB', 'LAUNDRY', 'CLUB NOVA', 'AUTO PARTS', 'SAN NOVA', 'CASINO',
-];
-const SIGN_COLORS = ['#ff3d8b', '#31e8ff', '#ffd23d', '#6dff6a', '#ff7a2a', '#b46bff', '#ffffff', '#ff4040'];
+// ---------------------------------------------------------------- 320+ GTA-6 Store Sign Atlas (8 cols x 42 rows, 2048x2048)
+const SIGN_COLS = 8;
+const SIGN_ROWS = 42;
+export const SIGN_NAMES: string[] = STORES.map((s) => s.name);
+
 export function makeSignAtlas() {
-  const [c, d] = mk(1024, 512);
-  const rng = new Rng(21);
+  const W = 2048, H = 2048;
+  const cellW = W / SIGN_COLS; // 256
+  const cellH = H / SIGN_ROWS; // ~48.76
+  const [c, d] = mk(W, H);
   d.fillStyle = '#07070b';
-  d.fillRect(0, 0, 1024, 512);
-  SIGN_NAMES.forEach((name, idx) => {
-    const col = idx % 4, row = Math.floor(idx / 4);
-    const x = col * 256, y = row * 64;
-    let color = SIGN_COLORS[idx % SIGN_COLORS.length];
-    if (name === 'POLICE') color = '#5aa0ff';
-    if (name === 'HOSPITAL') color = '#ff5a5a';
-    if (name === 'BANK') color = '#ffe066';
-    if (name === 'AMMO') color = '#ff4040';
-    d.fillStyle = '#14141c';
-    d.fillRect(x + 4, y + 4, 248, 56);
-    d.strokeStyle = color;
-    d.lineWidth = 3;
-    d.shadowColor = color;
-    d.shadowBlur = 10;
-    d.strokeRect(x + 7, y + 7, 242, 50);
-    d.fillStyle = color;
-    let size = 38;
-    d.font = `bold ${size}px Impact, "Arial Black", sans-serif`;
-    while (d.measureText(name).width > 215 && size > 14) {
-      size -= 2;
-      d.font = `bold ${size}px Impact, "Arial Black", sans-serif`;
+  d.fillRect(0, 0, W, H);
+  STORES.forEach((store, idx) => {
+    const col = idx % SIGN_COLS;
+    const row = Math.floor(idx / SIGN_COLS);
+    const x = col * cellW;
+    const y = row * cellH;
+    // Rich style-specific sign backing & framing
+    d.fillStyle = store.bg;
+    d.fillRect(x + 2, y + 2, cellW - 4, cellH - 4);
+    if (store.style === 'deco') {
+      // Art Deco pastel horizontal trim stripes
+      d.fillStyle = store.accent;
+      d.fillRect(x + 6, y + 5, cellW - 12, 3);
+      d.fillRect(x + 6, y + cellH - 8, cellW - 12, 3);
+      d.strokeStyle = store.fg;
+      d.lineWidth = 2;
+      d.strokeRect(x + 4, y + 4, cellW - 8, cellH - 8);
+    } else if (store.style === 'luxury') {
+      // Gold hairline double border
+      d.strokeStyle = store.accent;
+      d.lineWidth = 2;
+      d.strokeRect(x + 5, y + 5, cellW - 10, cellH - 10);
+      d.strokeStyle = 'rgba(255,235,165,0.45)';
+      d.lineWidth = 1;
+      d.strokeRect(x + 9, y + 8, cellW - 18, cellH - 16);
+    } else if (store.style === 'bodega') {
+      // Warm storefront banner top bar + bold frame
+      d.fillStyle = store.accent;
+      d.fillRect(x + 3, y + 3, cellW - 6, 6);
+      d.strokeStyle = store.fg;
+      d.lineWidth = 2;
+      d.strokeRect(x + 4, y + 4, cellW - 8, cellH - 8);
+    } else if (store.style === 'diner') {
+      // Retro chrome checkerboard corners + neon outline
+      d.strokeStyle = store.accent;
+      d.lineWidth = 2.5;
+      d.strokeRect(x + 5, y + 5, cellW - 10, cellH - 10);
+      d.fillStyle = store.fg;
+      d.fillRect(x + 8, y + cellH / 2 - 3, 6, 6);
+      d.fillRect(x + cellW - 14, y + cellH / 2 - 3, 6, 6);
+    } else {
+      // Neon / retail glowing border
+      d.strokeStyle = store.fg;
+      d.lineWidth = 2.5;
+      d.strokeRect(x + 5, y + 5, cellW - 10, cellH - 10);
+    }
+    // Crisp auto-fitted store typography
+    d.fillStyle = store.fg;
+    const fontFamily = store.style === 'luxury'
+      ? 'Georgia, "Times New Roman", serif'
+      : store.style === 'deco'
+        ? '"Trebuchet MS", Arial, sans-serif'
+        : 'Impact, "Arial Black", sans-serif';
+    let size = store.style === 'luxury' ? 23 : 27;
+    d.font = `bold ${size}px ${fontFamily}`;
+    while (d.measureText(store.name).width > cellW - 26 && size > 11) {
+      size -= 1;
+      d.font = `bold ${size}px ${fontFamily}`;
     }
     d.textAlign = 'center';
     d.textBaseline = 'middle';
-    d.fillText(name, x + 128, y + 33);
-    d.shadowBlur = 0;
-    void rng;
+    d.fillText(store.name, x + cellW * 0.5, y + cellH * 0.53);
   });
-  return toTex(c, { repeat: false });
+  return toTex(c, { repeat: false, aniso: 8 });
 }
-export function signUV(name: string): [number, number, number, number] {
-  const idx = Math.max(0, SIGN_NAMES.indexOf(name));
-  const col = idx % 4, row = Math.floor(idx / 4);
-  return [col / 4, 1 - (row + 1) / 8, 0.25, 0.125];
+
+export function signUV(nameOrIdx: string | number): [number, number, number, number] {
+  const idx = typeof nameOrIdx === 'number'
+    ? ((nameOrIdx % STORES.length) + STORES.length) % STORES.length
+    : getStoreIndexByName(nameOrIdx);
+  const col = idx % SIGN_COLS;
+  const row = Math.floor(idx / SIGN_COLS);
+  return [col / SIGN_COLS, 1 - (row + 1) / SIGN_ROWS, 1 / SIGN_COLS, 1 / SIGN_ROWS];
 }
 
 // highway interstate gantry signs (2x2 atlas)

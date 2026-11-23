@@ -20,7 +20,7 @@ import { FX } from './fx';
 import { GameAudio } from './audio';
 import { World, PushOut } from './world';
 import { PLAYER_LOOK, TARGET_LOOK, GunKind, animateHuman, createHuman, gangLook, guardLook, HumanRig, setWeapon, civilianLook } from './humans';
-import { VehicleType, beamMaterial, headMat, tailDim, sirenRed, sirenBlue, paintMat } from './vehicles';
+import { VehicleType, beamMaterial, headMat, tailDim, sirenRed, sirenBlue, paintMat, setVehicleRtx } from './vehicles';
 import { castRay, explode as doExplode, npcShoot as doNpcShoot, playerFire, playerMelee } from './combat';
 import { MapRenderer, buildRoute } from './minimap';
 import { SpawnOpts, deployCops as doDeploy, removeVehicle, spawnVehicle as doSpawnVehicle, streamCrowds, streamParked, streamPeds, streamTraffic, updatePolice } from './spawn';
@@ -48,6 +48,11 @@ export interface HudState {
   aiming: boolean; crosshair: boolean; hurt: number; fps: number; mapOpen: boolean; paused: boolean; locked: boolean; scope: boolean; allies: number; recruitable: number; grenades: number; indoor: string | null;
   nextMission: string | null;
   crouching: boolean; sliding: boolean; district: string; surface: string; sandGrip: boolean; coords: [number, number];
+  aircraft: { altitude: number; airspeed: number; throttle: number; stalling: boolean; onGround: boolean } | null;
+  mobileMode: boolean;
+  rtxEnabled: boolean;
+  goreEnabled: boolean;
+  storeCount: number;
 }
 export interface GameEvents {
   onHud(h: HudState): void;
@@ -102,6 +107,8 @@ export class Game {
   composer: EffectComposer | null = null;
   bloom: UnrealBloomPass | null = null;
   sun: THREE.DirectionalLight;
+  bounceLight: THREE.DirectionalLight;
+  neonLight: THREE.PointLight;
   hemi: THREE.HemisphereLight;
   sky: THREE.Mesh;
   skyMat: THREE.ShaderMaterial;
@@ -110,6 +117,16 @@ export class Game {
   projM = new THREE.Matrix4();
   container: HTMLElement;
   quality: Quality;
+  mobileMode = false;
+  rtxEnabled = true;
+  goreEnabled = true;
+  recoilT = 0;
+  prevPlayerYaw = Math.PI / 2;
+  touch = {
+    moveX: 0, moveY: 0, lookDx: 0, lookDy: 0,
+    sprint: false, fire: false, aim: false, crouch: false,
+    handbrake: false, gas: 0, brake: 0, pitch: 0, throttle: 0, horn: false,
+  };
   // ------------------------------------------------------------- world
   city: CityData;
   world: World;
@@ -235,7 +252,7 @@ export class Game {
       this.composer.addPass(new OutputPass());
     }
 
-    // upgraded 3-tone atmospheric lighting rig
+    // upgraded 3-tone atmospheric + Simulated RTX multi-bounce GI lighting rig
     this.hemi = new THREE.HemisphereLight(0xbcd8ff, 0x7a6852, 0.95);
     this.scene.add(this.hemi);
     this.sun = new THREE.DirectionalLight(0xfff4e0, 3.2);
@@ -246,6 +263,12 @@ export class Game {
     this.sun.shadow.bias = -0.00035;
     this.sun.shadow.normalBias = 0.3;
     this.scene.add(this.sun, this.sun.target);
+    // Simulated RTX bounce/rim directional fill light (cool sky/ocean rim + warm ground bounce)
+    this.bounceLight = new THREE.DirectionalLight(0x7cc8ff, 0.72);
+    this.scene.add(this.bounceLight, this.bounceLight.target);
+    // Player-local neon bounce PointLight for vibrant Vice/Leonida wet-street reflections at dusk/night
+    this.neonLight = new THREE.PointLight(0xff4db8, 0, 52, 1.5);
+    this.scene.add(this.neonLight);
     for (let i = 0; i < 2; i++) {
       const s = new THREE.SpotLight(0xfff0cf, 0, 75, 0.5, 0.6, 1.4);
       this.scene.add(s, s.target);
@@ -283,6 +306,7 @@ export class Game {
     }
     this.spawnAllies();
     this.spawnHighwayCars();
+    this.spawnAircraft();
     // markers
     for (let i = 0; i < 10; i++) {
       const g = new THREE.Group();
@@ -416,6 +440,7 @@ export class Game {
   onLockError = () => { this.lockFailed = true; };
   onCanvasClick = () => {
     this.audio.init();
+    if (this.mobileMode) return;
     if (this.state === 'playing' && !this.input.locked) this.requestLock();
   };
   onResize = () => {
@@ -426,10 +451,89 @@ export class Game {
     this.camera.updateProjectionMatrix();
   };
   requestLock() {
+    if (this.mobileMode) return;
     try {
       const p = (this.renderer.domElement as any).requestPointerLock?.();
       if (p && p.catch) p.catch(() => {});
     } catch { /* ignore */ }
+  }
+
+  setMobileMode(enabled: boolean) {
+    this.mobileMode = enabled;
+    if (enabled && document.pointerLockElement) document.exitPointerLock();
+    this.touch.moveX = 0; this.touch.moveY = 0;
+    this.touch.fire = false; this.touch.aim = false;
+    this.touch.gas = 0; this.touch.brake = 0; this.touch.pitch = 0; this.touch.throttle = 0;
+    this.emitHud(true);
+  }
+  setRtxEnabled(enabled: boolean) {
+    this.rtxEnabled = enabled;
+    this.city.setRtx(enabled);
+    setVehicleRtx(enabled);
+    if (this.bloom) {
+      this.bloom.strength = this.interior ? 0.16 : enabled ? 0.54 : 0.28;
+    }
+    this.applyTime(0);
+    this.emitHud(true);
+  }
+  setGoreEnabled(enabled: boolean) {
+    this.goreEnabled = enabled;
+    this.fx.setGoreEnabled(enabled);
+    this.emitHud(true);
+  }
+  setTouchMove(x: number, y: number) {
+    this.touch.moveX = clamp(x, -1, 1);
+    this.touch.moveY = clamp(y, -1, 1);
+  }
+  addTouchLook(dx: number, dy: number) {
+    this.touch.lookDx += dx;
+    this.touch.lookDy += dy;
+    this.lastMouse = this.time;
+  }
+  setTouchAction(
+    action:
+      | 'fire' | 'aim' | 'sprint' | 'crouch' | 'jump' | 'interact' | 'scope' | 'horn'
+      | 'gas' | 'brake' | 'handbrake' | 'pitchUp' | 'pitchDown' | 'thrUp' | 'thrDown'
+      | 'prevWeapon' | 'nextWeapon' | 'radio',
+    down: boolean,
+  ) {
+    this.audio.init();
+    switch (action) {
+      case 'fire': this.touch.fire = down; break;
+      case 'aim': this.touch.aim = down; break;
+      case 'sprint': this.touch.sprint = down; break;
+      case 'crouch':
+        this.touch.crouch = down;
+        if (down) this.input.pressed.add('KeyC');
+        break;
+      case 'jump':
+        if (down) { this.input.pressed.add('Space'); this.input.keys.add('Space'); }
+        else this.input.keys.delete('Space');
+        break;
+      case 'interact':
+        if (down) this.interact();
+        break;
+      case 'scope':
+        if (down && !this.player.vehicle) this.input.pressed.add('KeyG');
+        break;
+      case 'horn': this.touch.horn = down; break;
+      case 'gas': this.touch.gas = down ? 1 : 0; break;
+      case 'brake': this.touch.brake = down ? 1 : 0; break;
+      case 'handbrake': this.touch.handbrake = down; break;
+      case 'pitchUp': this.touch.pitch = down ? 1 : 0; break;
+      case 'pitchDown': this.touch.pitch = down ? -1 : 0; break;
+      case 'thrUp': this.touch.throttle = down ? 1 : 0; break;
+      case 'thrDown': this.touch.throttle = down ? -1 : 0; break;
+      case 'prevWeapon': if (down && !this.player.vehicle) this.cycleWeapon(-1); break;
+      case 'nextWeapon': if (down && !this.player.vehicle) this.cycleWeapon(1); break;
+      case 'radio':
+        if (down && this.player.vehicle) {
+          this.radioStation = (this.radioStation + 1) % this.audio.stations.length;
+          this.audio.setStation(this.radioStation);
+          this.emitHud(true);
+        }
+        break;
+    }
   }
 
   togglePause() { this.setPaused(this.state === 'playing'); }
@@ -438,6 +542,7 @@ export class Game {
     if (p) {
       this.state = 'paused';
       this.input.fire = false; this.input.aim = false;
+      this.touch.fire = false; this.touch.aim = false;
       if (document.pointerLockElement) document.exitPointerLock();
       this.ev.onLock(false);
     } else {
@@ -526,7 +631,10 @@ export class Game {
     return clamp((dx * rx + dz * rz) / (Math.hypot(dx, dz) + 5), -0.8, 0.8);
   }
   shake(a: number) { this.shakeAmt = Math.max(this.shakeAmt, a); }
-  kick(a: number) { this.camPitch = clamp(this.camPitch + a, -0.5, 1.3); }
+  kick(a: number) {
+    this.camPitch = clamp(this.camPitch + a, -0.5, 1.3);
+    this.recoilT = Math.min(1, this.recoilT + 0.72);
+  }
   addPed(p: Ped) { this.peds.push(p); this.scene.add(p.rig.root); }
   removePed(p: Ped) {
     const i = this.peds.indexOf(p);
@@ -729,7 +837,7 @@ export class Game {
     this.progress = null;
     this.subQ = this.subQ.filter((q) => !q.after);
     for (const v of this.vehicles.slice()) {
-      if (!v.mission) continue;
+      if (!v.mission || v.spec.isAircraft) continue;
       v.mission = false;
       if (v.mode === 'idle' && !v.hasDriver && v !== this.player.vehicle && Math.hypot(v.x - this.player.x, v.z - this.player.z) > 80) removeVehicle(this, v);
       else if (v.mode === 'racer') { v.mode = 'ai'; v.ai.route = null; v.resnap(this); }
@@ -909,9 +1017,22 @@ export class Game {
     this.sun.position.set(cx + dir.x * 220, dir.y * 220 + 20, cz + dir.z * 220);
     this.sun.target.position.set(cx, 0, cz);
     this.sun.color.copy(useSun ? sunC : new THREE.Color(0x8fa8ff));
-    this.sun.intensity = useSun ? day * 3.1 * (0.35 + 0.65 * smooth(0, 0.35, elev)) : this.night * 0.45;
-    if (!this.interior) this.renderer.toneMappingExposure = lerp(1.25, 0.92, day);
-    (this.scene as any).environmentIntensity = 0.12 + day * 0.9;
+    this.sun.intensity = useSun ? day * (this.rtxEnabled ? 3.35 : 3.0) * (0.35 + 0.65 * smooth(0, 0.35, elev)) : this.night * 0.45;
+    // Simulated RTX multi-bounce GI rim light + dynamic Vice/Leonida neon street glow
+    this.bounceLight.position.set(cx - dir.x * 160, 48, cz - dir.z * 160);
+    this.bounceLight.target.position.set(cx, 0, cz);
+    this.bounceLight.color.set(0x38bdf8).lerp(new THREE.Color(0xffb580), dusk * 0.65 + (1 - this.night) * 0.25);
+    this.bounceLight.intensity = this.rtxEnabled ? (0.48 + day * 0.44 + dusk * 0.35) : 0.12;
+    if (this.rtxEnabled && !this.interior) {
+      const neonPhase = (Math.sin(this.time * 0.45 + this.player.x * 0.02) + 1) * 0.5;
+      this.neonLight.color.set(0xff3da0).lerp(new THREE.Color(0x22d3ee), neonPhase);
+      this.neonLight.position.set(this.player.x, this.player.y + 4.8, this.player.z);
+      this.neonLight.intensity = (this.night * 6.5 + dusk * 2.8);
+    } else {
+      this.neonLight.intensity = 0;
+    }
+    if (!this.interior) this.renderer.toneMappingExposure = lerp(this.rtxEnabled ? 1.28 : 1.18, this.rtxEnabled ? 0.98 : 0.92, day);
+    (this.scene as any).environmentIntensity = (this.rtxEnabled ? 0.22 : 0.1) + day * (this.rtxEnabled ? 1.15 : 0.8);
     this.city.setNight(this.night);
     headMat.emissiveIntensity = 0.2 + this.night * 3.2;
     tailDim.emissiveIntensity = 0.2 + this.night * 1.2;
@@ -948,19 +1069,19 @@ export class Game {
     if (k.pressed.has('KeyZ')) this.cycleWeapon(-1);
     const meleeW = isMeleeWeapon(p.weapon);
     if (this.scope && (meleeW || !!p.vehicle)) this.scope = false;
-    const aiming = (k.aim || this.playerFiring || this.scope) && !meleeW;
+    const aiming = (k.aim || this.touch.aim || this.playerFiring || this.scope) && !meleeW;
 
     // camera look
     this.lookInput(dt);
-    const ix = (k.keys.has('KeyD') ? 1 : 0) - (k.keys.has('KeyA') ? 1 : 0);
-    const iz = (k.keys.has('KeyW') ? 1 : 0) - (k.keys.has('KeyS') ? 1 : 0);
+    const ix = clamp(((k.keys.has('KeyD') ? 1 : 0) - (k.keys.has('KeyA') ? 1 : 0)) + this.touch.moveX, -1, 1);
+    const iz = clamp(((k.keys.has('KeyW') ? 1 : 0) - (k.keys.has('KeyS') ? 1 : 0)) + this.touch.moveY, -1, 1);
     const sY = Math.sin(this.camYaw), cY = Math.cos(this.camYaw);
     let mx = sY * iz - cY * ix, mz = cY * iz + sY * ix;
     const ml = Math.hypot(mx, mz);
-    if (ml > 0) { mx /= ml; mz /= ml; }
+    if (ml > 1) { mx /= ml; mz /= ml; }
 
-    const sprint = k.keys.has('ShiftLeft') || k.keys.has('ShiftRight');
-    const crouch = k.keys.has('ControlLeft') || k.keys.has('KeyC');
+    const sprint = k.keys.has('ShiftLeft') || k.keys.has('ShiftRight') || this.touch.sprint;
+    const crouch = k.keys.has('ControlLeft') || k.keys.has('KeyC') || this.touch.crouch;
     const crouchPressed = k.pressed.has('ControlLeft') || k.pressed.has('KeyC');
     const gh = this.groundAt(p.x, p.z, p.y);
     const sandF = this.interior ? 0 : sandFactorAt(p.x, p.z, p.y);
@@ -968,8 +1089,8 @@ export class Game {
 
     p.move.vx = p.vx; p.move.vy = p.vy; p.move.vz = p.vz; p.move.y = p.y; p.move.onGround = p.onGround;
     const mRes = stepMovementState(p.move, {
-      wishX: ml > 0 ? mx : 0,
-      wishZ: ml > 0 ? mz : 0,
+      wishX: ml > 0.05 ? mx : 0,
+      wishZ: ml > 0.05 ? mz : 0,
       sprint,
       crouch,
       crouchPressed,
@@ -1008,7 +1129,9 @@ export class Game {
     // vehicles block the player
     for (const v of this.vehicles) {
       const dx = p.x - v.x, dz = p.z - v.z;
-      if (dx * dx + dz * dz > 20) continue;
+      const maxR = v.spec.isAircraft ? 64 : 20;
+      if (dx * dx + dz * dz > maxR) continue;
+      if (v.spec.isAircraft && Math.abs(p.y - v.y) > 4) continue;
       const c = v.circles();
       for (let i = 0; i < c.length; i += 3) {
         const ox = p.x - c[i], oz = p.z - c[i + 1];
@@ -1029,19 +1152,28 @@ export class Game {
       }
     }
     // facing
+    const prevYaw = this.prevPlayerYaw;
     const moving = horizSp > 0.4;
     if (aiming) p.yaw = dampAngle(p.yaw, this.camYaw, 16, dt);
     else if (moving) p.yaw = dampAngle(p.yaw, Math.atan2(p.vx, p.vz), 12, dt);
-    // fire
+    let dyaw = p.yaw - prevYaw;
+    while (dyaw > Math.PI) dyaw -= Math.PI * 2;
+    while (dyaw < -Math.PI) dyaw += Math.PI * 2;
+    const turnRate = clamp(dyaw / Math.max(dt, 0.008), -5, 5);
+    this.prevPlayerYaw = p.yaw;
+
+    // fire (supports mouse and mobile fire button)
     p.fireT -= dt;
+    this.recoilT = Math.max(0, this.recoilT - dt * 5.2);
     p.punchT = p.punchT > 0 ? p.punchT + dt * 2.8 : 0;
     if (p.punchT > 1) p.punchT = 0;
-    if (k.fire && p.fireT <= 0 && this.input.locked !== undefined) {
+    const firingNow = k.fire || this.touch.fire;
+    if (firingNow && p.fireT <= 0 && this.input.locked !== undefined) {
       const w = WEAPONS[p.weapon];
       if (meleeW) playerMelee(this);
       else if (w.auto || !this.fireHeld) playerFire(this);
     }
-    this.fireHeld = k.fire;
+    this.fireHeld = firingNow;
     // animate
     p.rig.root.position.set(p.x, p.y - sandFoot.sinkY, p.z);
     p.rig.root.rotation.set(0, p.yaw, 0);
@@ -1055,6 +1187,9 @@ export class Game {
       crouch: p.move.crouching,
       slide: mRes.sliding,
       airborne: !p.onGround,
+      recoil: this.recoilT,
+      turnRate,
+      flinch: p.hurtT > 0.25 ? Math.min(1, p.hurtT) : 0,
     });
   }
   fireHeld = false;
@@ -1064,11 +1199,17 @@ export class Game {
   lookInput(dt: number) {
     const k = this.input;
     const sens = 0.0024 * (this.scope ? 0.32 : 1);
-    if (k.locked) {
+    if (this.touch.lookDx || this.touch.lookDy) {
+      this.camYaw -= this.touch.lookDx * sens * 1.45;
+      this.camPitch = clamp(this.camPitch + this.touch.lookDy * sens * 1.25, -0.55, 1.3);
+      this.touch.lookDx = 0;
+      this.touch.lookDy = 0;
+    }
+    if (k.locked && !this.mobileMode) {
       this.camYaw -= k.dx * sens;
       this.camPitch = clamp(this.camPitch + k.dy * sens, -0.55, 1.3);
       if (k.dx || k.dy) this.lastMouse = this.time;
-    } else if (this.state === 'playing' && this.lockFailed) {
+    } else if (this.state === 'playing' && this.lockFailed && !this.mobileMode) {
       // fallback: edge steering when pointer lock is unavailable
       const W = window.innerWidth, H = window.innerHeight;
       const ox = (k.mx - W / 2) / (W / 2), oy = (k.my - H / 2) / (H / 2);
@@ -1079,8 +1220,10 @@ export class Game {
     const ar = 1.9 * dt;
     if (k.keys.has('ArrowLeft')) { this.camYaw += ar; this.lastMouse = this.time; }
     if (k.keys.has('ArrowRight')) { this.camYaw -= ar; this.lastMouse = this.time; }
-    if (k.keys.has('ArrowUp')) this.camPitch = clamp(this.camPitch - ar * 0.6, -0.55, 1.3);
-    if (k.keys.has('ArrowDown')) this.camPitch = clamp(this.camPitch + ar * 0.6, -0.55, 1.3);
+    if (!this.player.vehicle?.spec.isAircraft) {
+      if (k.keys.has('ArrowUp')) this.camPitch = clamp(this.camPitch - ar * 0.6, -0.55, 1.3);
+      if (k.keys.has('ArrowDown')) this.camPitch = clamp(this.camPitch + ar * 0.6, -0.55, 1.3);
+    }
   }
 
   syncDeadPlayer() { /* body handled as a ragdoll ped */ }
@@ -1114,6 +1257,11 @@ export class Game {
     let best: Vehicle | null = null, bd = 3.2;
     for (const v of this.vehicles) {
       if (v.mode === 'wreck') continue;
+      if (v.spec.isAircraft) {
+        const d = Math.hypot(p.x - v.x, p.z - v.z);
+        if (d < 7.2 && d < bd + 4.5) { bd = d; best = v; }
+        continue;
+      }
       const c = v.circles();
       for (let i = 0; i < c.length; i += 3) {
         const d = Math.hypot(p.x - c[i], p.z - c[i + 1]) - c[i + 2];
@@ -1188,7 +1336,10 @@ export class Game {
     rig.root.visible = true;
     setWeapon(rig, null);
     this.audio.door();
-    this.camDist = 6 + v.spec.L * 0.35;
+    this.camDist = v.spec.isAircraft ? 15 + v.spec.L * 0.45 : 6 + v.spec.L * 0.35;
+    if (v.spec.isAircraft) {
+      this.ev.onToast(`${v.spec.name}: W/S Throttle · A/D Roll · Space/↓ Climb · ↑ Dive · Q/E Rudder`, 'info');
+    }
     if (this.radioStation) this.audio.setStation(this.radioStation);
     else this.audio.setStation(0);
   }
@@ -1231,15 +1382,41 @@ export class Game {
     const v = p.vehicle!;
     const k = this.input;
     this.lookInput(dt);
-    const up = k.keys.has('KeyW') || k.keys.has('ArrowUp') && false;
-    const dn = k.keys.has('KeyS');
+
+    if (v.spec.isAircraft) {
+      // 6-DOF Aircraft Flight Controls (keyboard + mobile touch)
+      const thrUp = k.keys.has('KeyW') || this.touch.throttle > 0;
+      const thrDn = k.keys.has('KeyS') || this.touch.throttle < 0;
+      v.throttleDelta = (thrUp ? 1 : 0) - (thrDn ? 1 : 0);
+      const pitchUp = k.keys.has('ArrowDown') || k.keys.has('KeyK') || k.keys.has('Space') || this.touch.pitch > 0 || this.touch.moveY < -0.35;
+      const pitchDn = k.keys.has('ArrowUp') || k.keys.has('KeyI') || this.touch.pitch < 0 || this.touch.moveY > 0.35;
+      v.pitchIn = (pitchUp ? 1 : 0) - (pitchDn ? 1 : 0);
+      const rollTarget = clamp(((k.keys.has('KeyA') ? 1 : 0) - (k.keys.has('KeyD') ? 1 : 0)) - this.touch.moveX, -1, 1);
+      v.rollIn += (rollTarget - v.rollIn) * (1 - Math.exp(-8 * dt));
+      v.yawIn = (k.keys.has('KeyQ') ? 1 : 0) - (k.keys.has('KeyE') ? 1 : 0);
+      v.hand = k.keys.has('ShiftLeft') || k.keys.has('ShiftRight') || this.touch.handbrake;
+      v.brake = v.hand ? 1 : 0;
+      v.lightsOn = this.night > 0.35;
+      p.x = v.x; p.z = v.z; p.y = v.y;
+      p.yaw = v.yaw;
+      p.vx = v.vx; p.vz = v.vz;
+      animateHuman(p.rig, dt, { mode: 'drive', speed: 0, aim: 0, aimPitch: 0, punch: 0, steer: v.rollIn });
+      if (this.time - this.lastMouse > 1.2) {
+        this.camYaw = dampAngle(this.camYaw, v.yaw, 3.2, dt);
+        this.camPitch += (clamp(0.18 - v.pitch * 0.45, -0.35, 0.55) - this.camPitch) * (1 - Math.exp(-2.8 * dt));
+      }
+      return;
+    }
+
+    const up = k.keys.has('KeyW') || this.touch.gas > 0;
+    const dn = k.keys.has('KeyS') || this.touch.brake > 0;
     v.throttle = (up ? 1 : 0) - (dn ? 1 : 0);
     v.brake = 0;
     if (dn && v.fwd > 1) v.brake = 0.85;
-    if (k.keys.has('Space')) { v.hand = true; v.brake = Math.max(v.brake, 0.2); } else v.hand = false;
-    const target = (k.keys.has('KeyA') ? 1 : 0) - (k.keys.has('KeyD') ? 1 : 0);
+    if (k.keys.has('Space') || this.touch.handbrake) { v.hand = true; v.brake = Math.max(v.brake, 0.2); } else v.hand = false;
+    const target = clamp(((k.keys.has('KeyA') ? 1 : 0) - (k.keys.has('KeyD') ? 1 : 0)) - this.touch.moveX, -1, 1);
     v.steerIn += (target - v.steerIn) * (1 - Math.exp(-(target === 0 ? 10 : 6) * dt));
-    if (k.keys.has('KeyH')) { this.hornT -= dt; if (this.hornT <= 0) { this.audio.horn(true); this.hornT = 0.3; } }
+    if (k.keys.has('KeyH') || this.touch.horn) { this.hornT -= dt; if (this.hornT <= 0) { this.audio.horn(true); this.hornT = 0.3; } }
     v.lightsOn = this.night > 0.4;
     p.x = v.x; p.z = v.z; p.y = v.y;
     p.yaw = v.yaw;
@@ -1540,20 +1717,30 @@ export class Game {
     const aiming = !pv && (this.input.aim || this.playerFiring || this.scope) && !isMeleeWeapon(p.weapon) && p.alive;
     const tgtEye = p.move.slideT > 0 ? 0.9 : p.move.crouching ? 1.15 : 1.55;
     p.eyeH += (tgtEye - p.eyeH) * (snap ? 1 : 1 - Math.exp(-10 * dt));
-    const tgtDist = this.scope ? 0.55 : pv ? 6.2 + pv.spec.L * 0.4 + Math.min(4, pv.speed * 0.07) : aiming ? 2.7 : 4.7;
+    const tgtDist = this.scope
+      ? 0.55
+      : pv
+        ? pv.spec.isAircraft
+          ? 14.5 + pv.spec.L * 0.45 + Math.min(8, pv.speed * 0.08)
+          : 6.2 + pv.spec.L * 0.4 + Math.min(4, pv.speed * 0.07)
+        : aiming
+          ? 2.7
+          : 4.7;
     this.camDist += (tgtDist - this.camDist) * (snap ? 1 : 1 - Math.exp(-6 * dt));
     const cosP = Math.cos(this.camPitch), sinP = Math.sin(this.camPitch);
     const fx = Math.sin(this.camYaw), fz = Math.cos(this.camYaw);
     let tx: number, ty: number, tz: number;
-    if (pv) { tx = pv.x; ty = 1.5 + pv.y; tz = pv.z; }
+    if (pv) { tx = pv.x; ty = (pv.spec.isAircraft ? 2.8 : 1.5) + pv.y; tz = pv.z; }
     else { tx = p.x; ty = p.y + p.eyeH; tz = p.z; }
     const shoulder = this.scope ? 0.42 : aiming ? 0.75 : 0;
     const rx = -fz, rz = fx;
     tx += rx * shoulder; tz += rz * shoulder;
     let d = this.camDist;
-    for (let t = 0.6; t <= d; t += 0.35) {
-      const x = tx - fx * cosP * t, y = ty + sinP * t, z = tz - fz * cosP * t;
-      if (y < 0.35 || this.world.solidAt(x, y, z)) { d = Math.max(0.8, t - 0.45); break; }
+    if (!pv?.spec.isAircraft) {
+      for (let t = 0.6; t <= d; t += 0.35) {
+        const x = tx - fx * cosP * t, y = ty + sinP * t, z = tz - fz * cosP * t;
+        if (y < 0.35 || this.world.solidAt(x, y, z)) { d = Math.max(0.8, t - 0.45); break; }
+      }
     }
     let cx = tx - fx * cosP * d, cy = ty + sinP * d, cz = tz - fz * cosP * d;
     cy = Math.max(cy, 0.4 + groundHeight(cx, cz));
@@ -1568,7 +1755,17 @@ export class Game {
     this.camera.lookAt(cx + this.camDir.x * 10, cy + this.camDir.y * 10, cz + this.camDir.z * 10);
     this.camX = cx; this.camZ = cz;
     const onFootSprint = !pv && !aiming && Math.hypot(p.vx, p.vz) > 6.8;
-    const targetFov = this.scope ? 21 : aiming ? 48 : pv ? 62 + Math.min(20, pv.speed * 0.45) : onFootSprint ? 68 : 62;
+    const targetFov = this.scope
+      ? 21
+      : aiming
+        ? 48
+        : pv
+          ? pv.spec.isAircraft
+            ? 66 + Math.min(24, pv.speed * 0.22)
+            : 62 + Math.min(20, pv.speed * 0.45)
+          : onFootSprint
+            ? 68
+            : 62;
     if (Math.abs(this.camera.fov - targetFov) > 0.05) {
       this.camera.fov += (targetFov - this.camera.fov) * (snap ? 1 : 1 - Math.exp(-7 * dt));
       this.camera.updateProjectionMatrix();
@@ -1727,6 +1924,19 @@ export class Game {
       this.hwCars.push({ v, pts: beltPts, i: (seg + 1) % 4, speed: 26 + Math.random() * 11, elevated: false });
     }
   }
+  spawnAircraft() {
+    // Flyable aircraft parked at San Nova International Airport, Ocean Beach Marina & Nova Keys
+    const jet = this.spawnVehicle('jet', 1335, -260, Math.PI / 2, { mode: 'idle', paint: 0x3b4450, tag: 'airport-jet' });
+    jet.place(1335, -260, Math.PI / 2, 0);
+    const prop = this.spawnVehicle('prop_plane', 1515, -312, Math.PI / 2, { mode: 'idle', paint: 0xf4f6f8, tag: 'airport-prop' });
+    prop.place(1515, -312, Math.PI / 2, 0);
+    const sea1 = this.spawnVehicle('seaplane', 1650, -312, Math.PI / 2, { mode: 'idle', paint: 0xf5f2e8, tag: 'airport-seaplane' });
+    sea1.place(1650, -312, Math.PI / 2, 0);
+    const seaBeach = this.spawnVehicle('seaplane', 220, 650, Math.PI * 0.15, { mode: 'idle', paint: 0xf5f2e8, tag: 'marina-seaplane' });
+    seaBeach.place(220, 650, Math.PI * 0.15, -0.35);
+    const seaKeys = this.spawnVehicle('seaplane', 240, 2340, 0, { mode: 'idle', paint: 0xf5f2e8, tag: 'keys-seaplane' });
+    seaKeys.place(240, 2340, 0, groundHeight(240, 2340));
+  }
   updateHighwayCars(dt: number) {
     for (const c of this.hwCars) {
       const v = c.v;
@@ -1763,13 +1973,22 @@ export class Game {
     const gs = this.city.places.gunshop;
     if (gs && Math.hypot(p.x - gs.x, p.z - gs.z) < 3.5) return 'Press F — Ammu-Nation (buy weapons / refill ammo)';
     let bd = 3.2;
-    let found = false;
+    let foundVeh: Vehicle | null = null;
     for (const v of this.vehicles) {
       if (v.mode === 'wreck') continue;
+      if (v.spec.isAircraft) {
+        const d = Math.hypot(p.x - v.x, p.z - v.z);
+        if (d < 7.2) { foundVeh = v; break; }
+        continue;
+      }
       const c = v.circles();
-      for (let i = 0; i < c.length; i += 3) if (Math.hypot(p.x - c[i], p.z - c[i + 1]) - c[i + 2] < bd) found = true;
+      for (let i = 0; i < c.length; i += 3) if (Math.hypot(p.x - c[i], p.z - c[i + 1]) - c[i + 2] < bd) foundVeh = v;
     }
-    return found ? 'Press F to enter vehicle' : null;
+    if (foundVeh) {
+      const key = this.mobileMode ? 'Tap USE' : 'Press F';
+      return foundVeh.spec.isAircraft ? `${key} — Fly ${foundVeh.spec.name}` : `${key} — Enter ${foundVeh.spec.name}`;
+    }
+    return null;
   }
 
   emitHud(force: boolean) {
@@ -1792,6 +2011,15 @@ export class Game {
     }
     const next = !m && this.missionIdx < MISSIONS.length ? MISSIONS[this.missionIdx].title : null;
     const surf = this.interior ? 'interior' : surfaceAt(p.x, p.z, p.y);
+    const aircraft = pv && pv.spec.isAircraft && pv.flight
+      ? {
+          altitude: Math.max(0, Math.round(pv.y)),
+          airspeed: Math.round(pv.flight.airspeed * 3.6),
+          throttle: Math.round(pv.flight.throttle * 100),
+          stalling: pv.flight.stalling,
+          onGround: pv.flight.onGround,
+        }
+      : null;
     this.ev.onHud({
       hp: Math.max(0, Math.round(p.hp)),
       armor: Math.round(p.armor),
@@ -1813,7 +2041,7 @@ export class Game {
       radio: pv ? this.audio.stations[this.radioStation] : null,
       packages: [this.packagesFound, this.packagesTotal],
       finder,
-      aiming: !pv && (this.input.aim || this.scope),
+      aiming: !pv && (this.input.aim || this.touch.aim || this.scope),
       crosshair: !pv && !isMeleeWeapon(p.weapon) && p.alive && !this.scope,
       scope: this.scope,
       allies: this.allies.filter((a) => a.recruited && !a.dead).length,
@@ -1832,6 +2060,11 @@ export class Game {
       surface: surf,
       sandGrip: !this.interior && (surf === 'sand' || surf === 'wet_sand'),
       coords: [Math.round(p.x), Math.round(p.z)],
+      aircraft,
+      mobileMode: this.mobileMode,
+      rtxEnabled: this.rtxEnabled,
+      goreEnabled: this.goreEnabled,
+      storeCount: this.city.doors.length,
     });
   }
 }

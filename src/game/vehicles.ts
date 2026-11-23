@@ -1,10 +1,13 @@
-// Procedural vehicle models: extruded side-profiles, glass, wheels, lights.
+// Procedural vehicle & aircraft models: extruded side-profiles, composite aircraft, clearcoat PBR, wheels, lights.
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
-import { box, cyl, finish } from './geo';
+import { box, cyl, finish, sph } from './geo';
+import type { AircraftSpec } from './physics';
 import { makeGlow } from './textures';
 
-export type VehicleType = 'sedan' | 'sports' | 'suv' | 'pickup' | 'taxi' | 'police' | 'van';
+export type VehicleType =
+  | 'sedan' | 'sports' | 'suv' | 'pickup' | 'taxi' | 'police' | 'van'
+  | 'prop_plane' | 'jet' | 'seaplane';
 
 export interface VehicleSpec {
   name: string;
@@ -20,16 +23,42 @@ export interface VehicleSpec {
   steer: number;
   seat: [number, number, number];
   radius: number;
+  isAircraft?: boolean;
+  flight?: AircraftSpec;
 }
 
 export const SPECS: Record<VehicleType, VehicleSpec> = {
-  sedan: { name: 'Orion LX', L: 4.7, W: 1.85, wheelR: 0.34, wheelBase: 2.8, maxSpeed: 40, accel: 11, grip: 7, mass: 1400, hp: 100, steer: 0.56, seat: [0.42, 0.7, 0.2], radius: 0.95 },
-  sports: { name: 'Vortex GT', L: 4.5, W: 1.92, wheelR: 0.35, wheelBase: 2.7, maxSpeed: 60, accel: 17, grip: 9, mass: 1300, hp: 90, steer: 0.55, seat: [0.42, 0.6, 0.15], radius: 0.97 },
-  suv: { name: 'Titan SUV', L: 4.8, W: 1.96, wheelR: 0.4, wheelBase: 2.9, maxSpeed: 38, accel: 9.5, grip: 6.5, mass: 2100, hp: 150, steer: 0.5, seat: [0.45, 0.98, 0.2], radius: 1.0 },
-  pickup: { name: 'Bison Pickup', L: 5.4, W: 2.0, wheelR: 0.41, wheelBase: 3.3, maxSpeed: 36, accel: 9, grip: 6, mass: 2200, hp: 150, steer: 0.5, seat: [0.46, 0.98, 0.5], radius: 1.02 },
-  taxi: { name: 'Metro Cab', L: 4.7, W: 1.85, wheelR: 0.34, wheelBase: 2.8, maxSpeed: 38, accel: 10.5, grip: 7, mass: 1450, hp: 110, steer: 0.56, seat: [0.42, 0.7, 0.2], radius: 0.95 },
-  police: { name: 'Patrol Cruiser', L: 4.8, W: 1.9, wheelR: 0.35, wheelBase: 2.85, maxSpeed: 48, accel: 14, grip: 8, mass: 1700, hp: 140, steer: 0.55, seat: [0.42, 0.7, 0.2], radius: 0.96 },
-  van: { name: 'Hauler Van', L: 5.2, W: 2.0, wheelR: 0.38, wheelBase: 3.2, maxSpeed: 32, accel: 7.5, grip: 5.5, mass: 2800, hp: 170, steer: 0.5, seat: [0.46, 1.2, 1.5], radius: 1.02 },
+  sedan: { name: 'Orion LX', L: 4.7, W: 1.85, wheelR: 0.34, wheelBase: 2.8, maxSpeed: 42, accel: 11.5, grip: 7, mass: 1400, hp: 100, steer: 0.56, seat: [0.42, 0.7, 0.2], radius: 0.95 },
+  sports: { name: 'Vortex GT', L: 4.5, W: 1.92, wheelR: 0.35, wheelBase: 2.7, maxSpeed: 64, accel: 18, grip: 9, mass: 1300, hp: 90, steer: 0.55, seat: [0.42, 0.6, 0.15], radius: 0.97 },
+  suv: { name: 'Titan SUV', L: 4.8, W: 1.96, wheelR: 0.4, wheelBase: 2.9, maxSpeed: 39, accel: 10, grip: 6.5, mass: 2100, hp: 150, steer: 0.5, seat: [0.45, 0.98, 0.2], radius: 1.0 },
+  pickup: { name: 'Bison Pickup', L: 5.4, W: 2.0, wheelR: 0.41, wheelBase: 3.3, maxSpeed: 37, accel: 9.5, grip: 6, mass: 2200, hp: 150, steer: 0.5, seat: [0.46, 0.98, 0.5], radius: 1.02 },
+  taxi: { name: 'Metro Cab', L: 4.7, W: 1.85, wheelR: 0.34, wheelBase: 2.8, maxSpeed: 39, accel: 11, grip: 7, mass: 1450, hp: 110, steer: 0.56, seat: [0.42, 0.7, 0.2], radius: 0.95 },
+  police: { name: 'Patrol Cruiser', L: 4.8, W: 1.9, wheelR: 0.35, wheelBase: 2.85, maxSpeed: 50, accel: 14.5, grip: 8, mass: 1700, hp: 140, steer: 0.55, seat: [0.42, 0.7, 0.2], radius: 0.96 },
+  van: { name: 'Hauler Van', L: 5.2, W: 2.0, wheelR: 0.38, wheelBase: 3.2, maxSpeed: 33, accel: 8, grip: 5.5, mass: 2800, hp: 170, steer: 0.5, seat: [0.46, 1.2, 1.5], radius: 1.02 },
+  prop_plane: {
+    name: 'Dodo Classic', L: 8.6, W: 11.4, wheelR: 0.36, wheelBase: 3.4, maxSpeed: 76, accel: 22, grip: 5, mass: 1650, hp: 140, steer: 0.45, seat: [0, 1.25, 0.4], radius: 2.4,
+    isAircraft: true,
+    flight: {
+      maxThrust: 26, maxSpeed: 76, takeoffSpeed: 22, stallSpeed: 15, liftCoeff: 1.05, dragCoeff: 0.0042,
+      pitchRate: 1.35, rollRate: 1.9, yawRate: 0.85, ceilingY: 360, gearHeight: 0.0,
+    },
+  },
+  jet: {
+    name: 'Viper Strike Jet', L: 11.8, W: 9.8, wheelR: 0.34, wheelBase: 4.6, maxSpeed: 138, accel: 46, grip: 6, mass: 4800, hp: 220, steer: 0.42, seat: [0, 1.35, 1.6], radius: 2.6,
+    isAircraft: true,
+    flight: {
+      maxThrust: 54, maxSpeed: 138, takeoffSpeed: 30, stallSpeed: 20, liftCoeff: 1.08, dragCoeff: 0.0026,
+      pitchRate: 1.85, rollRate: 2.75, yawRate: 1.05, ceilingY: 460, gearHeight: 0.0,
+    },
+  },
+  seaplane: {
+    name: 'Keys Seaplane', L: 9.0, W: 11.8, wheelR: 0.35, wheelBase: 3.6, maxSpeed: 72, accel: 21, grip: 4.5, mass: 1850, hp: 150, steer: 0.45, seat: [0, 1.55, 0.35], radius: 2.5,
+    isAircraft: true,
+    flight: {
+      maxThrust: 25, maxSpeed: 72, takeoffSpeed: 21, stallSpeed: 14, liftCoeff: 1.08, dragCoeff: 0.0044,
+      pitchRate: 1.3, rollRate: 1.75, yawRate: 0.9, ceilingY: 340, gearHeight: 0.0,
+    },
+  },
 };
 
 interface Prof { lower: number[][]; lr: number[]; cabin: number[][]; cr: number[]; cw: number; roof: [number, number, number]; }
@@ -55,7 +84,7 @@ const PROF: Record<string, Prof> = {
     cabin: [[3.75, 1.5], [3.9, 2.05], [4.55, 1.68], [4.85, 1.5]], cr: [0.03, 0.1, 0.1, 0.03], cw: 1.02, roof: [0, 0, 0],
   },
 };
-const PMAP: Record<VehicleType, string> = { sedan: 'sedan', sports: 'sports', suv: 'suv', pickup: 'pickup', taxi: 'sedan', police: 'sedan', van: 'van' };
+const PMAP: Record<string, string> = { sedan: 'sedan', sports: 'sports', suv: 'suv', pickup: 'pickup', taxi: 'sedan', police: 'sedan', van: 'van' };
 
 function roundedShape(pts: number[][], rad: number[], dx: number): THREE.Shape {
   const s = new THREE.Shape();
@@ -82,18 +111,35 @@ function extruded(pts: number[][], rad: number[], L: number, width: number, beve
   return g;
 }
 
-// shared materials -------------------------------------------------------
-const paintCache = new Map<number, THREE.MeshStandardMaterial>();
+// shared PBR / Simulated-RTX materials -------------------------------------------------------
+let vehicleRtxOn = true;
+const paintCache = new Map<number, THREE.MeshPhysicalMaterial>();
 export function paintMat(color: number) {
   let m = paintCache.get(color);
   if (!m) {
-    m = new THREE.MeshStandardMaterial({ color, vertexColors: true, metalness: 0.55, roughness: 0.3, envMapIntensity: 1.1 });
+    m = new THREE.MeshPhysicalMaterial({
+      color,
+      vertexColors: true,
+      metalness: 0.62,
+      roughness: 0.22,
+      clearcoat: vehicleRtxOn ? 1.0 : 0.0,
+      clearcoatRoughness: 0.07,
+      reflectivity: 0.92,
+      envMapIntensity: vehicleRtxOn ? 1.7 : 0.95,
+    });
     paintCache.set(color, m);
   }
   return m;
 }
-export const glassMat = new THREE.MeshStandardMaterial({ color: 0x0b141c, metalness: 0.95, roughness: 0.06, envMapIntensity: 1.4 });
-export const trimMat = new THREE.MeshStandardMaterial({ vertexColors: true, metalness: 0.35, roughness: 0.5 });
+export const glassMat = new THREE.MeshPhysicalMaterial({
+  color: 0x0b1620,
+  metalness: 0.92,
+  roughness: 0.05,
+  clearcoat: 1.0,
+  clearcoatRoughness: 0.04,
+  envMapIntensity: 1.85,
+});
+export const trimMat = new THREE.MeshStandardMaterial({ vertexColors: true, metalness: 0.38, roughness: 0.46 });
 export const wheelMat = new THREE.MeshStandardMaterial({ vertexColors: true, metalness: 0.35, roughness: 0.55 });
 export const headMat = new THREE.MeshStandardMaterial({ color: 0xfff6dd, emissive: 0xfff0c0, emissiveIntensity: 0.15, roughness: 0.2 });
 export const tailDim = new THREE.MeshStandardMaterial({ color: 0x7a0a0a, emissive: 0xff1010, emissiveIntensity: 0.15, roughness: 0.3 });
@@ -102,6 +148,28 @@ export const sirenRed = new THREE.MeshStandardMaterial({ color: 0x550000, emissi
 export const sirenBlue = new THREE.MeshStandardMaterial({ color: 0x000055, emissive: 0x1030ff, emissiveIntensity: 0.1 });
 export const taxiSignMat = new THREE.MeshStandardMaterial({ color: 0xfff3c0, emissive: 0xffe9a0, emissiveIntensity: 0.6 });
 export const wreckMat = new THREE.MeshStandardMaterial({ color: 0x151515, vertexColors: true, metalness: 0.3, roughness: 0.9 });
+export const afterburnerMat = new THREE.MeshBasicMaterial({
+  color: 0xff9a30,
+  transparent: true,
+  opacity: 0.0,
+  blending: THREE.AdditiveBlending,
+  depthWrite: false,
+  toneMapped: false,
+});
+
+export function setVehicleRtx(enabled: boolean) {
+  vehicleRtxOn = enabled;
+  for (const m of paintCache.values()) {
+    m.clearcoat = enabled ? 1.0 : 0.0;
+    m.envMapIntensity = enabled ? 1.7 : 0.95;
+    m.roughness = enabled ? 0.2 : 0.32;
+    m.needsUpdate = true;
+  }
+  glassMat.clearcoat = enabled ? 1.0 : 0.0;
+  glassMat.envMapIntensity = enabled ? 1.85 : 1.0;
+  glassMat.needsUpdate = true;
+}
+
 let glowTex: THREE.Texture | null = null;
 const beamMat = () => {
   if (!glowTex) glowTex = makeGlow();
@@ -144,9 +212,170 @@ export interface VehicleModel {
   dented: boolean;
   paint: number;
   tiltGroup: THREE.Group;
+  propeller?: THREE.Group;
+  afterburner?: THREE.Mesh;
+}
+
+function buildAircraft(type: 'prop_plane' | 'jet' | 'seaplane', paint: number): VehicleModel {
+  const sp = SPECS[type];
+  const g = new THREE.Group();
+  const tilt = new THREE.Group();
+  g.add(tilt);
+  const body: THREE.BufferGeometry[] = [];
+  const trim: THREE.BufferGeometry[] = [];
+  const glassGeo: THREE.BufferGeometry[] = [];
+  const white = 0xffffff;
+  const dark = 0x1c2026;
+  const metal = 0x9aa4b2;
+  const isJet = type === 'jet';
+  const isSea = type === 'seaplane';
+  const paintColor = isJet ? 0x3b4450 : isSea ? 0xf5f2e8 : paint;
+  const stripeCol = isJet ? 0xd93829 : isSea ? 0x00b4d8 : 0xe63946;
+
+  const cylZ = (r1: number, r2: number, h: number, x: number, y: number, z: number, col: number, seg = 14) =>
+    cyl(r1, r2, h, 0, 0, 0, col, seg).rotateX(Math.PI / 2).translate(x, y, z);
+
+  let propeller: THREE.Group | undefined;
+  let afterburner: THREE.Mesh | undefined;
+
+  if (isJet) {
+    // Sleek supersonic strike jet fuselage, nose cone, swept delta wings, twin angled fins
+    const fy = 1.45;
+    body.push(cylZ(0.55, 0.72, 4.4, 0, fy, 1.2, white, 14));
+    body.push(cylZ(0.72, 0.56, 4.4, 0, fy, -3.2, white, 14));
+    body.push(cylZ(0.06, 0.55, 2.4, 0, fy - 0.04, 4.6, 0x2a303a, 14)); // radar nose cone
+    // Twin side air intakes
+    for (const s of [-1, 1]) {
+      body.push(box(0.52, 0.58, 3.6, s * 0.72, fy - 0.05, -0.3, white));
+      trim.push(box(0.46, 0.48, 0.25, s * 0.72, fy - 0.05, 1.52, 0x101318));
+      // Swept main wings
+      body.push(box(4.4, 0.14, 2.3, s * 2.55, fy - 0.12, -1.35, white, s * 0.26));
+      trim.push(box(0.28, 0.1, 1.55, s * 4.7, fy - 0.12, -1.9, stripeCol)); // wingtip rails
+      // Horizontal tailplanes
+      body.push(box(1.9, 0.1, 1.25, s * 1.45, fy - 0.06, -4.6, white, s * 0.22));
+      // Twin canted vertical stabilizers
+      body.push(box(0.12, 1.65, 1.6, s * 0.92, fy + 0.85, -4.3, white, 0, 0, -s * 0.22));
+      trim.push(box(0.14, 0.28, 1.2, s * 1.05, fy + 1.42, -4.35, stripeCol, 0, 0, -s * 0.22));
+      // Twin exhaust nozzles
+      trim.push(cylZ(0.32, 0.26, 0.7, s * 0.36, fy - 0.04, -5.6, dark, 12));
+    }
+    // Bubble cockpit canopy
+    glassGeo.push(sph(1, 0, fy + 0.54, 1.85, white, 0.46, 0.44, 1.65, 14));
+    trim.push(box(0.95, 0.14, 2.9, 0, fy + 0.28, 1.85, dark));
+    // Tricycle landing gear struts
+    trim.push(cyl(0.06, 0.06, 1.1, 0, 0.68, 3.1, metal, 8));
+    for (const s of [-1, 1]) trim.push(cyl(0.07, 0.07, 1.1, s * 1.55, 0.68, -1.3, metal, 8));
+
+    // Afterburner glow cone
+    const abGeo = new THREE.ConeGeometry(0.45, 2.8, 12).rotateX(-Math.PI / 2);
+    afterburner = new THREE.Mesh(abGeo, afterburnerMat.clone());
+    afterburner.position.set(0, fy - 0.04, -7.2);
+    tilt.add(afterburner);
+  } else {
+    // Classic high-wing prop plane or tropical twin-pontoon seaplane
+    const fy = isSea ? 1.85 : 1.38;
+    // Fuselage cabin + tapered tail boom + engine cowling
+    body.push(box(1.42, 1.28, 3.2, 0, fy, 0.35, white));
+    body.push(cylZ(0.62, 0.26, 4.1, 0, fy + 0.08, -3.25, white, 12));
+    body.push(cylZ(0.48, 0.68, 1.6, 0, fy - 0.02, 2.7, white, 12));
+    trim.push(box(1.46, 0.18, 6.4, 0, fy - 0.15, -0.8, stripeCol));
+    trim.push(box(0.85, 0.35, 0.12, 0, fy - 0.18, 3.52, 0x12151a)); // intake grille
+    // High monoplane wings + struts + wingtip strobes
+    body.push(box(sp.W, 0.18, 1.85, 0, fy + 0.72, 0.4, white));
+    trim.push(box(sp.W + 0.15, 0.12, 0.35, 0, fy + 0.72, -0.45, stripeCol)); // flaps/ailerons
+    for (const s of [-1, 1]) {
+      trim.push(box(0.08, 1.55, 0.1, s * 1.6, fy + 0.04, 0.4, metal, 0, 0, -s * 0.65)); // wing strut
+    }
+    // Tail fin & horizontal stabilizer
+    body.push(box(3.8, 0.12, 1.0, 0, fy + 0.18, -4.9, white));
+    body.push(box(0.14, 1.75, 1.25, 0, fy + 0.98, -4.75, white));
+    trim.push(box(0.16, 0.45, 0.9, 0, fy + 1.55, -4.8, stripeCol));
+    // Panoramic wrap-around cockpit glass
+    glassGeo.push(box(1.36, 0.56, 1.95, 0, fy + 0.34, 0.9, white));
+    glassGeo.push(box(1.26, 0.52, 0.6, 0, fy + 0.32, 1.85, white, 0, -0.42));
+
+    if (isSea) {
+      // Twin pontoon floats + crossbars
+      for (const s of [-1, 1]) {
+        body.push(box(0.62, 0.52, 5.4, s * 1.45, 0.34, 0.4, 0xf2f4f7));
+        trim.push(box(0.66, 0.14, 5.45, s * 1.45, 0.12, 0.4, stripeCol));
+        trim.push(box(0.08, 1.15, 0.1, s * 1.05, 0.98, 1.15, metal, 0, 0, s * 0.28));
+        trim.push(box(0.08, 1.15, 0.1, s * 1.05, 0.98, -0.65, metal, 0, 0, s * 0.28));
+      }
+      trim.push(box(2.9, 0.08, 0.12, 0, 0.66, 1.1, metal));
+      trim.push(box(2.9, 0.08, 0.12, 0, 0.66, -0.6, metal));
+    } else {
+      // 3-point tricycle gear
+      trim.push(cyl(0.055, 0.055, 1.0, 0, 0.68, 2.6, metal, 8));
+      for (const s of [-1, 1]) {
+        trim.push(box(0.08, 0.92, 0.14, s * 1.12, 0.72, -0.2, metal, 0, 0, s * 0.32));
+      }
+    }
+
+    // Rotating nose propeller group
+    propeller = new THREE.Group();
+    propeller.position.set(0, fy - 0.02, 3.62);
+    const propGeo = mergeGeometries([
+      cylZ(0.06, 0.2, 0.36, 0, 0, 0.12, stripeCol, 10),
+      box(2.25, 0.18, 0.04, 0, 0, 0.06, dark),
+      box(0.18, 2.25, 0.04, 0, 0, 0.06, dark),
+    ], false)!;
+    const propMesh = new THREE.Mesh(propGeo, trimMat);
+    propeller.add(propMesh);
+    tilt.add(propeller);
+  }
+
+  const bodyMesh = new THREE.Mesh(mergeGeometries(body, false)!, paintMat(paintColor));
+  bodyMesh.castShadow = true;
+  tilt.add(bodyMesh);
+  const glass = new THREE.Mesh(mergeGeometries(glassGeo.map((x) => (x.attributes.color ? x : finish(x, white))), false)!, glassMat);
+  tilt.add(glass);
+  const trimMesh = new THREE.Mesh(mergeGeometries(trim, false)!, trimMat);
+  trimMesh.castShadow = true;
+  tilt.add(trimMesh);
+
+  // Navigation strobes (wingtip red/green + landing light)
+  const headMesh = new THREE.Mesh(box(0.28, 0.14, 0.1, 0, 1.15, sp.L * 0.42, white), headMat);
+  const tail = new THREE.Mesh(box(0.24, 0.18, 0.1, 0, 2.2, -sp.L * 0.46, white), tailDim);
+  tilt.add(headMesh, tail);
+
+  // Landing wheels (hidden on seaplane floats)
+  const wheels: VehicleModel['wheels'] = [];
+  if (!isSea) {
+    const wg = wheelGeo(sp.wheelR);
+    const gearCoords: [number, number, boolean][] = isJet
+      ? [[0, 3.1, true], [1.55, -1.3, false], [-1.55, -1.3, false]]
+      : [[0, 2.6, true], [1.45, -0.2, false], [-1.45, -0.2, false]];
+    for (const [wx, wz, fr] of gearCoords) {
+      const pivot = new THREE.Group();
+      pivot.position.set(wx, sp.wheelR, wz);
+      const spin = new THREE.Group();
+      const m = new THREE.Mesh(wg, wheelMat);
+      m.castShadow = true;
+      spin.add(m);
+      pivot.add(spin);
+      g.add(pivot);
+      wheels.push({ pivot, spin, front: fr });
+    }
+  }
+
+  const beam = new THREE.Mesh(new THREE.PlaneGeometry(10, 22), beamMaterial);
+  beam.rotation.x = -Math.PI / 2;
+  beam.position.set(0, 0.08, sp.L / 2 + 9);
+  beam.visible = false;
+  g.add(beam);
+
+  return {
+    group: g, body: bodyMesh, glass, wheels, tail, beam, bar: null, driver: null,
+    parts: [bodyMesh, trimMesh, glass], dented: false, paint: paintColor, tiltGroup: tilt,
+    propeller, afterburner,
+  };
 }
 
 export function buildVehicle(type: VehicleType, paint: number): VehicleModel {
+  if (type === 'prop_plane' || type === 'jet' || type === 'seaplane') {
+    return buildAircraft(type, paint);
+  }
   const sp = SPECS[type];
   const pf = PROF[PMAP[type]];
   const { L, W } = sp;

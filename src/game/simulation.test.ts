@@ -23,6 +23,17 @@ import {
   WEAPON_SHOP_ORDER,
   isMeleeWeapon,
 } from './terrain';
+import { STORES, STORE_COUNT, getStoreByIndex, getStoreIndexByName } from './stores';
+import {
+  createFlightState,
+  stepFlightPhysics,
+  createSuspensionState,
+  stepSuspensionPhysics,
+  computeBloodBurst,
+  computePuddleRadius,
+  computeRagdollImpulse,
+  type AircraftSpec,
+} from './physics';
 
 test('10km x 10km world bounds span -5000..+5000 on both axes', () => {
   assert.equal(WORLD_HALF, 5000);
@@ -67,14 +78,14 @@ test('terrainHeightAt keeps core city flat while sculpting dunes, north hills, o
 test('surfaceAt, sandFactorAt, and districtNameAt classify city, beachfront, dunes, and highways', () => {
   assert.equal(surfaceAt(0, 0), 'sidewalk');
   assert.equal(sandFactorAt(0, 0), 0);
-  assert.equal(districtNameAt(0, 0), 'DOWNTOWN SAN NOVA');
+  assert.equal(districtNameAt(0, 0), 'DOWNTOWN FINANCIAL CORE');
 
   // Main Beachfront dry & wet sand
   assert.equal(surfaceAt(-100, 560), 'sand');
   assert.ok(sandFactorAt(-100, 560) > 0.6);
   assert.equal(surfaceAt(-100, 602), 'wet_sand');
   assert.equal(sandFactorAt(-100, 602), 0.4);
-  assert.equal(districtNameAt(-100, 560), 'SAN NOVA BEACHFRONT');
+  assert.equal(districtNameAt(-100, 560), 'OCEAN BEACH BOARDWALK');
 
   // Deep Golden Dunes sand
   assert.equal(surfaceAt(-2000, 1000), 'sand');
@@ -232,4 +243,133 @@ test('expanded 15-weapon catalog has valid definitions, shop items, and melee cl
   assert.equal(isMeleeWeapon('katana'), true);
   assert.equal(isMeleeWeapon('pistol'), false);
   assert.equal(isMeleeWeapon('rpg'), false);
+});
+
+test('GTA-6 / Leonida store catalog has >300 unique storefronts across all 8 districts', () => {
+  assert.ok(STORE_COUNT >= 320, `Expected >= 320 stores, got ${STORE_COUNT}`);
+  assert.equal(STORES.length, STORE_COUNT);
+  const names = new Set(STORES.map((s) => s.name));
+  assert.equal(names.size, STORE_COUNT, 'Every store name must be unique');
+  const districts = new Set(STORES.map((s) => s.district));
+  assert.ok(districts.size >= 8, `Expected >= 8 districts, got ${districts.size}`);
+  // Spot check lookup helpers
+  const idx = getStoreIndexByName(STORES[0].name);
+  assert.equal(idx, 0);
+  assert.equal(getStoreByIndex(idx).name, STORES[0].name);
+});
+
+test('San Nova International Airport terrain is flat, paved, and classified as airport district', () => {
+  assert.equal(terrainHeightAt(1500, -260), 0);
+  assert.equal(surfaceAt(1500, -260), 'road');
+  assert.equal(districtNameAt(1500, -260), 'SAN NOVA INTL AIRPORT');
+  assert.equal(sandFactorAt(1500, -260), 0);
+});
+
+test('stepFlightPhysics supports runway takeoff, banked turns, stall detection, and safe vs crash landings', () => {
+  const jetSpec: AircraftSpec = {
+    maxThrust: 44, maxSpeed: 98, takeoffSpeed: 30, stallSpeed: 19,
+    liftCoeff: 1.05, dragCoeff: 0.0042, pitchRate: 1.35, rollRate: 2.1, yawRate: 0.9,
+    ceilingY: 520, gearHeight: 1.3,
+  };
+  const s = createFlightState(1300, jetSpec.gearHeight, -260, Math.PI / 2);
+  let tookOff = false;
+  // Full throttle runway roll + nose rotation
+  for (let i = 0; i < 240; i++) {
+    const res = stepFlightPhysics(
+      s,
+      jetSpec,
+      { throttleDelta: 1, pitchIn: s.airspeed > 24 ? 0.55 : 0, rollIn: 0, yawIn: 0, brake: false, groundY: 0 },
+      0.02,
+    );
+    if (res.tookOff) tookOff = true;
+  }
+  assert.equal(tookOff, true, 'Expected jet to take off from runway');
+  assert.equal(s.onGround, false);
+  assert.ok(s.y > 15, `Expected jet climb altitude > 15m, got ${s.y}`);
+
+  // Banked roll produces smooth yaw turn
+  const yawBefore = s.yaw;
+  for (let i = 0; i < 60; i++) {
+    stepFlightPhysics(s, jetSpec, { throttleDelta: 0, pitchIn: 0.08, rollIn: 0.85, yawIn: 0, brake: false, groundY: 0 }, 0.02);
+  }
+  assert.ok(Math.abs(s.yaw - yawBefore) > 0.25, 'Expected banked roll to turn aircraft heading');
+
+  // Low airspeed airborne triggers stall warning
+  const stallState = createFlightState(0, 80, 0, 0);
+  stallState.onGround = false;
+  stallState.vx = 0;
+  stallState.vy = 0;
+  stallState.vz = 8; // below stallSpeed (19)
+  stepFlightPhysics(stallState, jetSpec, { throttleDelta: 0, pitchIn: 0, rollIn: 0, yawIn: 0, brake: false, groundY: 0 }, 0.02);
+  assert.equal(stallState.stalling, true);
+
+  // High sink-rate nose-down impact triggers crash
+  const crashState = createFlightState(0, jetSpec.gearHeight + 0.1, 0, 0);
+  crashState.onGround = false;
+  crashState.vy = -22;
+  crashState.vz = 35;
+  crashState.pitch = -0.5;
+  const crashRes = stepFlightPhysics(crashState, jetSpec, { throttleDelta: 0, pitchIn: 0, rollIn: 0, yawIn: 0, brake: false, groundY: 0 }, 0.02);
+  assert.equal(crashRes.crashed, true);
+  assert.ok(crashRes.impactSpeed > 15);
+});
+
+test('stepSuspensionPhysics handles acceleration squat, brake dive, and airborne landing compression', () => {
+  const s = createSuspensionState(0);
+  // Hard acceleration produces negative pitch (squat)
+  let accelPitch = 0;
+  for (let i = 0; i < 20; i++) {
+    accelPitch = stepSuspensionPhysics(s, { groundY: 0, longAccel: 14, latAccel: 0, speed: 15, roughness: 0 }, 0.02).pitch;
+  }
+  assert.ok(accelPitch < -0.04, `Expected accel squat pitch < -0.04, got ${accelPitch}`);
+
+  // Hard braking produces positive pitch (nose dive)
+  let brakePitch = 0;
+  for (let i = 0; i < 30; i++) {
+    brakePitch = stepSuspensionPhysics(s, { groundY: 0, longAccel: -18, latAccel: 0, speed: 10, roughness: 0 }, 0.02).pitch;
+  }
+  assert.ok(brakePitch > 0.04, `Expected brake dive pitch > 0.04, got ${brakePitch}`);
+
+  // Airborne drop onto ground compresses suspension and flags landing
+  const air = createSuspensionState(4.0);
+  air.airborne = true;
+  air.airVy = -6.0;
+  let landed = false;
+  let landingSpeed = 0;
+  for (let i = 0; i < 60; i++) {
+    const r = stepSuspensionPhysics(air, { groundY: 0, longAccel: 0, latAccel: 0, speed: 20, roughness: 0 }, 0.02);
+    if (r.landed) {
+      landed = true;
+      landingSpeed = r.landingSpeed;
+      break;
+    }
+  }
+  assert.equal(landed, true);
+  assert.ok(landingSpeed > 6.0);
+  assert.ok(air.heaveVel < -1.5, 'Expected downward compression impulse on landing');
+});
+
+test('gore/blood ballistics and ragdoll impulse scale with weapon damage, headshots, shotguns, and explosions', () => {
+  const pistol = computeBloodBurst(18, false, false, false);
+  const headshot = computeBloodBurst(70, true, false, false);
+  const shotgun = computeBloodBurst(45, false, false, true);
+  const boom = computeBloodBurst(150, false, true, false);
+
+  assert.ok(headshot.dropletCount > pistol.dropletCount);
+  assert.ok(shotgun.gibCount >= 3);
+  assert.ok(boom.gibCount > shotgun.gibCount);
+  assert.ok(boom.puddleTargetRadius > pistol.puddleTargetRadius);
+
+  // Blood puddle expands monotonically and saturates below maxRadius
+  const r0 = computePuddleRadius(0, 1.4);
+  const r1 = computePuddleRadius(0.4, 1.4);
+  const r2 = computePuddleRadius(2.5, 1.4);
+  assert.ok(r0 < r1 && r1 < r2 && r2 <= 1.4);
+
+  // Ragdoll impulses scale up for headshots & explosions
+  const impBody = computeRagdollImpulse(1, 0, 25, false, false);
+  const impHead = computeRagdollImpulse(1, 0, 75, true, false);
+  const impBoom = computeRagdollImpulse(1, 0, 150, false, true);
+  assert.ok(impHead.headWhip > impBody.headWhip * 3);
+  assert.ok(impBoom.vy > impBody.vy * 2);
 });

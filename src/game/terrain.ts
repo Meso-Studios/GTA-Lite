@@ -41,6 +41,7 @@ export const DECK = {
   HW_HALF_W: 14,
   EXPRESS_END: 4650,
   ISLAND: { cx: 300, cz: 2420, r: 420 },
+  AIRPORT: { x0: 1220, x1: 2180, z0: -410, z1: -110, runwayZ: -260, runwayW: 48 },
 };
 
 export interface HighwayCorridor {
@@ -194,6 +195,14 @@ export function terrainHeightAt(x: number, z: number): number {
   const hwDist = distToOuterHighway(x, z);
   const hwFlatten = smoothVal(70, 155, hwDist);
 
+  // Flatten cleanly under San Nova International Airport + taxiway connector to East Expressway
+  const ap = DECK.AIRPORT;
+  const apDx = x < ap.x0 - 40 ? ap.x0 - 40 - x : x > ap.x1 + 40 ? x - (ap.x1 + 40) : 0;
+  const apDz = z < ap.z0 - 40 ? ap.z0 - 40 - z : z > ap.z1 + 120 ? z - (ap.z1 + 120) : 0;
+  const apDist = Math.hypot(apDx, apDz);
+  if (apDist <= 0.1) return 0;
+  const apFlatten = smoothVal(0, 140, apDist);
+
   // Flatten around outer satellite landmarks (Desert Oasis Motel, North Observatory, East Port)
   const landmarkDist = Math.min(
     Math.hypot(x - -2200, z - 1200), // Golden Dunes Oasis
@@ -228,7 +237,7 @@ export function terrainHeightAt(x: number, z: number): number {
     h *= 1 - smoothVal(420, 610, z);
   }
 
-  return h * coreFade * hwFlatten * lmFlatten;
+  return h * coreFade * hwFlatten * lmFlatten * apFlatten;
 }
 
 /** Surface normal approximation from terrainHeightAt (for vehicle pitch/roll on dunes/hills). */
@@ -250,6 +259,8 @@ export type SurfaceType = 'highway' | 'road' | 'sidewalk' | 'sand' | 'wet_sand' 
 export function surfaceAt(x: number, z: number, curY = 0): SurfaceType {
   if (deckHeight(x, z, curY) > 0) return 'highway';
   if (isOnOuterHighway(x, z, 1)) return 'highway';
+  const ap = DECK.AIRPORT;
+  if (x >= ap.x0 && x <= ap.x1 && z >= ap.z0 && z <= ap.z1) return 'road';
   if (z > 606 && z <= CORE_PIER_END && Math.abs(x - CORE_PIER_X) < 5) return 'pier';
   if (isOceanAt(x, z)) return 'water';
   // Core city blocks & streets
@@ -311,13 +322,20 @@ export function districtNameAt(x: number, z: number, curY = 0): string {
     if (z < -700) return 'NORTH RIDGE HIGHWAY';
     return 'EAST COAST EXPRESSWAY';
   }
+  const ap = DECK.AIRPORT;
+  if (x >= ap.x0 - 30 && x <= ap.x1 + 30 && z >= ap.z0 - 30 && z <= ap.z1 + 50) return 'SAN NOVA INTL AIRPORT';
   const isl = DECK.ISLAND;
   if (Math.hypot(x - isl.cx, z - isl.cz) < isl.r + 30) return 'NOVA KEYS RESORT ISLAND';
-  if (z > 522 && z < 650 && x >= -800 && x <= 800) return 'SAN NOVA BEACHFRONT';
+  if (z > 522 && z < 650 && x >= -800 && x <= 800) return 'OCEAN BEACH BOARDWALK';
   if (x < -740) return z > 1200 ? 'SOUTH GOLDEN DUNES' : 'WEST GOLDEN DUNES';
   if (z < -740) return 'NORTH SAN NOVA HILLS';
   if (x > 740) return 'EAST HARBOR & PLAINS';
-  if (Math.abs(x) < 220 && Math.abs(z) < 220) return 'DOWNTOWN SAN NOVA';
+  if (z >= 360 && x <= 220) return 'OCEAN BEACH ART DECO';
+  if (z >= 320 && x > 220) return 'VICE MARINA & PORT';
+  if (Math.abs(x) < 200 && Math.abs(z) < 200) return 'DOWNTOWN FINANCIAL CORE';
+  if (x <= -170 && z >= -180 && z < 360) return 'LITTLE HAVANA · CALLE NOVA';
+  if (x >= 170 && z < 160 && z > -360) return 'WYNWOOD ARTS DISTRICT';
+  if (z <= -220) return 'LEONIDA STRIP PLAZA';
   return 'SAN NOVA METRO';
 }
 

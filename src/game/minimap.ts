@@ -100,17 +100,31 @@ export class MapRenderer {
       d.beginPath(); d.moveTo(0, toZ(g)); d.lineTo(TEX, toZ(g)); d.stroke();
     }
 
+    // San Nova International Airport apron & runway
+    d.fillStyle = '#383d46';
+    d.fillRect(toX(DECK.AIRPORT.x0), toZ(DECK.AIRPORT.z0), (DECK.AIRPORT.x1 - DECK.AIRPORT.x0) * SCALE, (DECK.AIRPORT.z1 - DECK.AIRPORT.z0) * SCALE);
+    d.fillStyle = '#1b1f26';
+    d.fillRect(toX(DECK.AIRPORT.x0 + 35), toZ(DECK.AIRPORT.runwayZ - DECK.AIRPORT.runwayW / 2), (DECK.AIRPORT.x1 - DECK.AIRPORT.x0 - 70) * SCALE, DECK.AIRPORT.runwayW * SCALE);
+    d.strokeStyle = 'rgba(255,255,255,0.65)';
+    d.lineWidth = 1.5;
+    d.setLineDash([6, 6]);
+    d.beginPath();
+    d.moveTo(toX(DECK.AIRPORT.x0 + 50), toZ(DECK.AIRPORT.runwayZ));
+    d.lineTo(toX(DECK.AIRPORT.x1 - 50), toZ(DECK.AIRPORT.runwayZ));
+    d.stroke();
+    d.setLineDash([]);
+
     // District labels on full map canvas
     d.fillStyle = 'rgba(255,255,255,0.45)';
     d.font = 'bold 26px sans-serif';
     d.textAlign = 'center';
     d.fillText('NORTH SAN NOVA HILLS', toX(1200), toZ(-2200));
     d.fillText('GOLDEN DUNES', toX(-2600), toZ(1500));
-    d.fillText('EAST HARBOR PLAINS', toX(2400), toZ(-400));
+    d.fillText('SAN NOVA INTL AIRPORT', toX(1700), toZ(-455));
     d.fillText('NOVA KEYS ISLAND', toX(DECK.ISLAND.cx), toZ(DECK.ISLAND.cz + 580));
     d.fillStyle = 'rgba(255,235,170,0.65)';
     d.font = 'bold 22px sans-serif';
-    d.fillText('SAN NOVA METRO', toX(0), toZ(-680));
+    d.fillText('SAN NOVA METRO · LEONIDA', toX(0), toZ(-680));
 
     this.base = c;
   }
@@ -128,6 +142,7 @@ export class MapRenderer {
       else if (n === 'resort') list.push({ x: p.x, z: p.z, kind: 'landmark', label: 'R' });
       else if (n === 'oasis') list.push({ x: p.x, z: p.z, kind: 'landmark', label: 'O' });
       else if (n === 'observatory') list.push({ x: p.x, z: p.z, kind: 'landmark', label: '★' });
+      else if (n === 'airport') list.push({ x: p.x, z: p.z, kind: 'airport', label: '✈' });
     }
     if (g.waypoint) list.push({ x: g.waypoint.x, z: g.waypoint.z, kind: 'waypoint' });
     if (g.finderOn) for (const pk of g.pickups) if (pk.kind === 'package' && !pk.taken && Math.hypot(pk.x - g.playerX, pk.z - g.playerZ) < 200) list.push({ x: pk.x, z: pk.z, kind: 'package' });
@@ -140,7 +155,7 @@ export class MapRenderer {
     const colors: Record<string, string> = {
       mission: '#ffd23d', goal: '#ffd23d', enemy: '#ff4040', vehicle: '#3dd6ff', item: '#ffd23d',
       hospital: '#ff5a5a', police: '#4a90ff', spray: '#ffb347', gun: '#e0e0e0', bank: '#7dff7d',
-      waypoint: '#ff2fd0', package: '#ff9d2e', cop: '#ff3030', landmark: '#38d9a9',
+      waypoint: '#ff2fd0', package: '#ff9d2e', cop: '#ff3030', landmark: '#38d9a9', airport: '#38bdf8',
     };
     const col = colors[kind] ?? '#fff';
     d.fillStyle = col;
