@@ -4,7 +4,17 @@ import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js
 import { box, cyl, finish, sph } from './geo';
 import type { AircraftSpec } from './physics';
 import { makeGlow } from './textures';
-import { cloneCarGlb } from './glbAssets';
+import {
+  cloneAircraftGlb,
+  cloneCarGlb,
+  cloneCarWheelGlb,
+  desiredAircraftGlbSource,
+  desiredCarGlbSource,
+  isCarWheelGlbLoaded,
+  isGlbWorldMode,
+  repaintGlbRoot,
+} from './glbAssets';
+import { microtextures } from './microtextures';
 
 export type VehicleType =
   | 'sedan' | 'sports' | 'suv' | 'pickup' | 'taxi' | 'police' | 'van'
@@ -128,6 +138,7 @@ export function paintMat(color: number) {
       reflectivity: 0.98,
       envMapIntensity: vehicleRtxOn ? 2.15 : 0.85,
     });
+    microtextures.registerVehiclePaint(m);
     paintCache.set(color, m);
   }
   return m;
@@ -207,7 +218,7 @@ export interface VehicleModel {
   group: THREE.Group;
   body: THREE.Mesh;
   glass: THREE.Mesh;
-  wheels: { pivot: THREE.Group; spin: THREE.Group; front: boolean }[];
+  wheels: { pivot: THREE.Group; spin: THREE.Group; front: boolean; mesh?: THREE.Mesh; glbWheel?: THREE.Group | null }[];
   tail: THREE.Mesh;
   beam: THREE.Mesh;
   bar: THREE.Mesh[] | null;
@@ -219,6 +230,10 @@ export interface VehicleModel {
   propeller?: THREE.Group;
   afterburner?: THREE.Mesh;
   glbShell?: THREE.Group | null;
+  glbModeUsed?: boolean;
+  heroSiteUsed?: boolean;
+  glbSource?: string | null;
+  integratedWheelsUsed?: boolean;
   vehicleType?: VehicleType;
 }
 
@@ -361,7 +376,7 @@ function buildAircraft(type: 'prop_plane' | 'jet' | 'seaplane', paint: number): 
       spin.add(m);
       pivot.add(spin);
       g.add(pivot);
-      wheels.push({ pivot, spin, front: fr });
+      wheels.push({ pivot, spin, front: fr, mesh: m, glbWheel: null });
     }
   }
 
@@ -371,14 +386,16 @@ function buildAircraft(type: 'prop_plane' | 'jet' | 'seaplane', paint: number): 
   beam.visible = false;
   g.add(beam);
 
-  return {
+  const model: VehicleModel = {
     group: g, body: bodyMesh, glass, wheels, tail, beam, bar: null, driver: null,
     parts: [bodyMesh, trimMesh, glass], dented: false, paint: paintColor, tiltGroup: tilt,
-    propeller, afterburner,
+    propeller, afterburner, glbShell: null, vehicleType: type,
   };
+  upgradeVehicleToGlb(model, type, isGlbWorldMode(), false);
+  return model;
 }
 
-export function buildVehicle(type: VehicleType, paint: number): VehicleModel {
+export function buildVehicle(type: VehicleType, paint: number, allowHeroSite = false): VehicleModel {
   if (type === 'prop_plane' || type === 'jet' || type === 'seaplane') {
     return buildAircraft(type, paint);
   }
@@ -501,7 +518,7 @@ export function buildVehicle(type: VehicleType, paint: number): VehicleModel {
     spin.add(m);
     pivot.add(spin);
     g.add(pivot);
-    wheels.push({ pivot, spin, front: fr });
+    wheels.push({ pivot, spin, front: fr, mesh: m, glbWheel: null });
   }
 
   // headlight beam on the road
@@ -536,20 +553,111 @@ export function buildVehicle(type: VehicleType, paint: number): VehicleModel {
     parts: [bodyMesh, trimMesh, glass], dented: false, paint: paintColor, tiltGroup: tilt,
     glbShell: null, vehicleType: type,
   };
-  upgradeVehicleToGlb(model, type);
+  upgradeVehicleToGlb(model, type, isGlbWorldMode(), allowHeroSite);
   return model;
 }
 
-/** Upgrades a vehicle's chassis in-place to the sculpted .glb model once loaded via GLTFLoader. */
-export function upgradeVehicleToGlb(m: VehicleModel, type: VehicleType): boolean {
-  if (m.glbShell) return true;
-  const glb = cloneCarGlb(type, m.paint);
-  if (!glb) return false;
-  m.glbShell = glb;
-  m.tiltGroup.add(glb);
-  // Hide fallback procedural shell so the sculpted .glb body takes over cleanly (keep wheels, beams, sirens, taxi sign)
-  for (const part of m.parts) part.visible = false;
-  return true;
+/** Upgrades/switches a vehicle's chassis & wheels cleanly between procedural, local .glb, and full Model-Site .glb packs. */
+export function upgradeVehicleToGlb(
+  m: VehicleModel,
+  type: VehicleType,
+  hdGlbMode = isGlbWorldMode(),
+  allowHeroSite = true,
+): boolean {
+  const sp = SPECS[type];
+  const wantHero = hdGlbMode && allowHeroSite;
+  const desiredSrc = sp.isAircraft
+    ? desiredAircraftGlbSource(type, hdGlbMode)
+    : desiredCarGlbSource(type, hdGlbMode, allowHeroSite);
+  const wheelsReady =
+    !hdGlbMode ||
+    Boolean(m.integratedWheelsUsed) ||
+    !isCarWheelGlbLoaded() ||
+    m.wheels.every((w) => Boolean(w.glbWheel));
+
+  if (
+    m.glbModeUsed === hdGlbMode &&
+    m.glbSource === desiredSrc &&
+    (type !== 'sports' || m.heroSiteUsed === wantHero) &&
+    wheelsReady
+  ) {
+    return Boolean(m.glbShell);
+  }
+
+  if (m.glbShell && m.glbSource !== desiredSrc) {
+    m.tiltGroup.remove(m.glbShell);
+    m.glbShell = null;
+  }
+
+  let glb: THREE.Group | null = m.glbShell ?? null;
+  let integratedWheels = Boolean(m.integratedWheelsUsed);
+  let sourceTag: string | null = m.glbSource ?? null;
+
+  if (!glb || m.glbSource !== desiredSrc) {
+    glb = null;
+    integratedWheels = false;
+    sourceTag = null;
+    if (sp.isAircraft) {
+      if (hdGlbMode) {
+        glb = cloneAircraftGlb(type);
+        sourceTag = (glb?.userData?.glbSource as string | undefined) ?? null;
+      }
+    } else {
+      const res = cloneCarGlb(type, m.paint, hdGlbMode, allowHeroSite);
+      if (res) {
+        glb = res.group;
+        integratedWheels = res.integratedWheels;
+        sourceTag = res.sourceTag;
+      }
+    }
+  }
+
+  m.glbModeUsed = hdGlbMode;
+  m.heroSiteUsed = wantHero;
+  m.glbSource = sourceTag;
+  m.integratedWheelsUsed = integratedWheels;
+
+  if (glb) {
+    m.glbShell = glb;
+    m.tiltGroup.add(glb);
+    for (const part of m.parts) part.visible = false;
+  } else {
+    for (const part of m.parts) part.visible = true;
+  }
+
+  // Update wheels: hide procedural wheels on models with integrated wheels (Ferrari/MilkTruck),
+  // use sculpted alloy car_wheel.glb when hdGlbMode is ON, otherwise restore procedural wheels.
+  for (const w of m.wheels) {
+    if (integratedWheels) {
+      if (w.mesh) w.mesh.visible = false;
+      if (w.glbWheel) w.glbWheel.visible = false;
+    } else if (hdGlbMode) {
+      if (!w.glbWheel) {
+        const wg = cloneCarWheelGlb(sp.wheelR);
+        if (wg) {
+          if (w.pivot.position.x < 0) wg.rotation.y = Math.PI;
+          w.spin.add(wg);
+          w.glbWheel = wg;
+        }
+      }
+      if (w.glbWheel) {
+        w.glbWheel.visible = true;
+        if (w.mesh) w.mesh.visible = false;
+      } else if (w.mesh) {
+        w.mesh.visible = true;
+      }
+    } else {
+      if (w.glbWheel) w.glbWheel.visible = false;
+      if (w.mesh) w.mesh.visible = true;
+    }
+  }
+
+  return Boolean(glb);
+}
+
+export function repaintVehicleGlb(m: VehicleModel, paintHex: number): void {
+  m.paint = paintHex;
+  if (m.glbShell) repaintGlbRoot(m.glbShell, paintHex);
 }
 
 /** Push vertices of the body inward near a local impact point (fender dents). */

@@ -32,31 +32,55 @@ function normalizeGeo(raw: THREE.BufferGeometry): THREE.BufferGeometry {
   return g;
 }
 
-/** Merges multiple geometries with identical attributes into one BufferGeometry. */
+/** Merges multiple geometries with POSITION + NORMAL + TEXCOORD_0 into one BufferGeometry. */
 function mergeSimple(geos: THREE.BufferGeometry[]): THREE.BufferGeometry {
   const norm = geos.map(normalizeGeo);
   let totalVerts = 0;
   for (const g of norm) totalVerts += g.attributes.position.count;
   const pos = new Float32Array(totalVerts * 3);
   const nrm = new Float32Array(totalVerts * 3);
+  const uv = new Float32Array(totalVerts * 2);
   let off = 0;
+  let uvOff = 0;
   for (const g of norm) {
     const p = g.attributes.position;
     const n = g.attributes.normal;
+    const u = g.attributes.uv;
     for (let i = 0; i < p.count; i++) {
-      pos[off] = p.getX(i);
-      pos[off + 1] = p.getY(i);
-      pos[off + 2] = p.getZ(i);
-      nrm[off] = n.getX(i);
-      nrm[off + 1] = n.getY(i);
-      nrm[off + 2] = n.getZ(i);
+      const px = p.getX(i), py = p.getY(i), pz = p.getZ(i);
+      const nx = n.getX(i), ny = n.getY(i), nz = n.getZ(i);
+      pos[off] = px;
+      pos[off + 1] = py;
+      pos[off + 2] = pz;
+      nrm[off] = nx;
+      nrm[off + 1] = ny;
+      nrm[off + 2] = nz;
+      if (u) {
+        uv[uvOff] = u.getX(i);
+        uv[uvOff + 1] = u.getY(i);
+      } else {
+        // Clean triplanar box projection fallback when ExtrudeGeometry lacks normalized UVs
+        const ax = Math.abs(nx), ay = Math.abs(ny), az = Math.abs(nz);
+        if (ay >= ax && ay >= az) {
+          uv[uvOff] = px * 0.5 + 0.5;
+          uv[uvOff + 1] = pz * 0.5 + 0.5;
+        } else if (ax >= az) {
+          uv[uvOff] = pz * 0.5 + 0.5;
+          uv[uvOff + 1] = py * 0.5 + 0.5;
+        } else {
+          uv[uvOff] = px * 0.5 + 0.5;
+          uv[uvOff + 1] = py * 0.5 + 0.5;
+        }
+      }
       off += 3;
+      uvOff += 2;
     }
     g.dispose();
   }
   const out = new THREE.BufferGeometry();
   out.setAttribute('position', new THREE.BufferAttribute(pos, 3));
   out.setAttribute('normal', new THREE.BufferAttribute(nrm, 3));
+  out.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
   return out;
 }
 
@@ -166,11 +190,26 @@ function encodeGLB(nodes: NodeDef[], materials: MatSpec[]): Buffer {
         type: 'VEC3',
       });
 
+      const attributes: Record<string, number> = {
+        POSITION: posAcc,
+        NORMAL: nrmAcc,
+      };
+      const uvAttr = g.attributes.uv as THREE.BufferAttribute | undefined;
+      if (uvAttr) {
+        const uvArr = new Float32Array(uvAttr.array);
+        const uvView = pushTypedArray(uvArr, 34962);
+        const uvAcc = accessors.length;
+        accessors.push({
+          bufferView: uvView,
+          componentType: 5126,
+          count: uvAttr.count,
+          type: 'VEC2',
+        });
+        attributes.TEXCOORD_0 = uvAcc;
+      }
+
       meshPrimitives.push({
-        attributes: {
-          POSITION: posAcc,
-          NORMAL: nrmAcc,
-        },
+        attributes,
         material: prim.materialIndex,
         mode: 4, // TRIANGLES
       });
@@ -734,6 +773,261 @@ function buildHumanBaseGlb(): Buffer {
   ], HUMAN_MATS);
 }
 
+// ========================================================================= COMPANION GTA-6 WORLD .GLB PACK
+const PROP_PACK_MATS: MatSpec[] = [
+  { name: 'rubber', baseColorFactor: hexToRgba(0x16181c), metallicFactor: 0.08, roughnessFactor: 0.78 },
+  { name: 'alloy', baseColorFactor: hexToRgba(0xd4dce6), metallicFactor: 0.92, roughnessFactor: 0.16 },
+  { name: 'caliper_red', baseColorFactor: hexToRgba(0xd92626), metallicFactor: 0.55, roughnessFactor: 0.24 },
+  { name: 'wood', baseColorFactor: hexToRgba(0x9d6d3b), metallicFactor: 0.04, roughnessFactor: 0.84 },
+  { name: 'steel', baseColorFactor: hexToRgba(0x3a4048), metallicFactor: 0.78, roughnessFactor: 0.34 },
+  { name: 'drum_blue', baseColorFactor: hexToRgba(0x286299), metallicFactor: 0.48, roughnessFactor: 0.42 },
+  { name: 'bin_green', baseColorFactor: hexToRgba(0x2f5e44), metallicFactor: 0.32, roughnessFactor: 0.56 },
+  { name: 'bark', baseColorFactor: hexToRgba(0x6e533b), metallicFactor: 0.02, roughnessFactor: 0.92 },
+  { name: 'frond', baseColorFactor: hexToRgba(0x2d8a3e), metallicFactor: 0.04, roughnessFactor: 0.62, doubleSided: true },
+  { name: 'lamp_emit', baseColorFactor: hexToRgba(0xfff4d4), metallicFactor: 0.1, roughnessFactor: 0.12, emissiveFactor: [1.0, 0.88, 0.6] },
+];
+
+function buildCarWheelGlb(): Buffer {
+  // Normalized unit wheel: radius 0.35m, width 0.26m, centered on (0,0,0), rolling axis X
+  const tire: THREE.BufferGeometry[] = [
+    tx(new THREE.TorusGeometry(0.285, 0.072, 12, 24), 0, 0, 0, 0, Math.PI / 2, 0, 1, 1, 1.45),
+    tx(new THREE.CylinderGeometry(0.28, 0.28, 0.25, 24), 0, 0, 0, 0, 0, Math.PI / 2),
+  ];
+  const alloy: THREE.BufferGeometry[] = [
+    tx(new THREE.CylinderGeometry(0.225, 0.225, 0.21, 22), 0, 0, 0, 0, 0, Math.PI / 2),
+    tx(new THREE.CylinderGeometry(0.055, 0.055, 0.255, 12), 0, 0, 0, 0, 0, Math.PI / 2),
+  ];
+  for (let i = 0; i < 5; i++) {
+    const a = (i / 5) * Math.PI * 2;
+    for (const split of [-0.1, 0.1]) {
+      const ang = a + split;
+      const y = Math.cos(ang) * 0.12;
+      const z = Math.sin(ang) * 0.12;
+      alloy.push(tx(new THREE.BoxGeometry(0.045, 0.21, 0.024), 0.095, y, z, -ang, 0, 0));
+    }
+  }
+  const disc = [tx(new THREE.CylinderGeometry(0.165, 0.165, 0.04, 18), 0.04, 0, 0, 0, 0, Math.PI / 2)];
+  const cal = [tx(new THREE.BoxGeometry(0.06, 0.11, 0.065), 0.045, 0.05, 0.13, 0.35, 0, 0)];
+  return encodeGLB([{
+    name: 'car_wheel',
+    primitives: [
+      { geo: mergeSimple(tire), materialIndex: 0 },
+      { geo: mergeSimple(alloy), materialIndex: 1 },
+      { geo: mergeSimple(disc), materialIndex: 4 },
+      { geo: mergeSimple(cal), materialIndex: 2 },
+    ],
+  }], PROP_PACK_MATS);
+}
+
+function buildCrateGlb(): Buffer {
+  const wood: THREE.BufferGeometry[] = [tx(new THREE.BoxGeometry(1.02, 1.02, 1.02), 0, 0.55, 0)];
+  const steel: THREE.BufferGeometry[] = [];
+  // Corner framing planks & steel straps
+  for (const sx of [-1, 1]) {
+    for (const sz of [-1, 1]) {
+      wood.push(tx(new THREE.BoxGeometry(0.12, 1.1, 0.12), sx * 0.49, 0.55, sz * 0.49));
+      steel.push(tx(new THREE.BoxGeometry(0.14, 0.14, 0.14), sx * 0.5, 0.07, sz * 0.5));
+      steel.push(tx(new THREE.BoxGeometry(0.14, 0.14, 0.14), sx * 0.5, 1.03, sz * 0.5));
+    }
+    wood.push(tx(new THREE.BoxGeometry(0.08, 1.28, 0.04), 0, 0.55, sx * 0.53, 0, 0, sx * 0.78));
+    wood.push(tx(new THREE.BoxGeometry(0.04, 1.28, 0.08), sx * 0.53, 0.55, 0, sx * 0.78, 0, 0));
+  }
+  return encodeGLB([{
+    name: 'prop_crate',
+    primitives: [
+      { geo: mergeSimple(wood), materialIndex: 3 },
+      { geo: mergeSimple(steel), materialIndex: 4 },
+    ],
+  }], PROP_PACK_MATS);
+}
+
+function buildBarrelGlb(): Buffer {
+  const body: THREE.BufferGeometry[] = [
+    tx(new THREE.CylinderGeometry(0.355, 0.355, 0.98, 18), 0, 0.5, 0),
+  ];
+  const rims: THREE.BufferGeometry[] = [];
+  for (const ry of [0.025, 0.33, 0.67, 0.975]) {
+    rims.push(tx(new THREE.TorusGeometry(0.358, 0.022, 8, 20), 0, ry, 0, Math.PI / 2, 0, 0));
+  }
+  rims.push(tx(new THREE.CylinderGeometry(0.04, 0.04, 0.04, 10), 0.18, 0.995, 0));
+  rims.push(tx(new THREE.CylinderGeometry(0.025, 0.025, 0.04, 8), -0.16, 0.995, 0.08));
+  return encodeGLB([{
+    name: 'prop_barrel',
+    primitives: [
+      { geo: mergeSimple(body), materialIndex: 5 },
+      { geo: mergeSimple(rims), materialIndex: 4 },
+    ],
+  }], PROP_PACK_MATS);
+}
+
+function buildBinGlb(): Buffer {
+  const green: THREE.BufferGeometry[] = [
+    tx(new THREE.CylinderGeometry(0.33, 0.27, 0.76, 16), 0, 0.39, 0),
+    tx(new THREE.SphereGeometry(0.325, 16, 10, 0, Math.PI * 2, 0, Math.PI * 0.5), 0, 0.77, 0, 0, 0, 0, 1, 0.52, 1),
+  ];
+  const steel: THREE.BufferGeometry[] = [
+    tx(new THREE.TorusGeometry(0.335, 0.02, 8, 18), 0, 0.76, 0, Math.PI / 2, 0, 0),
+    tx(new THREE.BoxGeometry(0.16, 0.09, 0.05), 0, 0.94, 0),
+  ];
+  for (let i = 0; i < 6; i++) {
+    const a = (i / 6) * Math.PI * 2;
+    steel.push(tx(new THREE.BoxGeometry(0.03, 0.56, 0.03), Math.cos(a) * 0.3, 0.42, Math.sin(a) * 0.3, 0, -a, 0));
+  }
+  return encodeGLB([{
+    name: 'prop_bin',
+    primitives: [
+      { geo: mergeSimple(green), materialIndex: 6 },
+      { geo: mergeSimple(steel), materialIndex: 4 },
+    ],
+  }], PROP_PACK_MATS);
+}
+
+function buildPalmGlb(): Buffer {
+  const trunk: THREE.BufferGeometry[] = [];
+  const segs = 9;
+  for (let i = 0; i < segs; i++) {
+    const t = i / segs;
+    const x = Math.sin(t * 1.4) * 0.42;
+    const y = i * 0.92 + 0.46;
+    const rTop = 0.28 - t * 0.11;
+    const rBot = 0.31 - t * 0.11;
+    trunk.push(tx(new THREE.CylinderGeometry(rTop, rBot, 0.98, 10), x, y, 0, 0, 0, -Math.cos(t * 1.4) * 0.07));
+  }
+  const fronds: THREE.BufferGeometry[] = [];
+  const crownX = Math.sin(1.4) * 0.42;
+  const crownY = segs * 0.92;
+  for (let i = 0; i < 11; i++) {
+    const yaw = (i / 11) * Math.PI * 2 + (i % 2) * 0.18;
+    const pitch = (i % 3 === 0 ? 0.32 : -0.18);
+    for (let s = 0; s < 4; s++) {
+      const dist = 0.7 + s * 0.72;
+      const drop = s * s * 0.14;
+      const w = (1.15 - s * 0.18);
+      const frondSeg = tx(new THREE.BoxGeometry(w, 0.05, 0.82), 0, -drop + Math.sin(pitch) * dist * 0.4, dist, -0.22 - s * 0.15, 0, 0);
+      fronds.push(tx(frondSeg, crownX, crownY, 0, 0, yaw, 0));
+    }
+  }
+  return encodeGLB([{
+    name: 'prop_palm',
+    primitives: [
+      { geo: mergeSimple(trunk), materialIndex: 7 },
+      { geo: mergeSimple(fronds), materialIndex: 8 },
+    ],
+  }], PROP_PACK_MATS);
+}
+
+function buildLampGlb(): Buffer {
+  const pole: THREE.BufferGeometry[] = [
+    tx(new THREE.CylinderGeometry(0.24, 0.3, 0.75, 12), 0, 0.375, 0),
+    tx(new THREE.CylinderGeometry(0.11, 0.18, 5.4, 12), 0, 3.1, 0),
+    tx(new THREE.BoxGeometry(2.2, 0.1, 0.1), 0, 5.75, 0),
+  ];
+  const emit: THREE.BufferGeometry[] = [
+    tx(new THREE.SphereGeometry(0.22, 10, 8), -1.05, 5.65, 0, 0, 0, 0, 1.2, 0.7, 1.2),
+    tx(new THREE.SphereGeometry(0.22, 10, 8), 1.05, 5.65, 0, 0, 0, 0, 1.2, 0.7, 1.2),
+  ];
+  return encodeGLB([{
+    name: 'prop_lamp',
+    primitives: [
+      { geo: mergeSimple(pole), materialIndex: 4 },
+      { geo: mergeSimple(emit), materialIndex: 9 },
+    ],
+  }], PROP_PACK_MATS);
+}
+
+function buildAircraftGlb(isJet: boolean): Buffer {
+  const body: THREE.BufferGeometry[] = [];
+  const trim: THREE.BufferGeometry[] = [];
+  const glass: THREE.BufferGeometry[] = [];
+  if (isJet) {
+    const fy = 1.48;
+    body.push(tx(new THREE.CylinderGeometry(0.56, 0.74, 4.8, 16), 0, fy, 1.1, Math.PI / 2, 0, 0));
+    body.push(tx(new THREE.CylinderGeometry(0.74, 0.52, 4.6, 16), 0, fy, -3.3, Math.PI / 2, 0, 0));
+    trim.push(tx(new THREE.ConeGeometry(0.56, 2.5, 16), 0, fy - 0.04, 4.75, Math.PI / 2, 0, 0));
+    glass.push(tx(new THREE.SphereGeometry(0.46, 14, 10), 0, fy + 0.42, 2.0, 0, 0, 0, 0.92, 0.78, 3.2));
+    for (const s of [-1, 1]) {
+      body.push(tx(new THREE.BoxGeometry(0.5, 0.56, 3.8), s * 0.74, fy - 0.04, -0.4));
+      body.push(tx(new THREE.BoxGeometry(4.5, 0.13, 2.2), s * 2.6, fy - 0.1, -1.3, 0, s * 0.34, 0));
+      body.push(tx(new THREE.BoxGeometry(1.7, 0.1, 1.1), s * 1.15, fy - 0.05, -4.4, 0, s * 0.25, 0));
+      body.push(tx(new THREE.BoxGeometry(0.11, 1.65, 1.45), s * 0.65, fy + 0.88, -4.2, -0.25, 0, s * -0.2));
+      trim.push(tx(new THREE.CylinderGeometry(0.28, 0.34, 0.55, 12), s * 0.34, fy, -5.75, Math.PI / 2, 0, 0));
+    }
+    trim.push(tx(new THREE.CylinderGeometry(0.06, 0.06, 1.1, 8), 0, 0.6, 3.2));
+    trim.push(tx(new THREE.CylinderGeometry(0.07, 0.07, 1.1, 8), -1.1, 0.6, -1.0));
+    trim.push(tx(new THREE.CylinderGeometry(0.07, 0.07, 1.1, 8), 1.1, 0.6, -1.0));
+  } else {
+    const fy = 1.38;
+    body.push(tx(new THREE.CylinderGeometry(0.62, 0.42, 4.2, 14), 0, fy, -0.9, Math.PI / 2, 0, 0));
+    body.push(tx(new THREE.BoxGeometry(1.16, 1.08, 2.8), 0, fy + 0.06, 1.15));
+    trim.push(tx(new THREE.CylinderGeometry(0.46, 0.6, 1.15, 14), 0, fy, 3.0, Math.PI / 2, 0, 0));
+    glass.push(tx(new THREE.BoxGeometry(1.1, 0.56, 1.4), 0, fy + 0.42, 1.45, -0.22, 0, 0));
+    body.push(tx(new THREE.BoxGeometry(11.4, 0.16, 1.68), 0, fy + 0.72, 0.85));
+    body.push(tx(new THREE.BoxGeometry(3.7, 0.1, 0.9), 0, fy + 0.18, -3.55));
+    body.push(tx(new THREE.BoxGeometry(0.12, 1.35, 1.1), 0, fy + 0.78, -3.45, -0.22, 0, 0));
+    for (const s of [-1, 1]) {
+      trim.push(tx(new THREE.CylinderGeometry(0.05, 0.05, 1.3, 8), s * 1.1, 0.65, 1.3, 0, 0, s * 0.25));
+      trim.push(tx(new THREE.CylinderGeometry(0.32, 0.32, 0.22, 14), s * 1.25, 0.32, 1.3, 0, 0, Math.PI / 2));
+    }
+  }
+  return encodeGLB([{
+    name: isJet ? 'plane_jet' : 'plane_prop',
+    primitives: [
+      { geo: mergeSimple(body), materialIndex: 0 },
+      { geo: mergeSimple(trim), materialIndex: 4 },
+      { geo: mergeSimple(glass), materialIndex: 2 },
+    ],
+  }], CAR_MATS);
+}
+
+function buildWeaponPackGlb(): Buffer {
+  const gunMats: MatSpec[] = [
+    { name: 'gunmetal', baseColorFactor: hexToRgba(0x282c32), metallicFactor: 0.85, roughnessFactor: 0.32 },
+    { name: 'grip_wood', baseColorFactor: hexToRgba(0x5e3b24), metallicFactor: 0.05, roughnessFactor: 0.74 },
+    { name: 'polymer', baseColorFactor: hexToRgba(0x16181c), metallicFactor: 0.18, roughnessFactor: 0.56 },
+    { name: 'brass', baseColorFactor: hexToRgba(0xd4a842), metallicFactor: 0.9, roughnessFactor: 0.22 },
+  ];
+  const pistolMetal = [
+    tx(new THREE.BoxGeometry(0.055, 0.068, 0.26), 0, 0.04, 0.03),
+    tx(new THREE.CylinderGeometry(0.015, 0.015, 0.08, 8), 0, 0.045, 0.18, Math.PI / 2, 0, 0),
+  ];
+  const pistolGrip = [tx(new THREE.BoxGeometry(0.046, 0.13, 0.065), 0, -0.045, -0.06, -0.22, 0, 0)];
+
+  const smgMetal = [
+    tx(new THREE.BoxGeometry(0.068, 0.095, 0.36), 0, 0.03, 0.02),
+    tx(new THREE.CylinderGeometry(0.022, 0.022, 0.22, 10), 0, 0.04, 0.28, Math.PI / 2, 0, 0),
+  ];
+  const smgPoly = [
+    tx(new THREE.BoxGeometry(0.048, 0.17, 0.052), 0, -0.09, 0.08, 0.12, 0, 0),
+    tx(new THREE.BoxGeometry(0.048, 0.13, 0.06), 0, -0.05, -0.1, -0.2, 0, 0),
+  ];
+
+  const rifleMetal = [
+    tx(new THREE.BoxGeometry(0.072, 0.1, 0.54), 0, 0.04, 0.05),
+    tx(new THREE.CylinderGeometry(0.018, 0.018, 0.44, 10), 0, 0.052, 0.5, Math.PI / 2, 0, 0),
+    tx(new THREE.CylinderGeometry(0.028, 0.028, 0.22, 10), 0, 0.125, 0.02, Math.PI / 2, 0, 0),
+  ];
+  const rifleWood = [
+    tx(new THREE.BoxGeometry(0.062, 0.11, 0.28), 0, 0.01, -0.34),
+    tx(new THREE.BoxGeometry(0.052, 0.18, 0.068), 0, -0.08, 0.12, 0.18, 0, 0),
+  ];
+
+  const rpgMetal = [
+    tx(new THREE.CylinderGeometry(0.058, 0.058, 1.05, 14), 0, 0.04, 0, Math.PI / 2, 0, 0),
+    tx(new THREE.ConeGeometry(0.09, 0.24, 12), 0, 0.04, 0.6, Math.PI / 2, 0, 0),
+  ];
+  const rpgWood = [
+    tx(new THREE.CylinderGeometry(0.068, 0.068, 0.34, 12), 0, 0.04, 0.15, Math.PI / 2, 0, 0),
+    tx(new THREE.BoxGeometry(0.05, 0.14, 0.06), 0, -0.06, 0.12),
+  ];
+
+  return encodeGLB([
+    { name: 'weapon_pistol', primitives: [{ geo: mergeSimple(pistolMetal), materialIndex: 0 }, { geo: mergeSimple(pistolGrip), materialIndex: 2 }] },
+    { name: 'weapon_smg', primitives: [{ geo: mergeSimple(smgMetal), materialIndex: 0 }, { geo: mergeSimple(smgPoly), materialIndex: 2 }] },
+    { name: 'weapon_rifle', primitives: [{ geo: mergeSimple(rifleMetal), materialIndex: 0 }, { geo: mergeSimple(rifleWood), materialIndex: 1 }] },
+    { name: 'weapon_rpg', primitives: [{ geo: mergeSimple(rpgMetal), materialIndex: 0 }, { geo: mergeSimple(rpgWood), materialIndex: 1 }] },
+  ], gunMats);
+}
+
 // ========================================================================= WRITE ALL .GLB FILES
 const outDir = path.resolve(process.cwd(), 'public/models');
 fs.mkdirSync(outDir, { recursive: true });
@@ -743,11 +1037,20 @@ const files: [string, Buffer][] = [
   ['car_sedan.glb', buildCarGlb('sedan')],
   ['car_suv.glb', buildCarGlb('suv')],
   ['car_police.glb', buildCarGlb('police')],
+  ['car_wheel.glb', buildCarWheelGlb()],
   ['building_artdeco.glb', buildArtDecoGlb()],
   ['building_tower.glb', buildTowerGlb()],
   ['building_havana.glb', buildHavanaGlb()],
   ['building_wynwood.glb', buildWynwoodGlb()],
   ['human_base.glb', buildHumanBaseGlb()],
+  ['prop_crate.glb', buildCrateGlb()],
+  ['prop_barrel.glb', buildBarrelGlb()],
+  ['prop_bin.glb', buildBinGlb()],
+  ['prop_palm.glb', buildPalmGlb()],
+  ['prop_lamp.glb', buildLampGlb()],
+  ['plane_jet.glb', buildAircraftGlb(true)],
+  ['plane_prop.glb', buildAircraftGlb(false)],
+  ['weapon_pack.glb', buildWeaponPackGlb()],
 ];
 
 for (const [name, buf] of files) {

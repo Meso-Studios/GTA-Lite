@@ -4,7 +4,8 @@ import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js
 import { Rng, clamp } from './config';
 import { box, capsule, cyl, finish, sph } from './geo';
 import { makeContactShadow } from './textures';
-import { cloneHumanGlbPart } from './glbAssets';
+import { cloneHumanGlbPart, cloneSiteCharacterGlb, isGlbWorldMode, type SiteCharacterInstance } from './glbAssets';
+import { microtextures } from './microtextures';
 import { evaluateAnimationPose, selectContextAnimation } from './animations';
 
 export interface Look {
@@ -138,6 +139,36 @@ export const TARGET_LOOK: Look = {
   gender: 'm', skin: 0xe0ac86, hair: 0x888888, eyeColor: 0x3a4a5a, hairStyle: 'short', top: 0xf5f5f0, topStyle: 'suit',
   bottom: 0xf5f5f0, bottomStyle: 'suit', shoe: 0x3b2a1a, build: 1.15, glasses: true, hat: 'fedora', hatColor: 0xf5f5f0, tie: 0xaa1111, height: 1.04,
 };
+
+export function blueShirtGuyLook(r: Rng): Look {
+  return {
+    gender: 'm', skin: 0xf0c49b, hair: r.pick([0x2b1d14, 0x3a2618]), eyeColor: 0x355c7d, hairStyle: 'short',
+    top: 0x3da9fc, topStyle: 'suit', bottom: 0x9c896c, bottomStyle: 'jeans', shoe: 0x3b2a1a,
+    build: 1.02, tie: 0x1e3a5f, glasses: false, height: 1.02,
+  };
+}
+export function baristaLook(r: Rng): Look {
+  return {
+    gender: r.chance(0.55) ? 'f' : 'm', skin: r.pick(SKINS), hair: r.pick(HAIRS), eyeColor: r.pick(EYES),
+    hairStyle: r.chance(0.5) ? 'bun' : 'short', top: r.pick([0x3a5a40, 0x2d4a36]), topStyle: 'tee',
+    bottom: 0x1c2228, bottomStyle: 'jeans', shoe: 0x151515, build: 0.96, hat: 'cap', hatColor: 0x2b4030, height: 0.98,
+  };
+}
+export function bankTellerLook(r: Rng): Look {
+  return {
+    gender: r.chance(0.4) ? 'f' : 'm', skin: r.pick(SKINS), hair: r.pick(HAIRS), eyeColor: r.pick(EYES),
+    hairStyle: 'crew', top: 0x8fb8de, topStyle: 'suit', bottom: 0x242c38, bottomStyle: 'suit',
+    shoe: 0x111111, build: 1.0, tie: 0x20355a, glasses: r.chance(0.45), height: 1.0,
+  };
+}
+export function influencerLook(r: Rng): Look {
+  return {
+    gender: r.chance(0.65) ? 'f' : 'm', skin: r.pick(SKINS), hair: r.pick(HAIRS), eyeColor: r.pick(EYES),
+    hairStyle: r.chance(0.6) ? 'long' : 'pony', top: r.pick(TROPICAL_TOPS), topStyle: 'jacket',
+    bottom: r.pick([0xf2f4f7, 0x2b2d42]), bottomStyle: 'shorts', shoe: 0xf5f5f5,
+    build: 0.94, glasses: true, camera: true, height: 0.99,
+  };
+}
 
 interface Parts {
   torso: THREE.BufferGeometry;
@@ -458,6 +489,7 @@ export const humanMat = new THREE.MeshPhysicalMaterial({
   vertexColors: true, roughness: 0.82, metalness: 0.01, clearcoat: 0.0,
   sheen: 0.35, sheenRoughness: 0.85, sheenColor: new THREE.Color(0x9a9a9a), envMapIntensity: 0.5,
 });
+microtextures.registerHumanMat(humanMat);
 
 const weaponMat = new THREE.MeshStandardMaterial({
   vertexColors: true, roughness: 0.42, metalness: 0.45, envMapIntensity: 0.85,
@@ -646,6 +678,8 @@ export interface HumanRig {
   idleEpoch: number;
   idleTimer: number;
   glbAttached: boolean;
+  siteChar?: SiteCharacterInstance | null;
+  kindHint?: string;
 }
 
 let humanSeedSeq = 1;
@@ -699,6 +733,8 @@ export function createHuman(L: Look): HumanRig {
     idleEpoch: Math.floor(Math.random() * 24),
     idleTimer: 3 + Math.random() * 5,
     glbAttached: false,
+    siteChar: null,
+    kindHint: 'civ',
     pose: {
       hipL: 0, hipR: 0, knL: 0, knR: 0, aLx: 0, aLz: 0, aRx: 0, aRz: 0, elL: 0, elR: 0,
       lean: 0, headX: 0, headY: 0, hipsY: 0.92, hipsX: 0, twist: 0, bank: 0,
@@ -714,78 +750,117 @@ function getHumanPartMat(hex: number, rough: number, metal = 0.04): THREE.MeshSt
   let m = glbHumanMatCache.get(k);
   if (!m) {
     m = new THREE.MeshStandardMaterial({ color: hex, roughness: rough, metalness: metal, envMapIntensity: 0.72 });
+    microtextures.registerHumanMat(m);
     glbHumanMatCache.set(k, m);
   }
   return m;
 }
 
-/** Upgrades a character rig with sculpted anatomical .glb parts while cleanly hiding replaced procedural geometry (zero Z-fighting). */
-export function upgradeHumanToGlb(r: HumanRig): boolean {
-  if (r.glbAttached) return true;
+/** Upgrades a character rig with sculpted anatomical .glb parts & skeletal Model-Site .glb models (Soldier/CesiumMan) cleanly. */
+export function upgradeHumanToGlb(
+  r: HumanRig,
+  hdGlbMode = isGlbWorldMode(),
+  kindHint = r.kindHint ?? 'civ',
+): boolean {
+  r.kindHint = kindHint;
   const L = r.look;
-  const topMat = getHumanPartMat(L.top, L.topStyle === 'suit' ? 0.62 : 0.78);
-  const skinMat = getHumanPartMat(L.skin, 0.58, 0.02);
-  const botMat = getHumanPartMat(L.bottom, 0.84);
-  const shoeMat = getHumanPartMat(L.shoe, 0.48, 0.08);
-  const soleMat = getHumanPartMat(0xebeef2, 0.72, 0.02);
-  const beltMat = getHumanPartMat(0x181a1f, 0.34, 0.48);
 
-  const torsoGlb = cloneHumanGlbPart('TorsoMesh', topMat, beltMat);
-  if (!torsoGlb) return false;
+  if (!r.glbAttached) {
+    const topMat = getHumanPartMat(L.top, L.topStyle === 'suit' ? 0.62 : 0.78);
+    const skinMat = getHumanPartMat(L.skin, 0.58, 0.02);
+    const botMat = getHumanPartMat(L.bottom, 0.84);
+    const shoeMat = getHumanPartMat(L.shoe, 0.48, 0.08);
+    const soleMat = getHumanPartMat(0xebeef2, 0.72, 0.02);
+    const beltMat = getHumanPartMat(0x181a1f, 0.34, 0.48);
 
-  // Hide replaced procedural body & limb meshes (keep r.meshes[1] = head with unique eyes/hair/hats/beards/shades)
-  for (let i = 0; i < r.meshes.length; i++) {
-    if (i !== 1) r.meshes[i].visible = false;
+    const torsoGlb = cloneHumanGlbPart('TorsoMesh', topMat, beltMat);
+    if (torsoGlb) {
+      for (let i = 0; i < r.meshes.length; i++) {
+        if (i !== 1) r.meshes[i].visible = false;
+      }
+
+      const b = L.build;
+      torsoGlb.position.set(0, 0.03, 0);
+      torsoGlb.scale.set(b, 1.0, b);
+      r.spine.add(torsoGlb);
+
+      // Solid collar & upper-chest seal so there is zero gap or bright back-face ring around the neck
+      const collarGeo = new THREE.CylinderGeometry(0.062 * b, 0.095 * b, 0.065, 14);
+      const collarMesh = new THREE.Mesh(collarGeo, topMat);
+      collarMesh.position.set(0, 0.505, 0);
+      collarMesh.castShadow = true;
+      collarMesh.receiveShadow = true;
+      r.spine.add(collarMesh);
+      r.head.position.y = 0.585;
+
+      const pelvisGlb = cloneHumanGlbPart('PelvisMesh', botMat);
+      if (pelvisGlb) {
+        pelvisGlb.position.set(0, 0.02, 0);
+        pelvisGlb.scale.set(b, 1.0, b);
+        r.hips.add(pelvisGlb);
+      }
+
+      if (L.bottomStyle === 'skirt') {
+        const skirtGeo = new THREE.CylinderGeometry(0.145 * b, 0.215 * b, 0.34, 14);
+        const skirtMesh = new THREE.Mesh(skirtGeo, botMat);
+        skirtMesh.position.set(0, -0.17, 0);
+        skirtMesh.castShadow = true;
+        skirtMesh.receiveShadow = true;
+        r.hips.add(skirtMesh);
+      }
+
+      const sleeveMat = L.topStyle === 'tank' ? skinMat : topMat;
+      const foreMat = L.topStyle === 'long' || L.topStyle === 'jacket' || L.topStyle === 'suit' || L.topStyle === 'uniform' ? topMat : skinMat;
+      for (const arm of [r.armL, r.armR]) {
+        const ua = cloneHumanGlbPart('UpperArmMesh', sleeveMat);
+        if (ua) {
+          ua.position.set(0, -0.02, 0);
+          ua.scale.set(b * 0.9, 1.0, b * 0.9);
+          arm.add(ua);
+        }
+      }
+      for (const el of [r.elL, r.elR]) {
+        const fa = cloneHumanGlbPart('ForeArmMesh', foreMat);
+        if (fa) { fa.scale.set(b, 1.04, b); el.add(fa); }
+        const hd = cloneHumanGlbPart('HandMesh', skinMat);
+        if (hd) { hd.position.set(0, -0.25, 0); el.add(hd); }
+      }
+      const thighMat = L.bottomStyle === 'skirt' ? skinMat : botMat;
+      const shinMat = L.bottomStyle === 'shorts' || L.bottomStyle === 'skirt' ? skinMat : botMat;
+      for (const leg of [r.legL, r.legR]) {
+        const th = cloneHumanGlbPart('ThighMesh', thighMat);
+        if (th) { th.scale.set(b, 1.06, b); leg.add(th); }
+      }
+      for (const kn of [r.knL, r.knR]) {
+        const sh = cloneHumanGlbPart('ShinMesh', shinMat);
+        if (sh) { sh.scale.set(b, 1.04, b); kn.add(sh); }
+        const shoe = cloneHumanGlbPart('ShoeMesh', shoeMat, soleMat);
+        if (shoe) { shoe.position.set(0, -0.41, 0.01); kn.add(shoe); }
+      }
+
+      r.glbAttached = true;
+    }
   }
 
-  const b = L.build;
-  torsoGlb.position.set(0, 0.03, 0);
-  torsoGlb.scale.set(b, 1.0, b);
-  r.spine.add(torsoGlb);
-
-  const pelvisGlb = cloneHumanGlbPart('PelvisMesh', botMat);
-  if (pelvisGlb) {
-    pelvisGlb.position.set(0, 0.02, 0);
-    pelvisGlb.scale.set(b, 1.0, b);
-    r.hips.add(pelvisGlb);
+  // Optional Model-Site skeletal characters (Soldier.glb / CesiumMan.glb) for standing/walking NPCs
+  if (hdGlbMode && kindHint !== 'player' && kindHint !== 'guy') {
+    if (!r.siteChar) {
+      const sc = cloneSiteCharacterGlb(kindHint, r.entitySeed);
+      if (sc) {
+        r.siteChar = sc;
+        r.root.add(sc.root);
+      }
+    }
+    if (r.siteChar) {
+      r.siteChar.root.visible = true;
+      r.hips.visible = false;
+    }
+  } else {
+    if (r.siteChar) r.siteChar.root.visible = false;
+    r.hips.visible = true;
   }
 
-  if (L.bottomStyle === 'skirt') {
-    const skirtGeo = new THREE.CylinderGeometry(0.145 * b, 0.215 * b, 0.34, 14);
-    const skirtMesh = new THREE.Mesh(skirtGeo, botMat);
-    skirtMesh.position.set(0, -0.17, 0);
-    skirtMesh.castShadow = true;
-    skirtMesh.receiveShadow = true;
-    r.hips.add(skirtMesh);
-  }
-
-  const sleeveMat = L.topStyle === 'tank' ? skinMat : topMat;
-  const foreMat = L.topStyle === 'long' || L.topStyle === 'jacket' || L.topStyle === 'suit' || L.topStyle === 'uniform' ? topMat : skinMat;
-  for (const arm of [r.armL, r.armR]) {
-    const ua = cloneHumanGlbPart('UpperArmMesh', sleeveMat);
-    if (ua) { ua.scale.set(b, 1.04, b); arm.add(ua); }
-  }
-  for (const el of [r.elL, r.elR]) {
-    const fa = cloneHumanGlbPart('ForeArmMesh', foreMat);
-    if (fa) { fa.scale.set(b, 1.04, b); el.add(fa); }
-    const hd = cloneHumanGlbPart('HandMesh', skinMat);
-    if (hd) { hd.position.set(0, -0.25, 0); el.add(hd); }
-  }
-  const thighMat = L.bottomStyle === 'skirt' ? skinMat : botMat;
-  const shinMat = L.bottomStyle === 'shorts' || L.bottomStyle === 'skirt' ? skinMat : botMat;
-  for (const leg of [r.legL, r.legR]) {
-    const th = cloneHumanGlbPart('ThighMesh', thighMat);
-    if (th) { th.scale.set(b, 1.06, b); leg.add(th); }
-  }
-  for (const kn of [r.knL, r.knR]) {
-    const sh = cloneHumanGlbPart('ShinMesh', shinMat);
-    if (sh) { sh.scale.set(b, 1.04, b); kn.add(sh); }
-    const shoe = cloneHumanGlbPart('ShoeMesh', shoeMat, soleMat);
-    if (shoe) { shoe.position.set(0, -0.41, 0.01); kn.add(shoe); }
-  }
-
-  r.glbAttached = true;
-  return true;
+  return r.glbAttached || Boolean(r.siteChar);
 }
 
 export function setWeapon(r: HumanRig, kind: GunKind | null) {
@@ -833,6 +908,38 @@ export function animateHuman(r: HumanRig, dt: number, a: AnimIn) {
   const holding = !!r.weapon;
   const wk = r.weaponKind;
   r.shadow.visible = a.mode === 'stand' && !a.airborne;
+
+  // Model-Site rigged .glb character playback (Soldier.glb / CesiumMan.glb) for standing/walking/running unarmed NPCs
+  if (r.siteChar) {
+    const useSiteChar =
+      isGlbWorldMode() &&
+      a.mode === 'stand' &&
+      !holding &&
+      !a.photo &&
+      !a.panic &&
+      !a.crouch &&
+      !a.slide &&
+      !a.airborne;
+    r.siteChar.root.visible = useSiteChar;
+    r.hips.visible = !useSiteChar;
+    if (useSiteChar) {
+      const targetAct: 'idle' | 'walk' | 'run' =
+        a.speed > 3.6 ? 'run' : a.speed > 0.2 ? 'walk' : 'idle';
+      if (r.siteChar.currentAction !== targetAct) {
+        const prev = r.siteChar.currentAction ? r.siteChar.actions[r.siteChar.currentAction] : undefined;
+        const next = r.siteChar.actions[targetAct] ?? r.siteChar.actions.walk ?? r.siteChar.actions.idle;
+        if (prev && prev !== next) prev.fadeOut(0.18);
+        if (next) next.reset().fadeIn(0.18).play();
+        r.siteChar.currentAction = targetAct;
+      }
+      r.siteChar.mixer.update(dt * (targetAct === 'walk' ? clamp(a.speed / 1.5, 0.75, 1.5) : 1.0));
+      r.animClipName = `site_${r.siteChar.key}_${targetAct}`;
+      return;
+    }
+  } else {
+    r.hips.visible = true;
+  }
+
   let rate = 16;
 
   if (a.mode === 'sit') {
@@ -1136,6 +1243,8 @@ export class Ragdoll {
 
   constructor(rig: HumanRig, wish: number, vx: number, vy: number, vz: number, headWhip = 1.0) {
     this.rig = rig;
+    if (rig.siteChar) rig.siteChar.root.visible = false;
+    rig.hips.visible = true;
     rig.shadow.visible = false;
     this.gy = rig.root.position.y;
     const root = rig.root;

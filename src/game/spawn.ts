@@ -1,7 +1,8 @@
 // World population: traffic, parked cars, pedestrians, tourist crowds and police.
 import * as THREE from 'three';
 import { DECK, LANE_INNER, LANE_OUTER, NB, Rng, clamp, groundHeight, roadLine } from './config';
-import { beachgoerLook, civilianLook, copLook, touristLook } from './humans';
+import { bankTellerLook, baristaLook, beachgoerLook, blueShirtGuyLook, civilianLook, copLook, influencerLook, touristLook, upgradeHumanToGlb } from './humans';
+import { isGlbWorldMode } from './glbAssets';
 import { Ped } from './ped';
 import { Vehicle, VMode } from './vehicle';
 import { PAINTS, VehicleType } from './vehicles';
@@ -21,10 +22,11 @@ export function pickType(noPolice = false): VehicleType {
   return 'sedan';
 }
 
-export interface SpawnOpts { paint?: number; mode?: VMode; mission?: boolean; driver?: 'civ' | 'cop' | 'racer' | null; tag?: string }
+export interface SpawnOpts { paint?: number; mode?: VMode; mission?: boolean; driver?: 'civ' | 'cop' | 'racer' | null; tag?: string; allowHeroSite?: boolean }
 
 export function spawnVehicle(g: Game, type: VehicleType, x: number, z: number, yaw: number, o: SpawnOpts = {}): Vehicle {
-  const v = new Vehicle(type, o.paint ?? PAINTS[Math.floor(Math.random() * PAINTS.length)]);
+  const allowHeroSite = Boolean(o.allowHeroSite || o.tag === 'spawn-ferrari' || o.mode === 'player');
+  const v = new Vehicle(type, o.paint ?? PAINTS[Math.floor(Math.random() * PAINTS.length)], allowHeroSite);
   v.place(x, z, yaw);
   v.y = groundHeight(x, z);
   v.mode = o.mode ?? 'idle';
@@ -140,13 +142,49 @@ export function spawnCivilian(g: Game, minD = 32, maxD = 150): Ped | null {
     const d = Math.hypot(x - g.playerX, z - g.playerZ);
     if (d < minD || d > maxD) continue;
     if (g.inView(x, z, 3) && d < 85) continue;
-    const isTourist = Math.random() < 0.25;
-    const p = new Ped(isTourist ? 'tourist' : 'civ', isTourist ? touristLook(rng) : civilianLook(rng));
+    const roll = Math.random();
+    let p: Ped;
+    if (roll < 0.22) {
+      p = new Ped('tourist', touristLook(rng));
+    } else if (roll < 0.30) {
+      p = new Ped('civ', blueShirtGuyLook(rng));
+      p.setFreeCityArchetype('guy');
+    } else if (roll < 0.36) {
+      p = new Ped('civ', baristaLook(rng));
+      p.setFreeCityArchetype('barista');
+    } else if (roll < 0.42) {
+      p = new Ped('civ', bankTellerLook(rng));
+      p.setFreeCityArchetype('teller');
+    } else if (roll < 0.48) {
+      p = new Ped('civ', influencerLook(rng));
+      p.setFreeCityArchetype('influencer');
+    } else {
+      p = new Ped('civ', civilianLook(rng));
+    }
+    upgradeHumanToGlb(p.rig, isGlbWorldMode(), p.rig.kindHint);
     p.startNav(g, [k, l, sx, sz]);
     g.addPed(p);
     return p;
   }
   return null;
+}
+
+export function spawnFreeCitySpawnPlaza(g: Game): void {
+  const guy = new Ped('civ', blueShirtGuyLook(rng));
+  guy.setFreeCityArchetype('guy');
+  guy.tag = 'freecity-guy';
+  guy.startCrowd(-295.6, 26.5, -295.6, 26.5, 10);
+  guy.y = groundHeight(-295.6, 26.5);
+  upgradeHumanToGlb(guy.rig, isGlbWorldMode(), 'guy');
+  g.addPed(guy);
+
+  const buddy = new Ped('civ', civilianLook(rng));
+  buddy.setFreeCityArchetype('buddy');
+  buddy.tag = 'freecity-buddy';
+  buddy.startCrowd(-295.6, 28.5, -295.6, 28.5, 10);
+  buddy.y = groundHeight(-295.6, 28.5);
+  upgradeHumanToGlb(buddy.rig, isGlbWorldMode(), 'civ');
+  g.addPed(buddy);
 }
 
 export function streamPeds(g: Game, dt: number) {

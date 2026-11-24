@@ -11,6 +11,8 @@ export interface AmbientCandidate {
   z: number;
   dead: boolean;
   panicking: boolean;
+  speakerName?: string;
+  freeCityLine?: string | null;
 }
 
 export interface AmbientStepInput {
@@ -281,7 +283,7 @@ export class AmbientDialogueController {
 
     this.active = {
       pedId: best.id,
-      who: speakerLabelFor(best.id, best.kind),
+      who: best.speakerName ?? speakerLabelFor(best.id, best.kind),
       text: line,
       kind: best.kind,
       remaining: dur,
@@ -295,6 +297,9 @@ export class AmbientDialogueController {
   }
 
   private pickLine(c: AmbientCandidate, inp: AmbientStepInput, rand: () => number): string {
+    if (c.freeCityLine && !this.recentLines.includes(c.freeCityLine) && (!c.panicking || rand() < 0.65)) {
+      return c.freeCityLine;
+    }
     const pools: (readonly string[])[] = [];
 
     if (c.panicking) {

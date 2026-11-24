@@ -56,11 +56,11 @@ function Skyline() {
   );
 }
 
-function Stars({ n, searching }: { n: number; searching: boolean }) {
+function Stars({ n, searching, compact = false }: { n: number; searching: boolean; compact?: boolean }) {
   return (
-    <div className="flex gap-1">
+    <div className={`flex ${compact ? 'gap-0.5' : 'gap-1'}`}>
       {[1, 2, 3, 4, 5].map((i) => (
-        <svg key={i} viewBox="0 0 24 24" className={`h-7 w-7 drop-shadow-[0_2px_2px_rgba(0,0,0,0.9)] ${i <= n ? (searching ? 'animate-pulse' : '') : ''}`}>
+        <svg key={i} viewBox="0 0 24 24" className={`${compact ? 'h-5 w-5' : 'h-7 w-7'} drop-shadow-[0_2px_2px_rgba(0,0,0,0.9)] ${i <= n ? (searching ? 'animate-pulse' : '') : ''}`}>
           <path
             d="M12 2l3 6.6 7.2.8-5.4 4.9 1.5 7.1L12 17.7 5.7 21.4l1.5-7.1L1.8 9.4 9 8.6z"
             fill={i <= n ? '#ffd23d' : 'rgba(0,0,0,0.35)'}
@@ -99,6 +99,8 @@ export default function App() {
   const [rtxEnabled, setRtxEnabled] = useState<boolean>(true);
   const [goreEnabled, setGoreEnabled] = useState<boolean>(true);
   const [voicesEnabled, setVoicesEnabled] = useState<boolean>(true);
+  const [hdGlbMode, setHdGlbMode] = useState<boolean>(true);
+  const [microtexturesEnabled, setMicrotexturesEnabled] = useState<boolean>(true);
   const [hud, setHud] = useState<HudState | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [banner, setBanner] = useState<Banner>(null);
@@ -132,6 +134,8 @@ export default function App() {
         g.setRtxEnabled(rtxEnabled);
         g.setGoreEnabled(goreEnabled);
         g.setVoicesEnabled(voicesEnabled);
+        g.setHdGlbMode(hdGlbMode);
+        g.setMicrotexturesEnabled(microtexturesEnabled);
         g.setVoiceVolume(volume / 100);
         gameRef.current = g;
         (window as any).__game = g;
@@ -145,7 +149,7 @@ export default function App() {
         setPhase('title');
       }
     }, 60);
-  }, [quality, mobileMode, rtxEnabled, goreEnabled, voicesEnabled, volume]);
+  }, [quality, mobileMode, rtxEnabled, goreEnabled, voicesEnabled, hdGlbMode, microtexturesEnabled, volume]);
 
   // Support ?autostart=1 and Enter/Space to start on title screen
   useEffect(() => {
@@ -209,6 +213,16 @@ export default function App() {
     setVoicesEnabled(next);
     g?.setVoicesEnabled(next);
   };
+  const toggleHdGlb = () => {
+    const next = !(hud?.hdGlbMode ?? hdGlbMode);
+    setHdGlbMode(next);
+    g?.setHdGlbMode(next);
+  };
+  const toggleMicrotextures = () => {
+    const next = !(hud?.microtexturesEnabled ?? microtexturesEnabled);
+    setMicrotexturesEnabled(next);
+    g?.setMicrotexturesEnabled(next);
+  };
   const onMapClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
     const c = e.currentTarget;
     const r = c.getBoundingClientRect();
@@ -268,15 +282,13 @@ export default function App() {
         {/* top right: money / time / wanted / weapon */}
         {hud && (
           <div className={`absolute flex flex-col items-end ${isMobileHud ? 'right-2.5 top-[62px] gap-0.5' : 'right-6 top-4 gap-1'}`}>
-            <div className={`flex items-center gap-1.5 font-bold tracking-[0.18em] text-amber-200/90 hud-text ${isMobileHud ? 'text-[10px]' : 'text-xs'}`}>
-              <span className={isMobileHud ? 'max-w-[130px] truncate' : ''}>{hud.district}</span>
+            <div className={`flex items-center gap-1.5 font-bold tracking-[0.14em] text-amber-200/90 hud-text ${isMobileHud ? 'text-[10px]' : 'text-xs tracking-[0.18em]'}`}>
+              <span className={isMobileHud ? 'max-w-[195px] truncate' : ''}>{hud.district}</span>
               <span className="text-white/50">·</span>
               <span className={`gta-font text-white ${isMobileHud ? 'text-sm' : 'text-lg'}`}>{hud.time}</span>
             </div>
             <div className={`gta-font text-[#8ee06c] hud-text ${isMobileHud ? 'text-2xl leading-none' : 'text-4xl'}`}>${hud.money.toLocaleString()}</div>
-            <div className={isMobileHud ? 'scale-75 origin-right' : ''}>
-              <Stars n={hud.wanted} searching={hud.searching} />
-            </div>
+            <Stars n={hud.wanted} searching={hud.searching} compact={isMobileHud} />
             {hud.wanted > 0 && <div className={`text-[10px] font-bold tracking-[0.28em] hud-text ${hud.searching ? 'animate-pulse text-sky-300' : 'text-red-400'}`}>{hud.searching ? 'EVADING' : 'WANTED'}</div>}
             <div className={`flex items-center gap-2 rounded bg-black/75 border border-white/15 ${isMobileHud ? 'px-2 py-0.5' : 'mt-1 px-3 py-1 gap-3'}`}>
               {!isMobileHud && <span className="text-[10px] font-bold text-white/55">{hud.weaponIdx}/{hud.weaponCount}</span>}
@@ -574,13 +586,13 @@ export default function App() {
             <div className="flex flex-wrap items-end justify-between gap-3">
               <div>
                 <div className="gta-font text-4xl sm:text-5xl text-amber-300">PAUSED</div>
-                <div className="text-sm text-white/65">San Nova · {hud.district} · {hud.time} · {hud.storeCount} Stores</div>
+                <div className="text-sm text-white/65">San Nova · {hud.district} · {hud.time} · {hud.trafficSummary} · {hud.storeCount} Stores</div>
               </div>
               <button onClick={resume} className="rounded-lg bg-amber-400 px-7 py-2.5 text-base sm:text-lg font-extrabold tracking-wider text-black transition hover:bg-amber-300">RESUME</button>
             </div>
 
             {/* Quick Mode & Graphics Toggles */}
-            <div className="mt-5 grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-4">
+            <div className="mt-5 grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
               <button
                 type="button"
                 data-toggle-mobile="true"
@@ -616,6 +628,44 @@ export default function App() {
                 </div>
                 <span className={`rounded px-2 py-0.5 text-xs font-black ${hud.rtxEnabled ? 'bg-fuchsia-400 text-black' : 'bg-white/15 text-white/70'}`}>
                   {hud.rtxEnabled ? 'ON' : 'OFF'}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                data-toggle-glb="true"
+                onClick={toggleHdGlb}
+                className={`flex items-center justify-between rounded-lg border px-4 py-3 text-left transition ${
+                  hud.hdGlbMode
+                    ? 'border-cyan-400 bg-cyan-500/20 text-cyan-200'
+                    : 'border-white/15 bg-white/5 text-white/85 hover:bg-white/10'
+                }`}
+              >
+                <div>
+                  <div className="text-xs font-extrabold tracking-widest">MODEL-SITE .GLB PACK</div>
+                  <div className="text-[11px] text-white/60">Site 3D cars, planes, props & NPCs</div>
+                </div>
+                <span className={`rounded px-2 py-0.5 text-xs font-black ${hud.hdGlbMode ? 'bg-cyan-400 text-black' : 'bg-white/15 text-white/70'}`}>
+                  {hud.hdGlbMode ? 'ON' : 'OFF'}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                data-toggle-micro="true"
+                onClick={toggleMicrotextures}
+                className={`flex items-center justify-between rounded-lg border px-4 py-3 text-left transition ${
+                  hud.microtexturesEnabled
+                    ? 'border-sky-400 bg-sky-500/20 text-sky-200'
+                    : 'border-white/15 bg-white/5 text-white/85 hover:bg-white/10'
+                }`}
+              >
+                <div>
+                  <div className="text-xs font-extrabold tracking-widest">PBR MICROTEXTURES</div>
+                  <div className="text-[11px] text-white/60">Normal, roughness & paint-flake maps</div>
+                </div>
+                <span className={`rounded px-2 py-0.5 text-xs font-black ${hud.microtexturesEnabled ? 'bg-sky-400 text-black' : 'bg-white/15 text-white/70'}`}>
+                  {hud.microtexturesEnabled ? 'ON' : 'OFF'}
                 </span>
               </button>
 
@@ -719,7 +769,7 @@ export default function App() {
             </div>
             <div className="mt-2 text-xs font-semibold tracking-[0.42em] text-cyan-200 sm:text-lg">10 KM × 10 KM LEONIDA OPEN WORLD SANDBOX</div>
             <div className="mt-3 flex flex-wrap justify-center gap-1.5 text-[10px] font-bold tracking-[0.18em] text-white/90">
-              {['328 UNIQUE STORES', 'REAL .GLB 3D MODELS', '3,240+ ANIMATIONS', 'LIVE NPC VOICES', 'FLYABLE JETS & PLANES', 'REALISTIC GORE & LIGHTING', 'MOBILE MODE'].map((f) => (
+              {['328 UNIQUE STORES', 'MODEL-SITE .GLB PACK', 'TRAFFIC MANAGER', 'FREE CITY NPCS', 'PBR MICROTEXTURES', '3,240+ ANIMATIONS', 'LIVE NPC VOICES', 'MOBILE MODE'].map((f) => (
                 <span key={f} className="rounded border border-white/25 bg-black/55 px-2.5 py-1">{f}</span>
               ))}
             </div>
@@ -728,11 +778,11 @@ export default function App() {
               <div className="mt-10 flex flex-col items-center gap-4">
                 <div className="h-12 w-12 animate-spin rounded-full border-4 border-white/20 border-t-amber-300" />
                 <div className="gta-font text-xl tracking-widest text-amber-200">BUILDING SAN NOVA…</div>
-                <div className="text-xs text-white/75">Generating 328 stores, airport runways, PBR reflections, crowds & physics</div>
+                <div className="text-xs text-white/75">Generating 328 stores, airport runways, PBR microtextures, traffic & crowds</div>
               </div>
             ) : (
               <>
-                <div className="mt-7 flex flex-wrap items-center justify-center gap-3">
+                <div className="mt-7 flex flex-wrap items-center justify-center gap-2.5">
                   {/* Quality */}
                   <div className="flex items-center gap-1 rounded-lg border border-white/15 bg-black/65 p-1">
                     {(['low', 'medium', 'high'] as const).map((q) => (
@@ -771,9 +821,39 @@ export default function App() {
                     <span>SIMULATED RTX:</span>
                     <span>{rtxEnabled ? 'ON' : 'OFF'}</span>
                   </button>
+
+                  {/* Model-Site .GLB Pack Toggle */}
+                  <button
+                    type="button"
+                    data-title-glb="true"
+                    onClick={() => setHdGlbMode((v) => !v)}
+                    className={`flex items-center gap-2 rounded-lg border px-4 py-2 text-xs font-extrabold tracking-widest transition ${
+                      hdGlbMode
+                        ? 'border-cyan-300 bg-cyan-400 text-black'
+                        : 'border-white/20 bg-black/65 text-white/80 hover:bg-white/15'
+                    }`}
+                  >
+                    <span>MODEL-SITE .GLB PACK:</span>
+                    <span>{hdGlbMode ? 'ON' : 'OFF'}</span>
+                  </button>
+
+                  {/* Real PBR Microtextures Toggle */}
+                  <button
+                    type="button"
+                    data-title-micro="true"
+                    onClick={() => setMicrotexturesEnabled((v) => !v)}
+                    className={`flex items-center gap-2 rounded-lg border px-4 py-2 text-xs font-extrabold tracking-widest transition ${
+                      microtexturesEnabled
+                        ? 'border-sky-300 bg-sky-400 text-black'
+                        : 'border-white/20 bg-black/65 text-white/80 hover:bg-white/15'
+                    }`}
+                  >
+                    <span>PBR MICROTEXTURES:</span>
+                    <span>{microtexturesEnabled ? 'ON' : 'OFF'}</span>
+                  </button>
                 </div>
 
-                <div className="mt-1.5 text-[11px] text-white/75">Graphics quality · toggle Mobile Mode for touch UI or Simulated RTX for wet PBR reflections</div>
+                <div className="mt-1.5 text-[11px] text-white/75">Graphics quality · toggle Mobile Mode, Simulated RTX, Model-Site .GLB Pack & PBR Microtextures</div>
                 <button
                   data-start="true"
                   onClick={start}

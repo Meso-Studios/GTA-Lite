@@ -1,8 +1,9 @@
 // Pedestrian entity: sidewalk navigation, panic, combat AI and ragdoll.
 import * as THREE from 'three';
-import { CORNER, NB, applySandFootPhysics, clamp, dampAngle, nearestNode, redRemaining, roadLine, sandFactorAt, signalState } from './config';
+import { CORNER, NB, applySandFootPhysics, clamp, dampAngle, isMeleeWeapon, nearestNode, redRemaining, roadLine, sandFactorAt, signalState } from './config';
 import { AnimIn, GunKind, HumanRig, Look, Ragdoll, animateHuman, createHuman, muzzleWorld, setWeapon } from './humans';
 import { computeRagdollImpulse } from './physics';
+import { createFreeCityBrain, stepFreeCityNpc, type FreeCityArchetype, type FreeCityBrain, type FreeCityContext } from './freeCityNpc';
 import type { Game } from './Game';
 import type { PushOut } from './world';
 
@@ -70,12 +71,23 @@ export class Ped {
   sandPuffT = 0;
   flinchT = 0;
   speakingT = 0;
+  freeCity: FreeCityBrain | null = null;
+  freeCityLastHint: string | null = null;
 
   constructor(kind: PedKind, look: Look) {
     this.kind = kind;
     this.rig = createHuman(look);
+    this.rig.kindHint = kind;
     this.speed = 1.25 + Math.random() * 0.5;
     this.lat = (Math.random() - 0.5) * 2.2;
+    if (kind === 'civ' || kind === 'tourist' || kind === 'guard') {
+      this.freeCity = createFreeCityBrain(this.id * 13 + 7, kind);
+    }
+  }
+
+  setFreeCityArchetype(arch: FreeCityArchetype) {
+    this.freeCity = createFreeCityBrain(this.id * 13 + 7, this.kind, arch);
+    this.rig.kindHint = arch === 'guy' ? 'guy' : this.kind;
   }
 
   get group() { return this.rig.root; }
@@ -376,6 +388,78 @@ export class Ped {
       }
     }
 
+    // FREE CITY non-AI algorithmic utility routine (zero LLM — pure routine, pair chat, ride admiration & Tuesday reaction)
+    let fcStop = false;
+    let fcSpeedMul = 1.0;
+    let fcFaceYaw: number | null = null;
+    let fcPhoto = false;
+
+    if (this.freeCity && !this.indoor && this.state !== 'flee' && this.state !== 'wait') {
+      let nearbyPartner: FreeCityContext['nearbyPartner'] = null;
+      let bestPartnerD = 4.8;
+      for (const o of g.peds) {
+        if (o === this || o.dead || o.hostile || o.indoor) continue;
+        const d = Math.hypot(o.x - this.x, o.z - this.z);
+        if (d < bestPartnerD) {
+          bestPartnerD = d;
+          nearbyPartner = { id: o.id, x: o.x, z: o.z, distance: d };
+        }
+      }
+      let nearbyExotic: FreeCityContext['nearbyExotic'] = null;
+      let bestVehD = 16.0;
+      for (const v of g.vehicles) {
+        if (v.type !== 'sports' && !v.spec.isAircraft) continue;
+        const d = Math.hypot(v.x - this.x, v.z - this.z);
+        if (d < bestVehD) {
+          bestVehD = d;
+          nearbyExotic = { x: v.x, z: v.z, distance: d, isAircraft: Boolean(v.spec.isAircraft) };
+        }
+      }
+      let nearbyStoreDoor: FreeCityContext['nearbyStoreDoor'] = null;
+      let bestDoorD = 11.0;
+      for (const dr of g.city.doors) {
+        const d = Math.hypot(dr.x - this.x, dr.z - this.z);
+        if (d < bestDoorD) {
+          bestDoorD = d;
+          nearbyStoreDoor = { x: dr.x, z: dr.z, name: dr.name, distance: d };
+        }
+      }
+      const playerArmed = !isMeleeWeapon(g.player.weapon) && (g.player.ammo[g.player.weapon] ?? 0) > 0;
+      const fc = stepFreeCityNpc(
+        this.freeCity,
+        {
+          hour: g.hour,
+          selfId: this.id,
+          selfX: this.x,
+          selfZ: this.z,
+          selfYaw: this.yaw,
+          playerX: px,
+          playerZ: pz,
+          playerArmed,
+          playerAimingNear: playerArmed && (g.input.aim || g.touch.aim || g.playerFiring) && dp < 18,
+          nearbyPartner,
+          nearbyExotic,
+          nearbyStoreDoor,
+          nearbyDanger: g.wanted >= 2 && dp < 20,
+        },
+        dt,
+      );
+      if (fc.ambientLineHint) this.freeCityLastHint = fc.ambientLineHint;
+      if (fc.raiseHands) {
+        this.handsUp = Math.max(this.handsUp, 0.45);
+        this.vx *= 0.7;
+        this.vz *= 0.7;
+        if (fc.faceYaw !== null) this.yaw = dampAngle(this.yaw, fc.faceYaw, 10, dt);
+        this.animate(dt, 0, true, 0, false);
+        this.finish(g);
+        return;
+      }
+      fcStop = fc.shouldStop;
+      fcSpeedMul = fc.desiredSpeedMul;
+      fcFaceYaw = fc.faceYaw;
+      fcPhoto = fc.photoPose;
+    }
+
     switch (this.state) {
       case 'flee': {
         this.panicT -= dt;
@@ -423,6 +507,10 @@ export class Ped {
         break;
       }
       case 'crowd_stroll': {
+        if (fcStop) {
+          this.vx *= 0.78; this.vz *= 0.78;
+          break;
+        }
         const dx = this.tx - this.x, dz = this.tz - this.z;
         const d = Math.hypot(dx, dz);
         if (d < 1.3) {
@@ -436,12 +524,16 @@ export class Ped {
             this.idleT = 1.8 + Math.random() * 3.5;
           }
         } else {
-          this.moveDir(dx / d, dz / d, this.speed, dt);
-          moveSpeed = this.speed;
+          this.moveDir(dx / d, dz / d, this.speed * fcSpeedMul, dt);
+          moveSpeed = this.speed * fcSpeedMul;
         }
         break;
       }
       case 'walk': {
+        if (fcStop) {
+          this.vx *= 0.78; this.vz *= 0.78;
+          break;
+        }
         const dx = this.tx - this.x, dz = this.tz - this.z;
         const d = Math.hypot(dx, dz);
         if (d < 1.1) {
@@ -452,19 +544,22 @@ export class Ped {
           } else if (Math.random() < 0.06) { this.state = 'idle'; this.idleT = 2 + Math.random() * 5; }
           else this.pickNext(g);
         } else {
-          this.moveDir(dx / d, dz / d, this.speed, dt);
-          moveSpeed = this.speed;
+          this.moveDir(dx / d, dz / d, this.speed * fcSpeedMul, dt);
+          moveSpeed = this.speed * fcSpeedMul;
         }
         break;
       }
       default: break;
+    }
+    if (fcFaceYaw !== null && (fcStop || Math.hypot(this.vx, this.vz) < 0.35)) {
+      this.yaw = dampAngle(this.yaw, fcFaceYaw, 6, dt);
     }
     this.animate(
       dt,
       Math.hypot(this.vx, this.vz),
       this.state === 'flee' && this.panicT > 0 && (this.kind === 'civ' || this.kind === 'tourist') && Math.sin(this.id) > 0.2,
       0,
-      this.state === 'photo',
+      this.state === 'photo' || fcPhoto,
     );
     this.finish(g);
   }
@@ -518,6 +613,9 @@ export class Ped {
     const r = this.rig.root;
     r.position.set(this.x, this.y, this.z);
     r.rotation.set(0, this.yaw, 0);
+    const dCam = Math.hypot(this.x - g.camX, this.z - g.camZ);
+    const maxDist = g.isSoftwareGl ? 68 : 135;
+    r.visible = (!g.interior || this.indoor) && (this.indoor || this.mission || dCam < 18 || (dCam < maxDist && g.inView(this.x, this.z, 2.4)));
   }
 
   ragdoll(dt: number, g: Game) {
@@ -554,7 +652,9 @@ export class Ped {
       }
     }
     const r = this.rig.root;
-    r.visible = true;
+    const dCam = Math.hypot(this.x - g.camX, this.z - g.camZ);
+    const maxDist = g.isSoftwareGl ? 68 : 120;
+    r.visible = (!g.interior || this.indoor) && (this.indoor || this.mission || dCam < 18 || (dCam < maxDist && g.inView(this.x, this.z, 2.4)));
     this.rig.phase += dt;
   }
 

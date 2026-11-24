@@ -87,10 +87,10 @@ export class Vehicle {
   contrailT = 0;
   propSpin = 0;
 
-  constructor(type: VehicleType, paint: number) {
+  constructor(type: VehicleType, paint: number, allowHeroSite = false) {
     this.type = type;
     this.spec = SPECS[type];
-    this.model = buildVehicle(type, paint);
+    this.model = buildVehicle(type, paint, allowHeroSite);
     this.group = this.model.group;
     this.hp = this.maxHp = this.spec.hp;
     this.ai = { nk: 0, nl: 0, dx: 1, dz: 0, lane: LANE_OUTER, next: null, turning: null, cruise: 14, route: null, routeIdx: 0, finished: false, direct: false, reverseT: 0, reverseSteer: 0, copsOut: false, honkT: 0, finishAfter: false };
@@ -734,7 +734,18 @@ export class Vehicle {
     this.updateVisual(g);
   }
 
-  updateVisual(_g: Game) {
+  updateVisual(g: Game) {
+    const dCam = Math.hypot(this.x - g.camX, this.z - g.camZ);
+    const maxDist = g.isSoftwareGl ? 115 : 240;
+    const vis =
+      !g.interior &&
+      (this === g.playerVehicle ||
+        this.mission ||
+        this.spec.isAircraft ||
+        dCam < 22 ||
+        (dCam < maxDist && g.inView(this.x, this.z, 5)));
+    this.group.visible = vis;
+    if (!vis) return;
     const m = this.model;
     if (this.spec.isAircraft) {
       this.group.position.set(this.x, this.y, this.z);

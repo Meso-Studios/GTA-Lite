@@ -52,6 +52,29 @@ import {
 import { buildTtsApiUrl, computeVoiceVolume, selectVoiceProfile } from './npcVoices';
 import { computeAmbienceTargets, computeNaturalVoiceVolume } from './soundMix';
 import { computeWaitLineSlots, interiorFloorHeight } from './interiorMath';
+import {
+  computeTimeOfDayFactor,
+  computeTrafficDensity,
+  computeTrafficWave,
+  getDistrictTrafficMultiplier,
+  getTrafficPeriodLabel,
+  pickTrafficVehicleType,
+} from './trafficMath';
+import {
+  FREE_CITY_ARCHETYPES,
+  FREE_CITY_LABELS,
+  computeUtilityScores,
+  createFreeCityBrain,
+  getFreeCitySchedule,
+  pickFreeCityLine,
+  stepFreeCityNpc,
+  type FreeCityContext,
+} from './freeCityNpc';
+import {
+  buildMicroMaps,
+  sampleTangentNormal,
+  type MicroSurfaceKind,
+} from './microtextures';
 
 test('10km x 10km world bounds span -5000..+5000 on both axes', () => {
   assert.equal(WORLD_HALF, 5000);
@@ -626,4 +649,191 @@ test('computeWaitLineSlots generates properly spaced queued restaurant customers
     assert.ok(Math.cos(s.yaw) < -0.5, `Expected customer ${s.index} to face counter, got yaw=${s.yaw}`);
   }
 });
+
+test('GitHub Pages bundle in /docs and root fallback work for branch-root, /docs, and GitHub Actions hosting', () => {
+  const root = process.cwd();
+  assert.ok(fs.existsSync(path.join(root, '.nojekyll')), 'Missing root .nojekyll');
+  const rootHtml = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
+  assert.ok(!rootHtml.includes('GitHub Pages Setup Needed'), 'Root index.html must redirect to ./docs/ instead of showing a setup error');
+  assert.ok(rootHtml.includes("__sanNovaGoDocs"), 'Root index.html must include automatic ./docs/ redirect for branch-root hosting');
+
+  const docsDir = path.join(root, 'docs');
+  assert.ok(fs.existsSync(path.join(docsDir, 'index.html')), 'Missing compiled docs/index.html');
+  assert.ok(fs.existsSync(path.join(docsDir, '404.html')), 'Missing compiled docs/404.html');
+  assert.ok(fs.existsSync(path.join(docsDir, '.nojekyll')), 'Missing docs/.nojekyll');
+  assert.ok(fs.existsSync(path.join(docsDir, 'models', 'car_sports.glb')), 'Missing compiled docs/models/car_sports.glb');
+
+  const docsHtml = fs.readFileSync(path.join(docsDir, 'index.html'), 'utf8');
+  assert.ok(!docsHtml.includes('/src/main.tsx'), 'Compiled docs/index.html must not reference raw /src/main.tsx');
+  assert.ok(!docsHtml.includes('id="san-nova-dev-entry"'), 'Compiled docs/index.html must not retain dev entry script element');
+  assert.ok(docsHtml.includes('./assets/'), 'Compiled docs/index.html must reference relative ./assets/ bundles');
+  assert.ok(!fs.existsSync(path.join(docsDir, 'assets', 'aistudio')), 'Compiled docs/ must not bundle private aistudio chat attachments');
+});
+
+test('TrafficManager models time-of-day rush peaks, late-night lulls, random wave surges, and district density', () => {
+  const lull3am = computeTimeOfDayFactor(3.2);
+  const morningRush = computeTimeOfDayFactor(8.25);
+  const midday = computeTimeOfDayFactor(13.0);
+  const eveningRush = computeTimeOfDayFactor(17.75);
+
+  assert.ok(lull3am < 0.36, `Expected low traffic factor at 3 AM, got ${lull3am}`);
+  assert.ok(morningRush > 1.0, `Expected high morning rush factor, got ${morningRush}`);
+  assert.ok(eveningRush > morningRush * 0.95 && eveningRush > midday, 'Expected 5:45 PM evening rush to exceed midday');
+
+  assert.equal(getTrafficPeriodLabel(3.2), 'Late Night Lull');
+  assert.equal(getTrafficPeriodLabel(8.25), 'Morning Rush');
+  assert.equal(getTrafficPeriodLabel(13.0), 'Midday Flow');
+  assert.equal(getTrafficPeriodLabel(17.75), 'Evening Rush');
+  assert.equal(getTrafficPeriodLabel(22.0), 'Nightlife Cruise');
+
+  const dNight = computeTrafficDensity({ hour: 3.2, baseCap: 22, simTime: 10, waveSeed: 19, districtFactor: 1 });
+  const dRush = computeTrafficDensity({ hour: 17.75, baseCap: 22, simTime: 10, waveSeed: 19, districtFactor: 1 });
+  assert.ok(dRush.targetCity > dNight.targetCity * 2, `Expected rush targetCity (${dRush.targetCity}) > 2x night (${dNight.targetCity})`);
+  assert.ok(dRush.targetHighway > dNight.targetHighway, 'Expected more highway cars during evening rush');
+  assert.ok(dRush.speedScale < dNight.speedScale, 'Rush-hour congestion should lower ambient cruise speeds vs open 3 AM roads');
+
+  // Wave modulation oscillates smoothly within [0.76, 1.26]
+  let minW = 10;
+  let maxW = 0;
+  for (let t = 0; t < 180; t += 3) {
+    const w = computeTrafficWave(t, 29);
+    minW = Math.min(minW, w);
+    maxW = Math.max(maxW, w);
+    assert.ok(w >= 0.76 && w <= 1.26);
+  }
+  assert.ok(maxW - minW > 0.12, 'Traffic wave must produce noticeable stochastic variation over time');
+
+  assert.ok(getDistrictTrafficMultiplier('DOWNTOWN FINANCIAL CORE') > getDistrictTrafficMultiplier('GOLDEN DUNES DESERT'));
+  const sampleNight = pickTrafficVehicleType(22.5, () => 0.42, false);
+  assert.ok(['sedan', 'suv', 'sports', 'pickup', 'taxi', 'van', 'police'].includes(sampleNight));
+});
+
+test('FREE CITY NPC utility brain produces illusion-of-life routines without external AI/LLM', () => {
+  assert.equal(FREE_CITY_ARCHETYPES.length, 7);
+  const guyBrain = createFreeCityBrain(42, 'civ', 'guy');
+  assert.equal(FREE_CITY_LABELS[guyBrain.archetype], 'Blue-Shirt Guy');
+  assert.equal(getFreeCitySchedule(8.0, 'guy'), 'morning_coffee');
+  assert.equal(getFreeCitySchedule(13.0, 'exec'), 'workday_hustle');
+  assert.equal(getFreeCitySchedule(13.0, 'influencer'), 'sunset_stroll');
+  assert.equal(getFreeCitySchedule(23.5, 'buddy'), 'nightlife_loop');
+
+  const baseCtx: FreeCityContext = {
+    hour: 9.0,
+    selfId: 101,
+    selfX: 0,
+    selfZ: 0,
+    selfYaw: 0,
+    playerX: 40,
+    playerZ: 40,
+    playerArmed: false,
+    playerAimingNear: false,
+    nearbyPartner: null,
+    nearbyExotic: null,
+    nearbyStoreDoor: null,
+    nearbyDanger: false,
+  };
+
+  // Near a parked exotic sports car triggers high admire_ride utility
+  const carScores = computeUtilityScores(guyBrain, {
+    ...baseCtx,
+    nearbyExotic: { x: 4, z: 0, distance: 4, isAircraft: false },
+  });
+  assert.ok(carScores.admire_ride > carScores.window_shop);
+
+  // Near a buddy triggers pair_chat utility
+  const chatScores = computeUtilityScores(guyBrain, {
+    ...baseCtx,
+    nearbyPartner: { id: 102, x: 1.8, z: 0, distance: 1.8 },
+  });
+  assert.ok(chatScores.pair_chat > chatScores.window_shop);
+
+  // Player aiming at NPC immediately triggers Free Guy "Just another Tuesday" hands-up surrender
+  const surrenderStep = stepFreeCityNpc(
+    guyBrain,
+    { ...baseCtx, playerX: 3, playerZ: 0, playerArmed: true, playerAimingNear: true },
+    0.05,
+    () => 0.35,
+  );
+  assert.equal(surrenderStep.activity, 'tuesday_surrender');
+  assert.equal(surrenderStep.raiseHands, true);
+  assert.equal(surrenderStep.shouldStop, true);
+  assert.ok(surrenderStep.ambientLineHint && surrenderStep.ambientLineHint.length > 10);
+
+  const l1 = pickFreeCityLine(guyBrain, baseCtx, () => 0.1);
+  const l2 = pickFreeCityLine(guyBrain, baseCtx, () => 0.1);
+  assert.ok(l1.length > 8);
+  assert.notEqual(l1, l2, 'Consecutive Free City lines should avoid repeating the previous topic');
+});
+
+test('PBR Microtextures generate seamless normal & roughness buffers with unit tangent normals across all 7 surface kinds', () => {
+  const kinds: MicroSurfaceKind[] = ['asphalt', 'concrete', 'masonry', 'wood', 'sand', 'cloth', 'car_flake'];
+  for (const kind of kinds) {
+    const size = 64;
+    const { normalData, roughData } = buildMicroMaps(kind, size);
+    assert.equal(normalData.length, size * size * 4);
+    assert.equal(roughData.length, size * size * 4);
+
+    let minZ = 1;
+    let roughDiff = false;
+    const firstRough = roughData[0];
+    for (let y = 0; y < size; y += 7) {
+      for (let x = 0; x < size; x += 7) {
+        const n = sampleTangentNormal(normalData, size, x, y);
+        const len = Math.hypot(n.nx, n.ny, n.nz);
+        assert.ok(Math.abs(len - 1) < 0.04, `Expected unit tangent normal for ${kind}, got len=${len}`);
+        minZ = Math.min(minZ, n.nz);
+        const r = roughData[(y * size + x) * 4];
+        if (r !== firstRough) roughDiff = true;
+      }
+    }
+    assert.ok(minZ > 0.25, `Tangent normal Z should stay outward-facing for ${kind}, got minZ=${minZ}`);
+    assert.ok(roughDiff, `Roughness map for ${kind} should have micro-surface variation`);
+  }
+});
+
+test('all 18 local .glb, 5 site .glb packs, and 3 Draco decoder assets exist on disk with valid glTF 2.0 headers', () => {
+  const modelsDir = path.resolve(process.cwd(), 'public/models');
+  const allGlbs = [
+    'car_sports.glb',
+    'car_sedan.glb',
+    'car_suv.glb',
+    'car_police.glb',
+    'car_wheel.glb',
+    'building_artdeco.glb',
+    'building_tower.glb',
+    'building_havana.glb',
+    'building_wynwood.glb',
+    'human_base.glb',
+    'prop_crate.glb',
+    'prop_barrel.glb',
+    'prop_bin.glb',
+    'prop_palm.glb',
+    'prop_lamp.glb',
+    'plane_jet.glb',
+    'plane_prop.glb',
+    'weapon_pack.glb',
+    'sites/ferrari.glb',
+    'sites/CesiumMilkTruck.glb',
+    'sites/TrafficCone.glb',
+    'sites/Soldier.glb',
+    'sites/CesiumMan.glb',
+  ];
+
+  for (const rel of allGlbs) {
+    const full = path.join(modelsDir, rel);
+    assert.ok(fs.existsSync(full), `Missing GLB file: ${rel}`);
+    const buf = fs.readFileSync(full);
+    assert.ok(buf.length > 1024, `${rel} is unexpectedly small (${buf.length} bytes)`);
+    assert.equal(buf.subarray(0, 4).toString('ascii'), 'glTF', `${rel} missing glTF magic header`);
+    assert.equal(buf.readUInt32LE(4), 2, `${rel} must be glTF version 2`);
+    assert.equal(buf.readUInt32LE(8), buf.length, `${rel} header byteLength must match file size`);
+  }
+
+  const dracoDir = path.resolve(process.cwd(), 'public/draco');
+  for (const df of ['draco_decoder.js', 'draco_decoder.wasm', 'draco_wasm_wrapper.js']) {
+    assert.ok(fs.existsSync(path.join(dracoDir, df)), `Missing Draco file: ${df}`);
+  }
+});
+
+
 

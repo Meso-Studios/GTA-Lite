@@ -2,6 +2,7 @@
 import * as THREE from 'three';
 import { clamp } from './config';
 import { gunMesh } from './humans';
+import { clonePropGlb, cloneWeaponPickupGlb, isGlbWorldMode, type PropGlbKey } from './glbAssets';
 import type { Game } from './Game';
 import type { PushOut } from './world';
 import type { Vehicle } from './vehicle';
@@ -29,7 +30,9 @@ const DEFS: Record<PropKind, Def> = {
 };
 
 export class Prop {
-  mesh: THREE.Mesh;
+  mesh: THREE.Group;
+  private procMesh: THREE.Mesh;
+  private glbVisual: THREE.Group | null = null;
   kind: PropKind;
   def: Def;
   x: number; y: number; z: number;
@@ -39,6 +42,7 @@ export class Prop {
   awake = false;
   hp: number;
   life = -1;
+  expired = false;
   settle = 0;
   exploded = false;
 
@@ -69,13 +73,65 @@ export class Prop {
         geo = G('debris', () => new THREE.BoxGeometry(0.6, 0.15, 0.4));
         mat = M('debris', () => new THREE.MeshStandardMaterial({ color: 0x1a1a1a, roughness: 0.8, metalness: 0.4 }));
     }
-    this.mesh = new THREE.Mesh(geo, mat);
-    this.mesh.castShadow = true;
+    this.mesh = new THREE.Group();
+    this.procMesh = new THREE.Mesh(geo, mat);
+    this.procMesh.castShadow = true;
+    this.procMesh.receiveShadow = true;
+    this.mesh.add(this.procMesh);
     this.mesh.scale.setScalar(scale);
     this.x = x; this.z = z; this.y = 0;
     this.mesh.position.set(x, 0, z);
     this.ry = Math.random() * 6.28;
     this.mesh.rotation.y = this.ry;
+    this.setGlbMode(isGlbWorldMode());
+  }
+
+  setGlbMode(enabled: boolean): boolean {
+    const glbKey: PropGlbKey | null =
+      this.kind === 'cone'
+        ? 'cone'
+        : this.kind === 'crate'
+          ? 'crate'
+          : this.kind === 'bin'
+            ? 'bin'
+            : this.kind === 'barrel' || this.kind === 'xbarrel'
+              ? 'barrel'
+              : null;
+    if (!glbKey) {
+      this.procMesh.visible = true;
+      return false;
+    }
+    if (enabled) {
+      if (!this.glbVisual) {
+        const g = clonePropGlb(glbKey);
+        if (g) {
+          if (this.kind === 'xbarrel') {
+            g.traverse((obj) => {
+              if ((obj as THREE.Mesh).isMesh) {
+                const m = obj as THREE.Mesh;
+                const tintHazard = (mat: THREE.Material) => {
+                  const cm = mat.clone() as THREE.MeshStandardMaterial;
+                  if (cm.color) cm.color.setHex(0xc8241c);
+                  return cm;
+                };
+                m.material = Array.isArray(m.material) ? m.material.map(tintHazard) : tintHazard(m.material);
+              }
+            });
+          }
+          this.glbVisual = g;
+          this.mesh.add(g);
+        }
+      }
+      if (this.glbVisual) {
+        this.glbVisual.visible = true;
+        this.procMesh.visible = false;
+        return true;
+      }
+    } else if (this.glbVisual) {
+      this.glbVisual.visible = false;
+    }
+    this.procMesh.visible = true;
+    return false;
   }
 
   impulse(vx: number, vy: number, vz: number, spin = 4) {
@@ -85,6 +141,15 @@ export class Prop {
   }
 
   update(dt: number, g: Game) {
+    if (this.expired || g.interior) {
+      this.mesh.visible = false;
+      return;
+    }
+    const dCam = Math.hypot(this.x - g.camX, this.z - g.camZ);
+    const maxDist = g.isSoftwareGl ? 62 : 125;
+    const vis = this.awake || dCam < 16 || (dCam < maxDist && g.inView(this.x, this.z, 2.5));
+    this.mesh.visible = vis;
+    if (!vis) return;
     // wake from vehicles
     if (!this.awake) {
       for (const v of g.vehicles) {
@@ -146,7 +211,10 @@ export class Prop {
     } else this.settle = 0;
     if (this.life > 0) {
       this.life -= dt;
-      if (this.life < 0) this.mesh.visible = false;
+      if (this.life <= 0) {
+        this.expired = true;
+        this.mesh.visible = false;
+      }
     }
     const tilt = Math.max(Math.abs(Math.sin(this.rx)), Math.abs(Math.sin(this.rz)));
     const lift = this.kind === 'debris' ? 0 : tilt * this.def.r;
@@ -162,8 +230,9 @@ export class Prop {
   blow(g: Game) {
     if (this.kind !== 'xbarrel') return;
     this.exploded = true;
+    this.expired = true;
     this.mesh.visible = false;
-    this.life = 0.001;
+    this.life = 0;
     g.explode(this.x, 0.6, this.z, 8, 55, null);
   }
 }
@@ -175,6 +244,8 @@ export class Pickup {
   x: number; z: number;
   value: number;
   group: THREE.Group;
+  private procVisual: THREE.Object3D | null = null;
+  private glbVisual: THREE.Group | null = null;
   taken = false;
   t = Math.random() * 6;
   weapon = '';
@@ -202,6 +273,7 @@ export class Pickup {
     } else if (kind === 'weapon') {
       const gm = gunMesh((weapon as any) || 'smg');
       gm.scale.setScalar(1.6);
+      this.procVisual = gm;
       g.add(gm);
     } else {
       const m = new THREE.Mesh(G('pkg', () => new THREE.BoxGeometry(0.55, 0.55, 0.55)), M('pkg', () => new THREE.MeshStandardMaterial({ color: 0xff9d2e, emissive: 0xff6a00, emissiveIntensity: 1.4, roughness: 0.4 })));
@@ -216,7 +288,31 @@ export class Pickup {
     void col;
     g.position.set(x, 0.9, z);
     this.group = g;
+    this.setGlbMode(isGlbWorldMode());
   }
+
+  setGlbMode(enabled: boolean): void {
+    if (this.kind !== 'weapon' || !this.procVisual) return;
+    if (enabled) {
+      if (!this.glbVisual) {
+        const w = cloneWeaponPickupGlb();
+        if (w) {
+          w.scale.setScalar(1.3);
+          this.glbVisual = w;
+          this.group.add(w);
+        }
+      }
+      if (this.glbVisual) {
+        this.glbVisual.visible = true;
+        this.procVisual.visible = false;
+        return;
+      }
+    } else if (this.glbVisual) {
+      this.glbVisual.visible = false;
+    }
+    this.procVisual.visible = true;
+  }
+
   update(dt: number) {
     this.t += dt;
     this.group.rotation.y = this.t * 1.8;

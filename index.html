@@ -11,6 +11,26 @@
   </head>
   <body>
     <div id="root"></div>
-    <script type="module" src="/src/main.tsx" onerror="document.getElementById('root').innerHTML='<div style=\'min-height:100vh;display:flex;align-items:center;justify-content:center;background:#0a0b14;color:#fff;font-family:system-ui,sans-serif;padding:24px;text-align:center\'><div style=\'max-width:520px;border:1px solid rgba(255,255,255,0.15);border-radius:12px;padding:24px;background:#141625\'><h1 style=\'margin:0 0 12px;color:#fbbf24;font-size:22px\'>SAN NOVA — GitHub Pages Setup Needed</h1><p style=\'margin:0 0 12px;color:#cbd5e1;line-height:1.5;font-size:14px\'>GitHub Pages is currently serving raw source files from the repository branch instead of the compiled Vite build.</p><p style=\'margin:0;color:#e2e8f0;line-height:1.5;font-size:14px\'>Open <b>Settings → Pages → Build and deployment → Source</b>, select <b>GitHub Actions</b>, then re-run the <b>Deploy San Nova to GitHub Pages</b> workflow.</p></div></div>'"></script>
+    <script>
+      (function () {
+        window.__sanNovaGoDocs = function () {
+          var loc = window.location;
+          var p = loc.pathname;
+          if (/\/docs(\/|$)/.test(p)) return;
+          var base = p.endsWith('/') ? p : p.endsWith('.html') ? p.slice(0, p.lastIndexOf('/') + 1) : p + '/';
+          loc.replace(base + 'docs/' + loc.search + loc.hash);
+        };
+        window.addEventListener('DOMContentLoaded', function () {
+          var rawEntry = document.getElementById('san-nova-dev-entry');
+          var isViteDev = !!document.querySelector('script[src*="@vite/client"]');
+          if (rawEntry && !isViteDev) {
+            window.setTimeout(function () {
+              if (!window.__SAN_NOVA_BOOTED) window.__sanNovaGoDocs();
+            }, 250);
+          }
+        });
+      })();
+    </script>
+    <script id="san-nova-dev-entry" type="module" src="/src/main.tsx" onerror="window.__sanNovaGoDocs && window.__sanNovaGoDocs()"></script>
   </body>
 </html>

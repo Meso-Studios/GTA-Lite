@@ -9,7 +9,7 @@ function mk(w: number, h: number): [HTMLCanvasElement, Ctx] {
   const c = document.createElement('canvas');
   c.width = w;
   c.height = h;
-  return [c, c.getContext('2d')!];
+  return [c, c.getContext('2d', { willReadFrequently: true })!];
 }
 function toTex(c: HTMLCanvasElement, opts: { srgb?: boolean; repeat?: boolean; aniso?: number } = {}) {
   const t = new THREE.CanvasTexture(c);

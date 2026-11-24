@@ -17,6 +17,7 @@ import {
 import type { FacadeStyle } from './textures';
 import { buildInfrastructure } from './infra';
 import { buildInteriors, Room } from './interiors';
+import { microtextures } from './microtextures';
 
 export interface ParkingSpot { x: number; z: number; yaw: number; used: boolean; id: number; police?: boolean }
 export interface CityData {
@@ -32,6 +33,7 @@ export interface CityData {
   update(dt: number, time: number): void;
   setNight(n: number): void;
   setRtx(enabled: boolean): void;
+  setMicrotextures(enabled: boolean): void;
   ocean: THREE.Mesh;
 }
 
@@ -180,6 +182,7 @@ export function buildCity(): CityData {
   const xwMat = new THREE.MeshStandardMaterial({ map: T.makeCrosswalk(), vertexColors: true, roughness: 0.85, transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 });
   for (const m of [roadMat, interMat, xwMat]) m.userData.cast = false;
   Object.assign(mats, { road: roadMat, inter: interMat, xwalk: xwMat });
+  microtextures.registerCityMaterials(mats);
 
   // ---------------------------------------------------------------- 10km x 10km continuous terrain mesh (matches terrainHeightAt 1:1)
   {
@@ -590,6 +593,14 @@ export function buildCity(): CityData {
       }
     }
 
+  // Spawn-corner curb props so sculpted TrafficCone.glb & wooden crate are visible near spawn
+  ctx.props.push(
+    { kind: 'cone', x: -292, z: 33.8 },
+    { kind: 'cone', x: -288.5, z: 33.8 },
+    { kind: 'crate', x: -293.5, z: 36.2 },
+    { kind: 'barrel', x: -292.0, z: 36.4 },
+  );
+
   // ---------------------------------------------------------------- build batches
   batch.build(group, mats);
 
@@ -683,6 +694,9 @@ export function buildCity(): CityData {
         ocean.material.envMapIntensity = enabled ? 2.5 : 0.85;
         ocean.material.needsUpdate = true;
       }
+    },
+    setMicrotextures(enabled: boolean) {
+      microtextures.setEnabled(enabled);
     },
     update(dt: number, time: number) {
       void dt;

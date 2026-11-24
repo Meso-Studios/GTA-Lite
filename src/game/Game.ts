@@ -21,17 +21,20 @@ import { FX } from './fx';
 import { GameAudio } from './audio';
 import { World, PushOut } from './world';
 import { PLAYER_LOOK, TARGET_LOOK, GunKind, animateHuman, createHuman, gangLook, guardLook, HumanRig, setWeapon, civilianLook, touristLook, upgradeHumanToGlb } from './humans';
-import { VehicleType, beamMaterial, headMat, tailDim, sirenRed, sirenBlue, paintMat, setVehicleRtx, upgradeVehicleToGlb } from './vehicles';
+import { VehicleType, beamMaterial, headMat, tailDim, sirenRed, sirenBlue, paintMat, setVehicleRtx, upgradeVehicleToGlb, repaintVehicleGlb } from './vehicles';
 import { castRay, explode as doExplode, npcShoot as doNpcShoot, playerFire, playerMelee } from './combat';
 import { MapRenderer, buildRoute } from './minimap';
-import { SpawnOpts, deployCops as doDeploy, removeVehicle, spawnVehicle as doSpawnVehicle, streamCrowds, streamParked, streamPeds, streamTraffic, updatePolice } from './spawn';
+import { SpawnOpts, deployCops as doDeploy, removeVehicle, spawnVehicle as doSpawnVehicle, streamCrowds, streamParked, streamPeds, updatePolice, spawnFreeCitySpawnPlaza } from './spawn';
 import { MISSIONS, MissionDef } from './missions';
 import { Look } from './humans';
 import { Collider } from './world';
 import { AmbientCandidate, AmbientDialogueController, AmbientSubtitle } from './ambientDialogue';
-import { GLB_CITY_LANDMARKS, cloneBuildingGlb, getGlbStatus, onGlbAssetReady, preloadGlbAssets, setGlbRtx } from './glbAssets';
+import { GLB_CITY_LANDMARKS, cloneBuildingGlb, cloneLandmarkPropGlb, getGlbStatus, isGlbWorldMode, onGlbAssetReady, preloadGlbAssets, setGlbRtx, setGlbWorldMode } from './glbAssets';
 import { NpcVoiceEngine, VoiceKind } from './npcVoices';
 import { ANIMATION_COUNT } from './animations';
+import { TrafficManager, getDistrictTrafficMultiplier } from './trafficManager';
+import { FREE_CITY_LABELS } from './freeCityNpc';
+import { microtextures } from './microtextures';
 
 export interface Quality { traffic: number; parked: number; peds: number; shadows: boolean; bloom: boolean; pr: number; msaa: number; shadowSize: number }
 export const QUALITY: Record<string, Quality> = {
@@ -59,6 +62,10 @@ export interface HudState {
   rtxEnabled: boolean;
   goreEnabled: boolean;
   voicesEnabled: boolean;
+  hdGlbMode: boolean;
+  microtexturesEnabled: boolean;
+  trafficSummary: string;
+  freeCityCount: number;
   speakingVoice: string | null;
   animCount: number;
   playerAnim: string;
@@ -137,10 +144,16 @@ export class Game {
   rtxEnabled = true;
   goreEnabled = true;
   voicesEnabled = true;
+  hdGlbMode = isGlbWorldMode();
+  microtexturesEnabled = true;
+  trafficManager = new TrafficManager();
   voices = new NpcVoiceEngine();
   private glbUnsub: (() => void) | null = null;
   private glbLandmarksPlaced = new Set<string>();
   private glbLandmarkGroup = new THREE.Group();
+  private glbPropsPlaced = new Set<string>();
+  private glbPropCluster = new THREE.Group();
+  private staticDirty = true;
   private lastSpokenAmbientKey = '';
   private storyVoiceSeq = 1;
   recoilT = 0;
@@ -328,6 +341,7 @@ export class Game {
     this.rooms = this.city.rooms ?? [];
     this.scene.add(this.city.group);
     this.scene.add(this.glbLandmarkGroup);
+    this.scene.add(this.glbPropCluster);
     this.fx = new FX(this.scene);
     this.mapR = new MapRenderer(this.city);
     this.glbUnsub = onGlbAssetReady(() => this.syncGlbAssets());
@@ -352,11 +366,14 @@ export class Game {
     }
     // player
     this.player.rig = createHuman(PLAYER_LOOK);
+    this.player.rig.kindHint = 'player';
     this.scene.add(this.player.rig.root);
     setWeapon(this.player.rig, 'pistol');
     // props
     for (const p of this.city.props) {
       const pr = new Prop(p.kind, p.x, p.z);
+      const dCam = Math.hypot(pr.x - this.player.x, pr.z - this.player.z);
+      pr.mesh.visible = dCam < (this.isSoftwareGl ? 62 : 125);
       this.props.push(pr);
       this.scene.add(pr.mesh);
     }
@@ -364,9 +381,13 @@ export class Game {
     this.setupInput();
     this.applyTime(0);
     this.updateCamera(0.016, true);
-    // initial population (traffic, parked, peds, tourist crowds)
+    // Hero spawn showcase cars & Free City plaza NPCs
+    this.spawnVehicle('sports', -276.2, 34, 0, { mode: 'parked', paint: 0xd92626, tag: 'spawn-ferrari' });
+    this.spawnVehicle('van', -276.2, 22, 0, { mode: 'parked', paint: 0xf2f4f8, tag: 'spawn-milktruck' });
+    spawnFreeCitySpawnPlaza(this);
+    // initial population (time-of-day dynamic traffic, parked, peds, tourist crowds)
     for (let i = 0; i < 60; i++) {
-      streamTraffic(this, 1);
+      this.trafficManager.update(this, 1, 1.15);
       streamParked(this, 1);
       streamPeds(this, 1);
       streamCrowds(this, 1);
@@ -394,7 +415,7 @@ export class Game {
     add('weapon', -160, 238, 0, 'katana');
     add('weapon', 342, -300, 32, 'autoshotgun');
     add('weapon', 456, 120, 120, 'rifle');
-    add('weapon', -280, 18, 36, 'revolver');
+    add('weapon', -276.2, 16.2, 36, 'revolver');
     add('weapon', -145, 560, 200, 'lmg');
     add('weapon', 300, 2380, 5, 'rpg');
     add('weapon', -2180, 1210, 48, 'autoshotgun');
@@ -481,6 +502,7 @@ export class Game {
     this.composer?.setSize(w, h);
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
+    this.staticDirty = true;
   };
   requestLock() {
     if (this.mobileMode) return;
@@ -509,6 +531,7 @@ export class Game {
       this.bloom.threshold = 0.92;
     }
     this.applyTime(0);
+    this.staticDirty = true;
     this.emitHud(true);
   }
   setGoreEnabled(enabled: boolean) {
@@ -524,25 +547,69 @@ export class Game {
   setVoiceVolume(vol01: number) {
     this.voices.setMasterVolume(vol01);
   }
-  /** Upgrades spawned vehicles, player, NPCs & curated landmarks to their real .glb 3D models as they finish loading. */
+  setHdGlbMode(enabled: boolean) {
+    this.hdGlbMode = enabled;
+    setGlbWorldMode(enabled);
+    this.syncGlbAssets();
+    this.staticDirty = true;
+    this.emitHud(true);
+  }
+  setMicrotexturesEnabled(enabled: boolean) {
+    this.microtexturesEnabled = enabled;
+    this.city.setMicrotextures(enabled);
+    microtextures.setEnabled(enabled);
+    this.staticDirty = true;
+    this.emitHud(true);
+  }
+  /** Upgrades spawned vehicles, props, pickups, player, NPCs & curated landmarks to real .glb / Model-Site .glb models. */
   syncGlbAssets() {
-    if (this.player.rig) upgradeHumanToGlb(this.player.rig);
-    for (const p of this.peds) upgradeHumanToGlb(p.rig);
+    if (this.player.rig) upgradeHumanToGlb(this.player.rig, this.hdGlbMode, 'player');
+    for (const p of this.peds) upgradeHumanToGlb(p.rig, this.hdGlbMode, p.rig.kindHint);
     for (const v of this.vehicles) {
-      if (!v.spec.isAircraft) upgradeVehicleToGlb(v.model, v.type);
+      upgradeVehicleToGlb(v.model, v.type, this.hdGlbMode, v === this.player.vehicle || v.tag === 'spawn-ferrari');
     }
-    for (const lm of GLB_CITY_LANDMARKS) {
-      const key = `${lm.key}_${lm.x}_${lm.z}`;
-      if (this.glbLandmarksPlaced.has(key)) continue;
-      const mesh = cloneBuildingGlb(lm.key, lm.tint);
-      if (!mesh) continue;
-      const gy = groundHeight(lm.x, lm.z);
-      mesh.position.set(lm.x, gy, lm.z);
-      mesh.rotation.y = lm.yaw;
-      if (lm.scale) mesh.scale.setScalar(lm.scale);
-      this.glbLandmarkGroup.add(mesh);
-      this.world.addBox(lm.x - lm.halfW, lm.x + lm.halfW, lm.z - lm.halfD, lm.z + lm.halfD, gy + lm.height, lm.label);
-      this.glbLandmarksPlaced.add(key);
+    for (const pr of this.props) {
+      pr.setGlbMode(this.hdGlbMode);
+    }
+    for (const pk of this.pickups) {
+      pk.setGlbMode(this.hdGlbMode);
+    }
+    this.staticDirty = true;
+
+    this.glbLandmarkGroup.visible = this.hdGlbMode;
+    this.glbPropCluster.visible = this.hdGlbMode;
+
+    if (this.hdGlbMode) {
+      for (const lm of GLB_CITY_LANDMARKS) {
+        const key = `${lm.key}_${lm.x}_${lm.z}`;
+        if (this.glbLandmarksPlaced.has(key)) continue;
+        const mesh = cloneBuildingGlb(lm.key, lm.tint);
+        if (!mesh) continue;
+        const gy = groundHeight(lm.x, lm.z);
+        mesh.position.set(lm.x, gy, lm.z);
+        mesh.rotation.y = lm.yaw;
+        if (lm.scale) mesh.scale.setScalar(lm.scale);
+        this.glbLandmarkGroup.add(mesh);
+        this.world.addBox(lm.x - lm.halfW, lm.x + lm.halfW, lm.z - lm.halfD, lm.z + lm.halfD, gy + lm.height, lm.label);
+        this.glbLandmarksPlaced.add(key);
+      }
+
+      const heroProps: { key: 'palm' | 'lamp'; x: number; z: number; yaw: number; scale: number }[] = [
+        { key: 'palm', x: -295.6, z: 22, yaw: 0.3, scale: 1.0 },
+        { key: 'palm', x: -295.6, z: 38, yaw: 1.9, scale: 0.95 },
+        { key: 'lamp', x: -274.4, z: 29, yaw: -Math.PI / 2, scale: 1.0 },
+      ];
+      for (const hp of heroProps) {
+        const k = `${hp.key}_${hp.x}_${hp.z}`;
+        if (this.glbPropsPlaced.has(k)) continue;
+        const obj = cloneLandmarkPropGlb(hp.key);
+        if (!obj) continue;
+        obj.position.set(hp.x, groundHeight(hp.x, hp.z), hp.z);
+        obj.rotation.y = hp.yaw;
+        obj.scale.setScalar(hp.scale);
+        this.glbPropCluster.add(obj);
+        this.glbPropsPlaced.add(k);
+      }
     }
   }
   setTouchMove(x: number, y: number) {
@@ -618,6 +685,7 @@ export class Game {
     }
     this.audio.setEngine(false, 0, 0);
     this.audio.setSiren(0);
+    this.staticDirty = true;
     this.emitHud(true);
   }
 
@@ -674,6 +742,7 @@ export class Game {
   attachFullmap(c: HTMLCanvasElement | null) { this.fullmap = c; }
   setMapOpen(o: boolean) {
     this.mapOpen = o;
+    this.staticDirty = true;
     if (o && document.pointerLockElement) document.exitPointerLock();
     if (!o && this.state === 'playing') this.requestLock();
   }
@@ -961,12 +1030,19 @@ export class Game {
     this.fpsAcc += dt; this.fpsN++;
     if (this.fpsAcc > 0.5) { this.fps = Math.round(this.fpsN / this.fpsAcc); this.fpsAcc = 0; this.fpsN = 0; }
     if (this.state === 'paused' || this.mapOpen) {
-      this.updateCamera(0, false);
-      this.render();
+      if (!this.isSoftwareGl || this.staticDirty) {
+        this.updateCamera(0, false);
+        this.render();
+        this.staticDirty = false;
+      }
       this.emitHud(false);
       this.input.pressed.clear();
       if (this.mapOpen && this.fullmap) this.mapR.drawFull(this.fullmap, this);
-      this.afterDraw(() => this.frame(performance.now()));
+      if (this.isSoftwareGl) {
+        window.setTimeout(() => { if (this.running) this.raf = requestAnimationFrame(this.frame); }, 150);
+      } else {
+        this.afterDraw(() => this.frame(performance.now()));
+      }
       return;
     }
     if (this.state === 'dead') {
@@ -1035,7 +1111,8 @@ export class Game {
     for (const pr of this.props) pr.update(dt, this);
     this.updatePickups(dt);
     if (!this.interior) {
-      streamTraffic(this, dt);
+      const distMult = getDistrictTrafficMultiplier(districtNameAt(p.x, p.z, p.y));
+      this.trafficManager.update(this, dt, distMult);
       streamParked(this, dt);
       streamPeds(this, dt);
       streamCrowds(this, dt);
@@ -1461,6 +1538,7 @@ export class Game {
     this.scope = false;
     p.vehicle = v;
     v.mode = 'player';
+    if (v.type === 'sports') upgradeVehicleToGlb(v.model, v.type, this.hdGlbMode, true);
     v.ai.finished = false;
     v.ai.route = null;
     v.siren = false;
@@ -1506,6 +1584,7 @@ export class Game {
     p.yaw = v.yaw;
     p.vehicle = null;
     v.mode = 'idle';
+    if (v.type === 'sports' && v.tag !== 'spawn-ferrari') upgradeVehicleToGlb(v.model, v.type, this.hdGlbMode, false);
     v.throttle = 0; v.brake = 0.6;
     if (v.speed > 8) this.hurtPlayer((v.speed - 7) * 1.2, 'jump');
     this.audio.door();
@@ -1726,7 +1805,9 @@ export class Game {
       this.player.money -= cost;
       this.wanted = 0;
       pv.hp = pv.maxHp;
-      pv.model.body.material = paintMat([0xc0392b, 0x2c3e8f, 0xe8e8e8, 0x15171a, 0x0e6e8c][Math.floor(Math.random() * 5)]);
+      const newPaint = [0xc0392b, 0x2c3e8f, 0xe8e8e8, 0x15171a, 0x0e6e8c][Math.floor(Math.random() * 5)];
+      pv.model.body.material = paintMat(newPaint);
+      repaintVehicleGlb(pv.model, newPaint);
       this.audio.cash();
       this.ev.onToast('Pay N\' Spray: car repaired & repainted, wanted level cleared!', 'good');
     }
@@ -1787,6 +1868,8 @@ export class Game {
           z: ped.z,
           dead: ped.dead,
           panicking: ped.state === 'flee' || ped.state === 'cower' || ped.panicT > 0.2,
+          speakerName: ped.freeCity ? FREE_CITY_LABELS[ped.freeCity.archetype] : undefined,
+          freeCityLine: ped.freeCityLastHint,
         });
       }
     }
@@ -2084,7 +2167,7 @@ export class Game {
 
   // =============================================================== allies & weapons
   spawnAllies() {
-    const spots: [number, number][] = [[-294, 34], [blockCenter(2) + 34, blockCenter(1) + 34], [this.city.places.gunshop ? this.city.places.gunshop.x + 5 : 4, this.city.places.gunshop ? this.city.places.gunshop.z + 2 : -160]];
+    const spots: [number, number][] = [[-295.6, 35.5], [blockCenter(2) + 34, blockCenter(1) + 34], [this.city.places.gunshop ? this.city.places.gunshop.x + 5 : 4, this.city.places.gunshop ? this.city.places.gunshop.z + 2 : -160]];
     const rng = new Rng(8181);
     for (const [x, z] of spots) {
       const p = new Ped('ally', gangLook(rng, 0x2f5d50));
@@ -2309,6 +2392,10 @@ export class Game {
       rtxEnabled: this.rtxEnabled,
       goreEnabled: this.goreEnabled,
       voicesEnabled: this.voicesEnabled,
+      hdGlbMode: this.hdGlbMode,
+      microtexturesEnabled: this.microtexturesEnabled,
+      trafficSummary: this.trafficManager.getSummary(),
+      freeCityCount: this.peds.filter((q) => !q.dead && Boolean(q.freeCity)).length,
       speakingVoice: this.voices.speakingVoiceName,
       animCount: ANIMATION_COUNT,
       playerAnim: p.rig.animClipName,
