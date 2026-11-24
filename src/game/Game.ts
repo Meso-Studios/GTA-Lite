@@ -1,9 +1,6 @@
 // Main game engine: renderer, loop, player, world simulation, HUD data.
 import * as THREE from 'three';
-import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
-import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
-import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
-import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
+import { RayTracePipeline } from './raytracePass';
 import { buildRtxEnvironments, RtxEnvPack } from './rtxEnv';
 import {
   BOUNDS, DECK, HALF, MovementState, NB, Rng, WEAPONS, WEAPON_ORDER, WEAPON_SHOP_ORDER, WeaponId,
@@ -36,6 +33,45 @@ import { ANIMATION_COUNT } from './animations';
 import { TrafficManager, getDistrictTrafficMultiplier } from './trafficManager';
 import { FREE_CITY_LABELS } from './freeCityNpc';
 import { microtextures } from './microtextures';
+import {
+  type NpcLifeWorld,
+  createNpcLifeWorld,
+  evaluateWitnessReasoning,
+  registerCitizen,
+  stepNpcLifeWorld,
+  triggerUnrelatedLifeSituation,
+  tryCreateSharedPlan,
+  unregisterCitizen,
+} from './npcLifeSim';
+import {
+  BANK_BRANCHES,
+  type BankHeistState,
+  type BankingState,
+  createBankingState,
+  depositCash,
+  findNearestBankOrAtm,
+  startBankRobbery,
+  stepBankHeist,
+  withdrawCash,
+} from './bankingSystem';
+import {
+  RANDOM_EVENTS,
+  type RandomEventManager,
+  createRandomEventManager,
+  resolveActiveRandomEvent,
+  spawnRandomEventNear,
+} from './randomEvents';
+import {
+  type PhoneAppId,
+  type PhoneState,
+  type SnapNovaPost,
+  createPhoneState,
+  endPhoneCall,
+  publishSnapNovaPost,
+  sendSmsMessage,
+  startPhoneCall,
+  togglePostLike,
+} from './phoneSystem';
 
 export interface Quality { traffic: number; parked: number; peds: number; shadows: boolean; bloom: boolean; pr: number; msaa: number; shadowSize: number }
 export const QUALITY: Record<string, Quality> = {
@@ -65,6 +101,7 @@ export interface HudState {
   voicesEnabled: boolean;
   hdGlbMode: boolean;
   microtexturesEnabled: boolean;
+  experimentalBodyLogic: boolean;
   trafficSummary: string;
   freeCityCount: number;
   speakingVoice: string | null;
@@ -72,7 +109,18 @@ export interface HudState {
   playerAnim: string;
   glbLoaded: number;
   glbTotal: number;
+  glbFailed: number;
   storeCount: number;
+  bankBalance: number;
+  bankOpen: boolean;
+  bankModalInfo: { kind: 'bank' | 'atm'; id: string; name: string } | null;
+  heist: BankHeistState;
+  phoneOpen: boolean;
+  phoneUnread: number;
+  activeEvent: { title: string; headline: string; dialogue: string; dist: number; rewardCash: number; category: string } | null;
+  randomEventsTotal: number;
+  randomEventsDone: number;
+  activePlansCount: number;
 }
 export interface GameEvents {
   onHud(h: HudState): void;
@@ -124,8 +172,7 @@ export class Game {
   isSoftwareGl = false;
   scene = new THREE.Scene();
   camera: THREE.PerspectiveCamera;
-  composer: EffectComposer | null = null;
-  bloom: UnrealBloomPass | null = null;
+  rayTrace: RayTracePipeline | null = null;
   sun: THREE.DirectionalLight;
   bounceLight: THREE.DirectionalLight;
   rimLight: THREE.DirectionalLight;
@@ -147,8 +194,21 @@ export class Game {
   voicesEnabled = true;
   hdGlbMode = isGlbWorldMode();
   microtexturesEnabled = true;
+  experimentalBodyLogic = false;
   trafficManager = new TrafficManager();
   voices = new NpcVoiceEngine();
+  npcLife: NpcLifeWorld = createNpcLifeWorld();
+  banking: BankingState = createBankingState(2500);
+  bankOpen = false;
+  bankModalInfo: { kind: 'bank' | 'atm'; id: string; name: string } | null = null;
+  randomEvents: RandomEventManager = createRandomEventManager();
+  phone: PhoneState = createPhoneState();
+  private npcLifePlanT = 2.5;
+  private npcPosMap = new Map<number, { x: number; z: number }>();
+  private meleeTokenOwner = 0;
+  private meleeTokenTimer = 0;
+  private eventMarker: THREE.Group | null = null;
+  private _sunPosTmp = new THREE.Vector3();
   private glbUnsub: (() => void) | null = null;
   private glbLandmarksPlaced = new Set<string>();
   private glbLandmarkGroup = new THREE.Group();
@@ -265,13 +325,12 @@ export class Game {
     this.isSoftwareGl = /swiftshader|llvmpipe|software|mesa/i.test(renName);
 
     const shadowsOn = Q.shadows && !this.isSoftwareGl;
-    const bloomOn = Q.bloom && !this.isSoftwareGl;
     const pr = this.isSoftwareGl ? 1 : Q.pr;
 
     this.renderer.setPixelRatio(pr);
     this.renderer.setSize(w, h);
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.02;
+    this.renderer.toneMappingExposure = 1.08;
     this.renderer.shadowMap.enabled = shadowsOn;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.domElement.style.display = 'block';
@@ -279,17 +338,9 @@ export class Game {
     this.camera = new THREE.PerspectiveCamera(62, w / h, 0.35, 5800);
     this.scene.add(this.camera);
 
-    // postprocessing: crisp filmic bloom with high threshold & tight radius (zero hazy glow)
+    // True WebGL2 Screen-Space Ray-Tracing post-process pass (SSR + SSRT contact shadows + RTAO/SSGI)
     if (!this.isSoftwareGl) {
-      const rt = new THREE.WebGLRenderTarget(w * pr, h * pr, { type: THREE.HalfFloatType, samples: Q.msaa });
-      this.composer = new EffectComposer(this.renderer, rt);
-      this.composer.setPixelRatio(pr);
-      this.composer.setSize(w, h);
-      this.composer.addPass(new RenderPass(this.scene, this.camera));
-      this.bloom = new UnrealBloomPass(new THREE.Vector2(w, h), 0.18, 0.24, 0.94);
-      this.bloom.enabled = bloomOn;
-      this.composer.addPass(this.bloom);
-      this.composer.addPass(new OutputPass());
+      this.rayTrace = new RayTracePipeline(w, h, pr);
     }
 
     // Ultra-realistic 4-light physically balanced outdoor GI + rim rig
@@ -368,6 +419,22 @@ export class Game {
       g.visible = false;
       this.scene.add(g);
       this.markers.push(g);
+    }
+    // Pulsing gold beacon for active Random World Events
+    {
+      const eg = new THREE.Group();
+      const eBeam = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.45, 0.75, 42, 16, 1, true).translate(0, 21, 0),
+        new THREE.MeshBasicMaterial({ color: 0xfacc15, transparent: true, opacity: 0.24, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide, toneMapped: false }),
+      );
+      const eRing = new THREE.Mesh(
+        new THREE.RingGeometry(1.1, 1.45, 36).rotateX(-Math.PI / 2).translate(0, 0.28, 0),
+        new THREE.MeshBasicMaterial({ color: 0xfde047, transparent: true, opacity: 0.92, depthWrite: false, toneMapped: false, side: THREE.DoubleSide }),
+      );
+      eg.add(eBeam, eRing);
+      eg.visible = false;
+      this.scene.add(eg);
+      this.eventMarker = eg;
     }
     // player
     this.player.rig = createHuman(PLAYER_LOOK);
@@ -461,11 +528,25 @@ export class Game {
     void k;
   }
   onKeyDown = (e: KeyboardEvent) => {
+    const tag = (e.target as HTMLElement | null)?.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA') {
+      if (e.code === 'Escape') {
+        if (this.phone.open) this.togglePhone(false);
+        if (this.bankOpen) this.closeBankModal();
+      }
+      return;
+    }
     if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Tab'].includes(e.code)) e.preventDefault();
     if (e.repeat) return;
+    if (e.code === 'Tab' && this.state === 'playing' && !this.mapOpen) {
+      this.togglePhone();
+      return;
+    }
     this.input.keys.add(e.code);
     this.input.pressed.add(e.code);
-    if (e.code === 'KeyM' && this.state === 'playing') { this.setMapOpen(!this.mapOpen); return; }
+    if (e.code === 'KeyM' && this.state === 'playing' && !this.phone.open && !this.bankOpen) { this.setMapOpen(!this.mapOpen); return; }
+    if (e.code === 'Escape' && this.phone.open) { this.togglePhone(false); return; }
+    if (e.code === 'Escape' && this.bankOpen) { this.closeBankModal(); return; }
     if (e.code === 'Escape' && this.mapOpen) { this.setMapOpen(false); return; }
     if (e.code === 'Escape' || e.code === 'KeyP') this.togglePause();
   };
@@ -475,7 +556,7 @@ export class Game {
     if (this.input.locked) { this.input.dx += e.movementX; this.input.dy += e.movementY; }
   };
   onMouseDown = (e: MouseEvent) => {
-    if (this.state !== 'playing') return;
+    if (this.state !== 'playing' || this.phone.open || this.bankOpen) return;
     if (e.button === 0) this.input.fire = true;
     if (e.button === 2) this.input.aim = true;
   };
@@ -484,7 +565,7 @@ export class Game {
     if (e.button === 2) this.input.aim = false;
   };
   onWheel = (e: WheelEvent) => {
-    if (this.state !== 'playing' || this.player.vehicle) return;
+    if (this.state !== 'playing' || this.player.vehicle || this.phone.open || this.bankOpen) return;
     this.cycleWeapon(e.deltaY > 0 ? 1 : -1);
   };
   onCtx = (e: Event) => e.preventDefault();
@@ -493,18 +574,19 @@ export class Game {
     const locked = document.pointerLockElement === this.renderer.domElement;
     this.input.locked = locked;
     this.ev.onLock(locked);
-    if (wasLocked && !locked && this.state === 'playing' && this.running && !this.mapOpen) this.setPaused(true);
+    if (wasLocked && !locked && this.state === 'playing' && this.running && !this.mapOpen && !this.phone.open && !this.bankOpen) this.setPaused(true);
   };
   onLockError = () => { this.lockFailed = true; };
   onCanvasClick = () => {
     this.audio.init();
-    if (this.mobileMode) return;
+    if (this.mobileMode || this.phone.open || this.bankOpen) return;
     if (this.state === 'playing' && !this.input.locked) this.requestLock();
   };
   onResize = () => {
     const w = this.container.clientWidth || window.innerWidth, h = this.container.clientHeight || window.innerHeight;
+    const pr = this.isSoftwareGl ? 1 : this.quality.pr;
     this.renderer.setSize(w, h);
-    this.composer?.setSize(w, h);
+    this.rayTrace?.setSize(w, h, pr);
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
     this.staticDirty = true;
@@ -530,11 +612,6 @@ export class Game {
     this.city.setRtx(enabled);
     setVehicleRtx(enabled);
     setGlbRtx(enabled);
-    if (this.bloom) {
-      this.bloom.strength = this.interior ? 0.1 : enabled ? 0.21 : 0.1;
-      this.bloom.radius = 0.26;
-      this.bloom.threshold = 0.92;
-    }
     this.applyTime(0);
     this.staticDirty = true;
     this.emitHud(true);
@@ -565,6 +642,258 @@ export class Game {
     microtextures.setEnabled(enabled);
     this.staticDirty = true;
     this.emitHud(true);
+  }
+  setExperimentalBodyLogic(enabled: boolean) {
+    this.experimentalBodyLogic = enabled;
+    for (const p of this.peds) p.experimentalBodyLogic = enabled;
+    this.staticDirty = true;
+    this.ev.onToast(
+      enabled
+        ? 'BETA Body-Logic Kinematics ON — NPCs moving purely via IK & physics!'
+        : 'Standard NPC animations restored',
+      'info',
+    );
+    this.emitHud(true);
+  }
+
+  // =============================================================== GTA 5 Smartphone API
+  togglePhone(forceOpen?: boolean) {
+    const next = forceOpen !== undefined ? forceOpen : !this.phone.open;
+    if (next === this.phone.open) return;
+    this.phone.open = next;
+    if (next) {
+      this.bankOpen = false;
+      this.input.fire = false;
+      this.input.aim = false;
+      if (document.pointerLockElement) document.exitPointerLock();
+    } else if (this.state === 'playing' && !this.mobileMode && !this.mapOpen) {
+      this.requestLock();
+    }
+    this.emitHud(true);
+  }
+  setPhoneApp(app: PhoneAppId) {
+    this.phone.activeApp = app;
+    if (app === 'messages') {
+      this.phone.unreadByContact[this.phone.selectedContactId] = 0;
+    }
+    this.emitHud(true);
+  }
+  selectPhoneContact(contactId: string) {
+    this.phone.selectedContactId = contactId;
+    this.phone.unreadByContact[contactId] = 0;
+    this.emitHud(true);
+  }
+  sendPhoneSms(contactId: string, text: string) {
+    if (!text.trim()) return;
+    sendSmsMessage(this.phone, contactId, text, this.clockString);
+    this.audio.beep(680, 0.05);
+    this.emitHud(true);
+  }
+  callPhoneContact(contactId: string) {
+    const call = startPhoneCall(this.phone, contactId);
+    if (!call) return;
+    this.audio.beep(520, 0.09);
+    if (!call.actionDispatched) {
+      call.actionDispatched = true;
+      const p = this.player;
+      switch (call.action) {
+        case 'mechanic_deliver_car': {
+          if (this.interior) {
+            this.ev.onToast('Step outside to receive your delivered supercar!', 'warn');
+          } else {
+            const ang = p.yaw;
+            const sx = p.x + Math.sin(ang) * 9.5;
+            const sz = p.z + Math.cos(ang) * 9.5;
+            const v = this.spawnVehicle('sports', sx, sz, ang + Math.PI * 0.5, { mode: 'idle', paint: 0xdc2626, tag: 'mechanic-drop' });
+            v.y = groundHeight(sx, sz);
+            this.ev.onToast('Tito Customs delivered a tuned Supercar right ahead!', 'good');
+          }
+          break;
+        }
+        case 'fixer_clear_wanted': {
+          if (this.wanted === 0) {
+            this.ev.onToast('Vesper: You have zero heat right now — save your cash.', 'info');
+          } else if (p.money >= 350) {
+            p.money -= 350;
+            this.wanted = 0;
+            this.searching = false;
+            this.audio.cash();
+            this.ev.onToast('Vesper wiped police dispatch (-$350). Wanted level cleared!', 'good');
+          } else if (this.banking.bankBalance >= 350) {
+            withdrawCash(this.banking, p.money, 350, this.clockString);
+            this.wanted = 0;
+            this.searching = false;
+            this.audio.cash();
+            this.ev.onToast('Vesper wired $350 from NovaBank. Wanted level cleared!', 'good');
+          } else {
+            this.ev.onToast('Vesper needs $350 to clear your wanted level.', 'warn');
+          }
+          break;
+        }
+        case 'dispatch_911': {
+          if (!this.interior) {
+            const sx = p.x + Math.sin(p.yaw + 0.8) * 18;
+            const sz = p.z + Math.cos(p.yaw + 0.8) * 18;
+            const v = this.spawnVehicle('police', sx, sz, p.yaw, { mode: 'idle', driver: 'cop', tag: '911-unit' });
+            v.siren = true;
+            this.ev.onToast('911 Dispatch: Patrol cruiser & EMS arriving nearby!', 'info');
+          }
+          break;
+        }
+        case 'crew_backup': {
+          if (!this.interior && this.allies.filter((a) => a.recruited && !a.dead).length < 3) {
+            const rng = new Rng((Date.now() & 0xffffff) + 91);
+            const a = new Ped('ally', gangLook(rng, 0xec4899));
+            a.hp = a.maxHp = 140;
+            a.mission = true;
+            a.recruited = true;
+            a.formation = this.allies.filter((q) => q.recruited).length;
+            a.place(p.x + 2.4, p.z + 2.4);
+            a.y = groundHeight(a.x, a.z);
+            a.arm('carbine');
+            this.addPed(a);
+            this.allies.push(a);
+            this.ev.onToast('Maya Vega arrived to back up your crew!', 'good');
+          } else {
+            this.ev.onToast('Maya: Your crew is already rolling deep!', 'info');
+          }
+          break;
+        }
+        case 'friend_hangout': {
+          if (!this.interior) {
+            const ev = spawnRandomEventNear(this.randomEvents, p.x, p.z, this.hour);
+            this.ev.onToast(`Marco tipped you off: ${ev.def.title} nearby!`, 'info');
+          }
+          break;
+        }
+      }
+    }
+    this.emitHud(true);
+  }
+  hangUpPhone() {
+    endPhoneCall(this.phone);
+    this.audio.beep(320, 0.06);
+    this.emitHud(true);
+  }
+  captureCanvasPhoto(): string | null {
+    try {
+      // Force an immediate fresh frame so preserveDrawingBuffer=false never yields a blank black snapshot
+      this.render();
+      return this.renderer.domElement.toDataURL('image/jpeg', 0.82);
+    } catch {
+      return null;
+    }
+  }
+  postSnapNovaPhoto(caption: string, filter: SnapNovaPost['filter'], imageDataUrl: string | null) {
+    const loc = this.interior ? this.interior.name.toUpperCase() : districtNameAt(this.player.x, this.player.z, this.player.y);
+    publishSnapNovaPost(this.phone, {
+      caption,
+      location: loc,
+      filter,
+      imageDataUrl,
+      timeStr: this.clockString,
+    });
+    this.audio.pickup();
+    this.ev.onToast('Posted live to SnapNova!', 'good');
+    this.emitHud(true);
+  }
+  likeSnapNovaPost(postId: number) {
+    togglePostLike(this.phone, postId);
+    this.emitHud(true);
+  }
+
+  // =============================================================== Banking & Heist API
+  openBankModal(kind: 'bank' | 'atm', id: string, name: string) {
+    this.bankOpen = true;
+    this.bankModalInfo = { kind, id, name };
+    this.phone.open = false;
+    this.input.fire = false;
+    this.input.aim = false;
+    if (document.pointerLockElement) document.exitPointerLock();
+    this.emitHud(true);
+  }
+  closeBankModal() {
+    if (!this.bankOpen) return;
+    this.bankOpen = false;
+    if (this.state === 'playing' && !this.mobileMode && !this.mapOpen && !this.phone.open) {
+      this.requestLock();
+    }
+    this.emitHud(true);
+  }
+  bankDeposit(amount: number): { ok: boolean; message: string } {
+    const res = depositCash(this.banking, this.player.money, amount, this.clockString);
+    if (res.ok) {
+      this.player.money = res.newWallet;
+      this.audio.cash();
+      this.ev.onToast(res.message, 'good');
+    } else {
+      this.ev.onToast(res.message, 'warn');
+    }
+    this.emitHud(true);
+    return { ok: res.ok, message: res.message };
+  }
+  bankWithdraw(amount: number): { ok: boolean; message: string } {
+    const res = withdrawCash(this.banking, this.player.money, amount, this.clockString);
+    if (res.ok) {
+      this.player.money = res.newWallet;
+      this.audio.cash();
+      this.ev.onToast(res.message, 'cash');
+    } else {
+      this.ev.onToast(res.message, 'warn');
+    }
+    this.emitHud(true);
+    return { ok: res.ok, message: res.message };
+  }
+  bankStartRobbery(branchId: string): { ok: boolean; message: string } {
+    const res = startBankRobbery(this.banking, branchId);
+    if (!res.ok) {
+      this.ev.onToast(res.message, 'warn');
+      this.emitHud(true);
+      return { ok: false, message: res.message };
+    }
+    this.closeBankModal();
+    this.wanted = Math.max(this.wanted, res.wantedStars);
+    this.lastSeen = this.time;
+    this.audio.beep(880, 0.25);
+    this.ev.onToast(res.message, 'warn');
+    // Alert nearby guards & frighten tellers
+    for (const ped of this.peds) {
+      if (ped.dead) continue;
+      if (ped.indoor && ped.indoorRole === 'guard') {
+        ped.hostile = true;
+        ped.aggro = true;
+        ped.arm('pistol');
+      } else if (ped.indoor) {
+        ped.handsUp = 18;
+      }
+    }
+    // Spawn 2 armored bank response guards outside/near the vault
+    const branch = BANK_BRANCHES.find((b) => b.id === branchId) ?? BANK_BRANCHES[0];
+    const bx = this.interior ? this.interior.room.cx : branch.x;
+    const bz = this.interior ? this.interior.room.cz + 6 : branch.z + 8;
+    for (let i = 0; i < 2; i++) {
+      const gPed = this.spawnEnemy('guard', bx + (i === 0 ? -3.2 : 3.2), bz, { weapon: 'smg', hp: 75, aggro: true, tag: 'bank-guard' });
+      if (this.interior) {
+        gPed.indoor = true;
+        gPed.y = this.interior.room.elevation.baseY;
+      }
+    }
+    this.emitHud(true);
+    return { ok: true, message: res.message };
+  }
+
+  claimMeleeToken(pedId: number, dist: number): boolean {
+    if (dist > 3.2) return false;
+    if (this.meleeTokenOwner === pedId) {
+      this.meleeTokenTimer = 0.85;
+      return true;
+    }
+    if (this.meleeTokenTimer <= 0 || this.meleeTokenOwner === 0) {
+      this.meleeTokenOwner = pedId;
+      this.meleeTokenTimer = 0.85;
+      return true;
+    }
+    return false;
   }
   /** Upgrades spawned vehicles, props, pickups, player, NPCs & curated landmarks to real .glb / Model-Site .glb models. */
   syncGlbAssets() {
@@ -750,6 +1079,7 @@ export class Game {
     this.audio.setEngine(false, 0, 0);
     this.audio.setSiren(0);
     this.audio.setStation(0);
+    this.rayTrace?.dispose();
     this.rtxEnvs.dispose();
     this.renderer.dispose();
     this.renderer.domElement.remove();
@@ -794,8 +1124,16 @@ export class Game {
     this.camPitch = clamp(this.camPitch + a, -0.5, 1.3);
     this.recoilT = Math.min(1, this.recoilT + 0.72);
   }
-  addPed(p: Ped) { this.peds.push(p); this.scene.add(p.rig.root); }
+  addPed(p: Ped) {
+    p.experimentalBodyLogic = this.experimentalBodyLogic;
+    if ((p.kind === 'civ' || p.kind === 'tourist') && !p.indoor && p.tag !== 'playerbody') {
+      p.lifeProfile = registerCitizen(this.npcLife, p.id);
+    }
+    this.peds.push(p);
+    this.scene.add(p.rig.root);
+  }
   removePed(p: Ped) {
+    unregisterCitizen(this.npcLife, p.id);
     const i = this.peds.indexOf(p);
     if (i >= 0) this.peds.splice(i, 1);
     p.dispose(this);
@@ -872,12 +1210,38 @@ export class Game {
     if (p.hp <= 0) this.killPlayer();
   }
   alarm(x: number, z: number, radius: number, gunfire: boolean) {
+    const playerArmed = !isMeleeWeapon(this.player.weapon) && (this.player.ammo[this.player.weapon] ?? 0) > 0;
+    const sev = this.banking.heist.active ? 'robbery' : gunfire ? 'gunfire' : 'assault';
     for (const p of this.peds) {
       if (p.dead) continue;
       const d = Math.hypot(p.x - x, p.z - z);
       if (d > radius) continue;
-      if (!p.hostile) { if (p.state !== 'flee' || Math.random() < 0.2) p.flee(this, x, z, 8 + Math.random() * 5); }
-      else if (gunfire && p.kind !== 'cop' && d < radius * 0.6) { p.aggro = true; }
+      if (!p.hostile) {
+        if (p.lifeProfile && !p.indoor) {
+          const w = evaluateWitnessReasoning(p.lifeProfile, sev, null, playerArmed);
+          p.freeCityLastHint = w.line;
+          if (w.decision === 'confront' && d < 18 && !gunfire) {
+            p.state = 'brawl';
+            p.brawlT = 16;
+            p.guardT = 4;
+            continue;
+          }
+          if (w.decision === 'film_video' && d > 7) {
+            p.state = 'photo';
+            p.photoT = 5.5;
+            p.yaw = Math.atan2(x - p.x, z - p.z);
+            continue;
+          }
+          if (w.decision === 'call_911') {
+            p.lifeProfile.situation = 'phone_call';
+            p.lifeProfile.situationTimer = 5;
+            if (this.wanted === 0 && d < 28) this.crime(1, 'witness-911');
+          }
+        }
+        if (p.state !== 'flee' || Math.random() < 0.2) p.flee(this, x, z, 8 + Math.random() * 5);
+      } else if (gunfire && p.kind !== 'cop' && d < radius * 0.6) {
+        p.aggro = true;
+      }
     }
   }
   alertAround(src: Ped, radius: number) {
@@ -1085,8 +1449,21 @@ export class Game {
   };
 
   render() {
-    if (this.composer && !this.isSoftwareGl) this.composer.render();
-    else this.renderer.render(this.scene, this.camera);
+    if (this.rtxEnabled && this.rayTrace && !this.isSoftwareGl) {
+      this._sunPosTmp.copy(this.sun.position).sub(this.sun.target.position);
+      const wetness = this.interior ? 0.14 : (this.night > 0.4 ? 0.34 : 0.2);
+      this.rayTrace.render(
+        this.renderer,
+        this.scene,
+        this.camera,
+        this._sunPosTmp,
+        this.night,
+        wetness,
+        1.0,
+      );
+    } else {
+      this.renderer.render(this.scene, this.camera);
+    }
   }
 
   update(dt: number) {
@@ -1098,10 +1475,18 @@ export class Game {
     this.playerSpeed = p.vehicle ? p.vehicle.speed : Math.hypot(p.vx, p.vz);
     this.firingT -= dt;
     if (this.firingT <= 0) this.playerFiring = false;
+    if (this.meleeTokenTimer > 0) {
+      this.meleeTokenTimer = Math.max(0, this.meleeTokenTimer - dt);
+      if (this.meleeTokenTimer <= 0) this.meleeTokenOwner = 0;
+    }
+    if (this.phone.activeCall) {
+      this.phone.activeCall.elapsedSec += dt;
+    }
     p.hurtT = Math.max(0, p.hurtT - dt * 1.4);
-    // toggles
-    if (k.pressed.has('KeyT')) { this.finderOn = !this.finderOn; this.ev.onToast(this.finderOn ? 'Package finder ON' : 'Package finder OFF', 'info'); }
-    if (k.pressed.has('KeyG') && !p.vehicle) {
+    // toggles (suppressed while typing in smartphone or bank modal)
+    const uiBlockingKeys = this.phone.open || this.bankOpen;
+    if (!uiBlockingKeys && k.pressed.has('KeyT')) { this.finderOn = !this.finderOn; this.ev.onToast(this.finderOn ? 'Package finder ON' : 'Package finder OFF', 'info'); }
+    if (!uiBlockingKeys && k.pressed.has('KeyG') && !p.vehicle) {
       if (!isMeleeWeapon(p.weapon)) {
         this.scope = !this.scope;
         this.input.aim = false;
@@ -1109,11 +1494,11 @@ export class Game {
         this.ev.onToast(this.scope ? 'Scope engaged — G to release' : 'Scope released', 'info');
       } else this.ev.onToast('Melee weapons cannot be scoped', 'warn');
     }
-    if (k.pressed.has('KeyR') && p.vehicle) {
+    if (!uiBlockingKeys && k.pressed.has('KeyR') && p.vehicle) {
       this.radioStation = (this.radioStation + 1) % this.audio.stations.length;
       this.audio.setStation(this.radioStation);
     }
-    if (k.pressed.has('KeyF') || k.pressed.has('KeyE')) this.interact();
+    if (!uiBlockingKeys && (k.pressed.has('KeyF') || k.pressed.has('KeyE'))) this.interact(k.pressed.has('KeyE'));
     if (p.vehicle && this.scope) this.scope = false;
     if (p.alive) {
       if (p.vehicle) this.updateDriving(dt);
@@ -1123,9 +1508,12 @@ export class Game {
     for (const v of this.vehicles) v.step(dt, this);
     this.collideVehicles();
     this.pedVehicle(dt);
+    this.updateNpcLife(dt);
     for (const pd of this.peds) pd.update(dt, this);
     for (const pr of this.props) pr.update(dt, this);
     this.updatePickups(dt);
+    this.updateBankHeist(dt);
+    this.updateRandomEvents(dt);
     if (!this.interior) {
       const distMult = getDistrictTrafficMultiplier(districtNameAt(p.x, p.z, p.y));
       this.trafficManager.update(this, dt, distMult);
@@ -1161,6 +1549,96 @@ export class Game {
       if (this.mapOpen && this.fullmap) this.mapR.drawFull(this.fullmap, this);
     }
     this.emitHud(false);
+  }
+
+  private updateNpcLife(dt: number) {
+    this.npcPosMap.clear();
+    for (const ped of this.peds) {
+      if (!ped.dead && ped.lifeProfile && !ped.indoor) {
+        this.npcPosMap.set(ped.id, { x: ped.x, z: ped.z });
+      }
+    }
+    stepNpcLifeWorld(this.npcLife, dt, this.npcPosMap);
+    this.npcLifePlanT -= dt;
+    if (this.npcLifePlanT <= 0) {
+      this.npcLifePlanT = 3.2;
+      const outdoorIds = Array.from(this.npcPosMap.keys());
+      if (outdoorIds.length >= 2) {
+        const idx = Math.floor(Math.random() * outdoorIds.length);
+        const id = outdoorIds[idx];
+        // Attempt cooperative shared plan first; otherwise trigger an unrelated everyday life situation
+        const plan = tryCreateSharedPlan(this.npcLife, id, this.npcPosMap, 120);
+        if (!plan && Math.random() < 0.62) {
+          triggerUnrelatedLifeSituation(this.npcLife, id);
+        }
+      }
+    }
+  }
+
+  private updateBankHeist(dt: number) {
+    const h = this.banking.heist;
+    const branch = BANK_BRANCHES.find((b) => b.id === h.branchId) ?? BANK_BRANCHES[0];
+    const inBank = Boolean(this.interior && this.interior.room.kind === 'bank');
+    let nearVault = false;
+    if (inBank && this.interior?.room.vaultPos) {
+      const vp = this.interior.room.vaultPos;
+      nearVault = Math.hypot(this.player.x - vp.x, this.player.z - vp.z) < 5.5;
+    } else if (branch) {
+      nearVault = Math.hypot(this.player.x - branch.x, this.player.z - branch.z) < 9.0;
+    }
+    const distFromBank = inBank
+      ? 0
+      : Math.hypot(this.player.x - branch.x, this.player.z - branch.z);
+    const res = stepBankHeist(this.banking, {
+      dt,
+      playerInBank: inBank,
+      nearVault,
+      distFromBank,
+      wantedLevel: this.wanted,
+      playerAlive: this.player.alive,
+    });
+    if (res.cashGainedNow > 0) {
+      this.player.money += res.cashGainedNow;
+      if (Math.random() < 0.22) this.audio.cash();
+    }
+    if (res.bumpWantedTo > this.wanted) {
+      this.wanted = res.bumpWantedTo;
+      this.lastSeen = this.time;
+    }
+    if (res.banner) {
+      this.ev.onToast(res.banner, res.completed ? 'good' : res.failed ? 'warn' : 'info');
+      if (res.completed) this.audio.missionPass();
+    }
+  }
+
+  private updateRandomEvents(dt: number) {
+    if (this.interior) {
+      if (this.eventMarker) this.eventMarker.visible = false;
+      return;
+    }
+    const mgr = this.randomEvents;
+    if (mgr.active) {
+      mgr.active.timeRemaining -= dt;
+      const dist = Math.hypot(mgr.active.x - this.player.x, mgr.active.z - this.player.z);
+      if (this.eventMarker) {
+        this.eventMarker.visible = true;
+        const gy = groundHeight(mgr.active.x, mgr.active.z);
+        this.eventMarker.position.set(mgr.active.x, gy, mgr.active.z);
+        const pulse = 1 + Math.sin(this.time * 4.5) * 0.14;
+        this.eventMarker.children[1].scale.set(pulse, 1, pulse);
+      }
+      if (mgr.active.timeRemaining <= 0 || dist > 260) {
+        mgr.active = null;
+        mgr.cooldown = 18;
+      }
+    } else {
+      if (this.eventMarker) this.eventMarker.visible = false;
+      mgr.cooldown -= dt;
+      if (mgr.cooldown <= 0 && this.player.alive && !this.banking.heist.active) {
+        const ev = spawnRandomEventNear(mgr, this.player.x, this.player.z, this.hour);
+        this.ev.onToast(`Random Event Nearby: ${ev.def.title} (Check gold ? on radar)`, 'info');
+      }
+    }
   }
 
   // =============================================================== time of day
@@ -1240,13 +1718,7 @@ export class Game {
       this.neonLight2.intensity = 0;
     }
     if (!this.interior) {
-      this.renderer.toneMappingExposure = lerp(this.rtxEnabled ? 1.12 : 1.05, this.rtxEnabled ? 1.0 : 0.95, day);
-      if (this.bloom) {
-        // Restrained filmic bloom: crisp headlight/neon sparkle without washing out textures
-        this.bloom.strength = this.rtxEnabled ? lerp(0.24, 0.16, day) : lerp(0.11, 0.07, day);
-        this.bloom.radius = 0.25;
-        this.bloom.threshold = 0.93;
-      }
+      this.renderer.toneMappingExposure = lerp(this.rtxEnabled ? 1.16 : 1.05, this.rtxEnabled ? 1.08 : 1.0, day);
     }
     (this.scene as any).environmentIntensity = this.rtxEnabled
       ? (0.34 + day * 0.72 + dusk * 0.16 + this.night * 0.34)
@@ -1458,13 +1930,41 @@ export class Game {
 
   syncDeadPlayer() { /* body handled as a ragdoll ped */ }
 
-  // =============================================================== player: vehicles
-  interact() {
+  // =============================================================== player: vehicles & world interactions
+  interact(preferBankOrEvent = false) {
     const p = this.player;
     if (!p.alive) return;
-    if (p.vehicle) { this.exitVehicle(); return; }
+    if (p.vehicle) {
+      // Allow resolving nearby random world event with E even while cruising slowly
+      if (preferBankOrEvent && this.randomEvents.active) {
+        const dEv = Math.hypot(this.randomEvents.active.x - p.x, this.randomEvents.active.z - p.z);
+        if (dEv < 12) {
+          const res = resolveActiveRandomEvent(this.randomEvents);
+          if (res) {
+            p.money += res.rewardCash;
+            this.audio.cash();
+            this.ev.onToast(`${res.title}: ${res.resolutionText} (+$${res.rewardCash})`, 'good');
+            this.emitHud(true);
+            return;
+          }
+        }
+      }
+      this.exitVehicle();
+      return;
+    }
     if (this.interior) {
       const room = this.interior.room;
+      if (room.kind === 'bank') {
+        const nearTeller = room.tellerPos ? Math.hypot(p.x - room.tellerPos.x, p.z - room.tellerPos.z) < 5.5 : false;
+        const nearAtm = Math.hypot(p.x - (room.cx - 8.2), p.z - (room.cz + 4.4)) < 3.6;
+        if (nearTeller || nearAtm || preferBankOrEvent) {
+          const nearBranch = findNearestBankOrAtm(this.interior.back.x, this.interior.back.z, 26);
+          const bId = nearBranch?.branch?.id ?? BANK_BRANCHES[0].id;
+          const bName = nearBranch?.branch?.name ?? this.interior.name;
+          this.openBankModal('bank', bId, bName);
+          return;
+        }
+      }
       if (room.kind === 'gun' && Math.hypot(p.x - (room.cx - 4.8), p.z - (room.cz + 1.0)) < 5.5 && p.y < 1.6) { this.shop(); return; }
       if (this.insideT > 0.8) {
         for (const ex of room.exits) {
@@ -1484,6 +1984,26 @@ export class Game {
           return;
         }
       }
+      return;
+    }
+    // 1. Active Random World Event interaction
+    if (this.randomEvents.active) {
+      const dEv = Math.hypot(this.randomEvents.active.x - p.x, this.randomEvents.active.z - p.z);
+      if (dEv < 10.5) {
+        const res = resolveActiveRandomEvent(this.randomEvents);
+        if (res) {
+          p.money += res.rewardCash;
+          this.audio.cash();
+          this.ev.onToast(`${res.title}: ${res.resolutionText} (+$${res.rewardCash})`, 'good');
+          this.emitHud(true);
+          return;
+        }
+      }
+    }
+    // 2. Sidewalk NovaBank ATM or quick bank access via E
+    const nearBankAtm = findNearestBankOrAtm(p.x, p.z, preferBankOrEvent ? 10 : 4.5);
+    if (nearBankAtm && (nearBankAtm.kind === 'atm' || preferBankOrEvent)) {
+      this.openBankModal(nearBankAtm.kind, nearBankAtm.id, nearBankAtm.name);
       return;
     }
     const dn = this.doorNear();
@@ -1725,7 +2245,7 @@ export class Game {
   pedVehicle(_dt: number) {
     for (const v of this.vehicles) {
       const sp = v.speed;
-      if (sp < 2.2 || v.mode === 'wreck') continue;
+      if (sp < 1.8 || v.mode === 'wreck') continue;
       const c = v.circles();
       for (const p of this.peds) {
         if (p.dead && p.landed) continue;
@@ -1737,10 +2257,14 @@ export class Game {
           const rr = c[i + 2] + 0.35;
           if (ox * ox + oz * oz < rr * rr) {
             const d = Math.hypot(ox, oz) || 1;
-            p.knock(this, v.vx * 0.95 + (ox / d) * 3, v.vz * 0.95 + (oz / d) * 3, sp * 3.3, v.mode === 'player');
-            v.vx *= 0.97; v.vz *= 0.97;
-            this.audio.hit(1);
-            if (v.mode === 'player') this.shake(0.15);
+            // Pass genuine vehicle speed & mass so light taps cause stumbles with ZERO blood explosion
+            const pushX = v.vx + (ox / d) * Math.min(2.2, sp * 0.35);
+            const pushZ = v.vz + (oz / d) * Math.min(2.2, sp * 0.35);
+            p.knock(this, pushX, pushZ, sp * 3.0, v.mode === 'player', v.spec.mass);
+            v.vx *= sp < 5.5 ? 0.94 : 0.97;
+            v.vz *= sp < 5.5 ? 0.94 : 0.97;
+            this.audio.hit(sp < 5.5 ? 0.38 : 1.0);
+            if (v.mode === 'player') this.shake(sp < 5.5 ? 0.04 : 0.16);
             break;
           }
         }
@@ -2139,8 +2663,7 @@ export class Game {
         l.intensity = 0;
       }
     });
-    if (this.bloom) this.bloom.strength = 0.14;
-    this.renderer.toneMappingExposure = 0.96;
+    this.renderer.toneMappingExposure = 1.02;
     this.spawnRoomNpcs(room);
     this.audio.door();
     this.ev.onToast(`Entering ${door.name}`, 'info');
@@ -2186,7 +2709,6 @@ export class Game {
     this.interior = null;
     this.world.boundsOff = false;
     this.intLights.forEach((l) => (l.intensity = 0));
-    if (this.bloom) this.bloom.strength = this.rtxEnabled ? 0.18 : 0.1;
     for (let i = this.peds.length - 1; i >= 0; i--) if (this.peds[i].indoor) this.removePed(this.peds[i]);
     this.audio.door();
     this.ev.onToast('Back outside', 'info');
@@ -2309,6 +2831,12 @@ export class Game {
     if (!p.alive) return null;
     if (this.interior) {
       const room = this.interior.room;
+      if (room.kind === 'bank') {
+        const nearTeller = room.tellerPos ? Math.hypot(p.x - room.tellerPos.x, p.z - room.tellerPos.z) < 5.5 : false;
+        const nearAtm = Math.hypot(p.x - (room.cx - 8.2), p.z - (room.cz + 4.4)) < 3.6;
+        if (nearTeller) return 'Press E — NovaBank Teller (Deposit / Withdraw / Rob Bank)';
+        if (nearAtm) return 'Press E — NovaBank Lobby ATM';
+      }
       if (room.kind === 'gun' && Math.hypot(p.x - (room.cx - 4.8), p.z - (room.cz + 1.0)) < 5.5 && p.y < 1.6) return 'Press F — Buy weapons / ammo';
       if (this.insideT > 0.8) {
         for (const ex of room.exits) {
@@ -2319,10 +2847,19 @@ export class Game {
       }
       return null;
     }
+    if (this.randomEvents.active) {
+      const dEv = Math.hypot(this.randomEvents.active.x - p.x, this.randomEvents.active.z - p.z);
+      if (dEv < 10.5) return `Press E — ${this.randomEvents.active.def.title} (+$${this.randomEvents.active.def.rewardCash})`;
+    }
     if (p.vehicle) return null;
+    const nearAtm = findNearestBankOrAtm(p.x, p.z, 4.5);
+    if (nearAtm?.kind === 'atm') return `Press E — ${nearAtm.name} (Deposit / Withdraw Cash)`;
     for (const a of this.allies) if (!a.recruited && !a.dead && Math.hypot(a.x - p.x, a.z - p.z) < 2.8) return 'Press F — Recruit ally to your crew';
     const dn = this.doorNear();
-    if (dn) return `Press F — Enter ${dn.door.name}`;
+    if (dn) {
+      if (dn.door.kind === 'bank') return `Press F — Enter ${dn.door.name}  |  Press E — Quick Bank / Rob`;
+      return `Press F — Enter ${dn.door.name}`;
+    }
     const gs = this.city.places.gunshop;
     if (gs && Math.hypot(p.x - gs.x, p.z - gs.z) < 3.5) return 'Press F — Ammu-Nation (buy weapons / refill ammo)';
     let bd = 3.2;
@@ -2373,6 +2910,18 @@ export class Game {
           onGround: pv.flight.onGround,
         }
       : null;
+    const glbStat = getGlbStatus();
+    const phoneUnread = Object.values(this.phone.unreadByContact).reduce((s, n) => s + n, 0);
+    const activeEv = this.randomEvents.active
+      ? {
+          title: this.randomEvents.active.def.title,
+          headline: this.randomEvents.active.def.headline,
+          dialogue: this.randomEvents.active.def.dialogue,
+          dist: Math.round(Math.hypot(this.randomEvents.active.x - p.x, this.randomEvents.active.z - p.z)),
+          rewardCash: this.randomEvents.active.def.rewardCash,
+          category: this.randomEvents.active.def.category,
+        }
+      : null;
     this.ev.onHud({
       hp: Math.max(0, Math.round(p.hp)),
       armor: Math.round(p.armor),
@@ -2396,7 +2945,7 @@ export class Game {
       packages: [this.packagesFound, this.packagesTotal],
       finder,
       aiming: !pv && (this.input.aim || this.touch.aim || this.scope),
-      crosshair: !pv && !isMeleeWeapon(p.weapon) && p.alive && !this.scope,
+      crosshair: !pv && !isMeleeWeapon(p.weapon) && p.alive && !this.scope && !this.phone.open && !this.bankOpen,
       scope: this.scope,
       allies: this.allies.filter((a) => a.recruited && !a.dead).length,
       recruitable: this.allies.filter((a) => !a.recruited && !a.dead).length,
@@ -2421,14 +2970,26 @@ export class Game {
       voicesEnabled: this.voicesEnabled,
       hdGlbMode: this.hdGlbMode,
       microtexturesEnabled: this.microtexturesEnabled,
+      experimentalBodyLogic: this.experimentalBodyLogic,
       trafficSummary: this.trafficManager.getSummary(),
       freeCityCount: this.peds.filter((q) => !q.dead && Boolean(q.freeCity)).length,
       speakingVoice: this.voices.speakingVoiceName,
       animCount: ANIMATION_COUNT,
       playerAnim: p.rig.animClipName,
-      glbLoaded: getGlbStatus().loaded,
-      glbTotal: getGlbStatus().total,
+      glbLoaded: glbStat.loaded,
+      glbTotal: glbStat.total,
+      glbFailed: glbStat.failed,
       storeCount: this.city.doors.length,
+      bankBalance: this.banking.bankBalance,
+      bankOpen: this.bankOpen,
+      bankModalInfo: this.bankModalInfo,
+      heist: { ...this.banking.heist },
+      phoneOpen: this.phone.open,
+      phoneUnread,
+      activeEvent: activeEv,
+      randomEventsTotal: RANDOM_EVENTS.length,
+      randomEventsDone: this.randomEvents.completedCount,
+      activePlansCount: this.npcLife.plans.size,
     });
   }
 }

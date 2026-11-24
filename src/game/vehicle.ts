@@ -9,6 +9,9 @@ import {
 import {
   FlightState, SuspensionState, createFlightState, createSuspensionState, stepFlightPhysics, stepSuspensionPhysics,
 } from './physics';
+import {
+  SteeringState, createSteeringState, stepRealisticSteering,
+} from './steeringPhysics';
 import { driverBust } from './humans';
 import type { Game } from './Game';
 import type { HumanRig } from './humans';
@@ -74,8 +77,9 @@ export class Vehicle {
   sandSprayT = 0;
   slopePitch = 0;
   slopeRoll = 0;
-  // Enhanced car suspension & drift FX
+  // Enhanced car suspension, realistic progressive steering & drift FX
   susp: SuspensionState = createSuspensionState(0);
+  steerState: SteeringState = createSteeringState();
   bodyYOffset = 0;
   driftSmokeT = 0;
   // Aircraft flight physics state & controls
@@ -422,11 +426,25 @@ export class Vehicle {
     vf = sandRes.vf;
     this.sandSink += (sandRes.sinkY - this.sandSink) * (1 - Math.exp(-8 * dt));
 
-    // lateral grip (reduced in loose sand for sandy drifting)
-    const slide = Math.abs(vl) > 5.5;
-    let grip = s.grip * (this.hand ? 0.1 : slide ? 0.5 : 1) * sandRes.gripMul;
-    if (this.hand && Math.abs(vf) < 3) grip = 6;
-    vl *= Math.exp(-grip * dt);
+    // Realistic progressive steering & Pacejka-lite lateral grip
+    const steerRes = stepRealisticSteering(
+      this.steerState,
+      {
+        rawSteer: this.steerIn,
+        speedFwd: vf,
+        speedLat: vl,
+        maxSteerRad: s.steer,
+        wheelBase: s.wheelBase,
+        baseGrip: s.grip,
+        handbrake: this.hand,
+        sandFactor: sandF,
+        isPlayer: this.mode === 'player',
+      },
+      dt,
+    );
+    vl = steerRes.newLatSpeed;
+    this.steerAng = steerRes.steerAngle;
+    this.omega = steerRes.omega;
 
     // rooster-tail sand spray from rear tires
     if (g && sandRes.sprayIntensity > 0.1 && this.speed > 1.5) {
@@ -443,16 +461,6 @@ export class Vehicle {
       }
     }
 
-    // steering
-    const steerTarget = this.steerIn;
-    this.steerAng += (steerTarget * s.steer - this.steerAng) * (1 - Math.exp(-9 * dt));
-    const lim = s.steer / (1 + Math.abs(vf) * 0.05);
-    const ang = clamp(this.steerAng, -lim, lim);
-    let om = (vf * Math.tan(ang)) / s.wheelBase;
-    if (this.hand && Math.abs(vf) > 7) om *= 1.7;
-    if (sandF > 0.2 && Math.abs(vf) > 5) om *= 1.15;
-    om = clamp(om, -2.7, 2.7);
-    this.omega += (om - this.omega) * (1 - Math.exp(-(this.hand ? 5 : 10) * dt));
     this.yaw += this.omega * dt;
     const nfx = Math.sin(this.yaw), nfz = Math.cos(this.yaw);
     const nrx = -nfz, nrz = nfx;

@@ -395,8 +395,35 @@ export function addBuilding(c: BCtx, o: BOpts) {
     }
   }
   if (floors > 4 && y0 === 0) {
-    // cornice below roof
+    // Architectural cornice & bespoke style flourishes so buildings look diverse and handmade
     c.b.add('prop', box(w + 0.6, 0.5, d + 0.6, cx, H - 0.5, cz, 0xb8b2a4), ch);
+    if (style === 'glass' && floors >= 6) {
+      // Modern structural mullions + recessed penthouse sky-lounge crown
+      for (let i = -1; i <= 1; i += 2) {
+        c.b.add('propMetal', box(0.32, H, 0.32, cx + i * (w / 2 + 0.08), 0, cz + d / 2 + 0.08, 0x2a3440), ch);
+        c.b.add('propMetal', box(0.32, H, 0.32, cx + i * (w / 2 + 0.08), 0, cz - d / 2 - 0.08, 0x2a3440), ch);
+      }
+      c.b.add('propMetal', box(w + 0.35, 0.36, d + 0.35, cx, H * 0.5, cz, 0x323d4a), ch);
+      c.b.add('emit', box(w + 0.3, 0.16, d + 0.3, cx, H - 0.18, cz, 0x5ee6ff), ch);
+    } else if (style === 'stone' && floors >= 5) {
+      // Classical pilasters + stepped limestone parapet crown
+      for (const sx of [-0.36, 0, 0.36]) {
+        c.b.add('prop', box(0.65, H - 0.6, 0.32, cx + sx * w, 0.4, cz + d / 2 + 0.14, 0xe8dfd0), ch);
+        c.b.add('prop', box(0.65, H - 0.6, 0.32, cx + sx * w, 0.4, cz - d / 2 - 0.14, 0xe8dfd0), ch);
+      }
+      c.b.add('prop', box(w * 0.68, 1.8, d * 0.68, cx, H + 0.4, cz, 0xd8cfc0), ch);
+    } else if (style === 'brick' && floors >= 5) {
+      // Classic masonry corner quoins + dark-iron cornice dentils
+      c.b.add('prop', box(w + 0.9, 0.72, d + 0.9, cx, H - 0.65, cz, 0x4b3d36), ch);
+      c.b.add('prop', box(w * 0.52, 2.2, d * 0.52, cx, H + 0.4, cz, 0x8a5b4a), ch);
+    } else if (style === 'apartment' && floors >= 5) {
+      // Art Deco stepped central fin & cantilevered balconies
+      c.b.add('prop', box(1.2, H + 1.8, 0.55, cx, 0.4, cz + d / 2 + 0.22, 0xf6efe6), ch);
+      for (let fl = 2; fl < Math.min(floors, 7); fl += 2) {
+        c.b.add('prop', box(w * 0.32, 0.18, 1.2, cx - w * 0.24, fl * FLOOR_H, cz + d / 2 + 0.6, 0xe8e4dc), ch);
+        c.b.add('propMetal', box(w * 0.32, 0.9, 0.08, cx - w * 0.24, fl * FLOOR_H + 0.18, cz + d / 2 + 1.15, 0x2b3038), ch);
+      }
+    }
   }
   if (o.roof !== 'none') roofStuff(c, cx, cz, w, d, y0 + H, o.roof ?? (floors > 12 ? 'tower' : floors > 4 ? 'big' : 'small'), o.heli);
   else roofStuff(c, cx, cz, w, d, y0 + H, 'none');
@@ -460,9 +487,19 @@ export function addTower(c: BCtx, lot: Lot, floors: number) {
     d = Math.max(BAY * 3, d - BAY * 2);
     if (left <= 0) break;
   }
-  // spire
-  if (r.chance(0.5)) {
-    const ch = c.chunk(cx, cz);
+  // Architectural skyscraper crown: Art Deco stepped ziggurat, sloped glass fin, or twin telecom spire
+  const ch = c.chunk(cx, cz);
+  const crownRoll = r.int(0, 2);
+  if (crownRoll === 0) {
+    c.b.add('prop', box(w * 0.72, 3.6, d * 0.72, cx, y + 0.3, cz, 0xd8dce2), ch);
+    c.b.add('emit', box(w * 0.76, 0.28, d * 0.76, cx, y + 3.6, cz, 0x38d9ff), ch);
+    c.b.add('propMetal', cone(1.15, 18, cx, y + 3.9, cz, 0xc2c8d0, 8), ch);
+    c.b.add('red', sph(0.32, cx, y + 21.9, cz, 0xff2a2a), ch);
+  } else if (crownRoll === 1) {
+    // Diagonal beveled crown lantern
+    c.b.add('f_glass', box(w * 0.85, 5.2, d * 0.62, cx, y + 0.3, cz, 0xa8d8ff), ch);
+    c.b.add('emit', box(w * 0.88, 0.25, d * 0.66, cx, y + 5.3, cz, 0xff4da6), ch);
+  } else if (r.chance(0.75)) {
     c.b.add('propMetal', cone(1.2, 16, cx, y + 0.4, cz, 0xb0b5bb, 6), ch);
     c.b.add('red', sph(0.3, cx, y + 16.4, cz, 0xff2a2a), ch);
   }

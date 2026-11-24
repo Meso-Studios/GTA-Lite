@@ -2,9 +2,19 @@
 import * as THREE from 'three';
 import { CORNER, NB, applySandFootPhysics, clamp, dampAngle, isMeleeWeapon, nearestNode, redRemaining, roadLine, sandFactorAt, signalState } from './config';
 import { AnimIn, GunKind, HumanRig, Look, Ragdoll, animateHuman, createHuman, disposeHumanRig, muzzleWorld, setWeapon } from './humans';
-import { computeRagdollImpulse } from './physics';
+import { computeRagdollImpulse, computeVehiclePedImpact } from './physics';
 import { createFreeCityBrain, stepFreeCityNpc, type FreeCityArchetype, type FreeCityBrain, type FreeCityContext } from './freeCityNpc';
-import { BARE_HAND_MOVES, BARE_HAND_SEQUENCE, BRAWL_TAUNTS, type BareHandMove, shouldNpcFightBack } from './subAnimations';
+import { BRAWL_TAUNTS, type BareHandMove, shouldNpcFightBack } from './subAnimations';
+import {
+  type GunfightState,
+  type MeleeCombatState,
+  createGunfightState,
+  createMeleeCombatState,
+  resolveIncomingMeleeHit,
+  stepGunfightAI,
+  stepMeleeCombat,
+} from './combatAI';
+import type { CitizenProfile } from './npcLifeSim';
 import type { Game } from './Game';
 import type { PushOut } from './world';
 
@@ -79,12 +89,22 @@ export class Ped {
   brawlPunchT = 0;
   brawlPunchDur = 0.36;
   brawlPunchMove: BareHandMove = 'jab_left';
+  brawlPunchProgress = 0;
+  brawlBlocking = false;
+  brawlDodgeDir = 0;
   brawlComboIdx = 0;
   brawlCooldown = 0;
   brawlHitApplied = false;
+  gunCrouching = false;
+  gunAiming = false;
+  underFireT = 0;
   guardT = 0;
   prevYaw = 0;
   turnRate = 0;
+  meleeAI: MeleeCombatState;
+  gunAI: GunfightState;
+  lifeProfile: CitizenProfile | null = null;
+  experimentalBodyLogic = false;
 
   constructor(kind: PedKind, look: Look) {
     this.kind = kind;
@@ -92,6 +112,8 @@ export class Ped {
     this.rig.kindHint = kind;
     this.speed = 1.25 + Math.random() * 0.5;
     this.lat = (Math.random() - 0.5) * 2.2;
+    this.meleeAI = createMeleeCombatState(this.id * 19 + 5);
+    this.gunAI = createGunfightState(kind === 'cop' ? 10 : 14, this.id * 23 + 3);
     if (kind === 'civ' || kind === 'tourist' || kind === 'guard') {
       this.freeCity = createFreeCityBrain(this.id * 13 + 7, kind);
     }
@@ -210,12 +232,28 @@ export class Ped {
     dz: number,
     byPlayer: boolean,
     headshot = false,
-    opts?: { shotgun?: boolean; explosive?: boolean; katana?: boolean; meleeKind?: 'fists' | 'melee' },
+    opts?: { shotgun?: boolean; explosive?: boolean; katana?: boolean; meleeKind?: 'fists' | 'melee'; blunt?: boolean },
   ): boolean {
     if (this.dead) return false;
-    const effDmg = dmg * (headshot ? 2.5 : 1);
+    let effDmg = dmg * (headshot ? 2.5 : 1);
+    const isBlunt = !!opts?.blunt || opts?.meleeKind === 'fists';
+    this.underFireT = 2.4;
+
+    // Active melee blocking / bob-and-weave slip deflection when brawling
+    if (this.state === 'brawl' && (opts?.meleeKind === 'fists' || opts?.meleeKind === 'melee')) {
+      const def = resolveIncomingMeleeHit(this.meleeAI, effDmg);
+      effDmg = def.appliedDamage;
+      if (def.blocked) {
+        this.flinchT = 0.1;
+        if (effDmg <= 0) {
+          // Cleanly slipped the punch — zero blood, ready to counter!
+          return false;
+        }
+      }
+    }
+
     this.hp -= effDmg;
-    this.flinchT = 0.28;
+    this.flinchT = Math.max(this.flinchT, 0.28);
     if (byPlayer) {
       if (this.kind === 'civ' || this.kind === 'tourist') g.crime(1, 'assault');
       else if (this.kind === 'cop') g.crime(2, 'assault');
@@ -244,6 +282,7 @@ export class Ped {
       !!opts?.shotgun || !!opts?.katana,
       groundY,
       wallHit,
+      isBlunt && !opts?.katana,
     );
     if (this.hp <= 0) {
       const imp = computeRagdollImpulse(dx, dz, effDmg, headshot, !!opts?.explosive);
@@ -260,11 +299,12 @@ export class Ped {
       ) {
         const wasBrawl = this.state === 'brawl';
         this.state = 'brawl';
-        this.brawlT = 18;
+        this.brawlT = 20;
         this.guardT = 4.5;
-        this.brawlCooldown = Math.max(this.brawlCooldown, 0.38 + Math.random() * 0.25);
+        this.brawlCooldown = Math.max(this.brawlCooldown, 0.32 + Math.random() * 0.2);
         this.handsUp = 0;
         if (!wasBrawl) {
+          this.meleeAI = createMeleeCombatState(this.id * 19 + 5);
           this.freeCityLastHint = BRAWL_TAUNTS[this.id % BRAWL_TAUNTS.length];
         }
       } else {
@@ -306,35 +346,88 @@ export class Ped {
     }
   }
 
-  knock(g: Game, vx: number, vz: number, dmg: number, byPlayer: boolean) {
+  knock(g: Game, vx: number, vz: number, _dmgHint: number, byPlayer: boolean, vehicleMassKg = 1450) {
     if (this.dead) return;
-    this.hp -= dmg;
-    this.flinchT = 0.35;
     const sp = Math.hypot(vx, vz);
+    const impact = computeVehiclePedImpact(sp, vehicleMassKg);
+    if (impact.severity === 'none') return;
+
+    const l = sp || 1;
+    const ux = vx / l, uz = vz / l;
+    this.hp -= impact.damage;
+    this.flinchT = impact.severity === 'tap' ? 0.36 : 0.45;
     const groundY = g.groundAt(this.x, this.z);
-    g.fx.bloodBurst(this.x, this.y + 1.0, this.z, vx, 1.5, vz, dmg * 1.4, false, sp > 22, sp > 14, groundY);
+
+    // Light bumper tap (< 5.5 m/s): realistic stumble/pushback, ZERO blood explosion, non-lethal!
+    if (impact.severity === 'tap') {
+      this.vx += ux * impact.pushSpeed;
+      this.vz += uz * impact.pushSpeed;
+      this.x += ux * 0.32;
+      this.z += uz * 0.32;
+      this.freeCityLastHint = "Hey! Watch where you're driving—you almost ran me over!";
+      if (this.hp <= 0) this.hp = 6; // A gentle tap cannot kill a healthy pedestrian
+      this.flee(g, this.x - ux * 6, this.z - uz * 6, 5.5);
+      return;
+    }
+
+    // Moderate / Severe / Catastrophic impact: kinetic-energy scaled gore (blunt unless catastrophic)
+    if (impact.bloodDamage > 0) {
+      g.fx.bloodBurst(
+        this.x,
+        this.y + 1.0,
+        this.z,
+        vx,
+        1.2,
+        vz,
+        impact.bloodDamage,
+        false,
+        impact.allowGibs,
+        impact.severity === 'severe' || impact.severity === 'catastrophic',
+        groundY,
+        null,
+        impact.severity === 'moderate',
+      );
+    }
     if (byPlayer) {
       if (this.kind === 'civ' || this.kind === 'tourist') g.crime(1, 'roadkill');
       else if (this.kind === 'cop') g.crime(2, 'roadkill');
     }
-    if (this.hp <= 0 || dmg > 20) {
+    if (impact.lethal || this.hp <= 0) {
       this.hp = Math.min(this.hp, 0);
-      this.kill(g, vx * 1.15, 4.2 + Math.min(6.5, sp * 0.25), vz * 1.15, byPlayer, sp > 18 ? 3.2 : 1.5);
-    } else this.flee(g, this.x - vx, this.z - vz, 8);
+      this.kill(
+        g,
+        ux * impact.pushSpeed,
+        impact.launchUp,
+        uz * impact.pushSpeed,
+        byPlayer,
+        impact.severity === 'catastrophic' ? 3.2 : 1.6,
+      );
+    } else {
+      // Moderate non-lethal bump: knock back & scramble away
+      this.vx += ux * impact.pushSpeed * 0.65;
+      this.vz += uz * impact.pushSpeed * 0.65;
+      this.flee(g, this.x - ux * 8, this.z - uz * 8, 9);
+    }
   }
 
   // ------------------------------------------------------------------ update
   update(dt: number, g: Game) {
+    this.experimentalBodyLogic = g.experimentalBodyLogic;
     if (this.dead) { this.ragdoll(dt, g); return; }
     if (this.flinchT > 0) this.flinchT = Math.max(0, this.flinchT - dt);
     if (this.speakingT > 0) this.speakingT = Math.max(0, this.speakingT - dt);
     if (this.guardT > 0) this.guardT = Math.max(0, this.guardT - dt);
     if (this.brawlCooldown > 0) this.brawlCooldown = Math.max(0, this.brawlCooldown - dt);
+    if (this.underFireT > 0) this.underFireT = Math.max(0, this.underFireT - dt);
+    this.brawlBlocking = false;
+    this.brawlDodgeDir = 0;
+    this.brawlPunchProgress = 0;
+    this.gunCrouching = false;
+    this.gunAiming = false;
     if (this.kind === 'ally') { this.allyUpdate(dt, g); return; }
     const px = g.playerX, pz = g.playerZ;
     const dxp = px - this.x, dzp = pz - this.z;
     const dp = Math.hypot(dxp, dzp);
-    let moveSpeed = 0;
     let faceYaw: number | null = null;
 
     if (this.handsUp > 0) {
@@ -346,14 +439,14 @@ export class Ped {
       return;
     }
 
-    // Bare-hand street brawler retaliation state for tough civilians/tourists who fight back when punched
+    // Tactical Bare-Hand Street Brawler AI (styles, blocking, bob-and-weave dodges, combos, attack tokens)
     if (this.state === 'brawl' && !this.hostile) {
       this.brawlT -= dt;
-      this.guardT = Math.max(this.guardT, 0.85);
-      // If player pulls a firearm and aims, or escapes in a vehicle, or dies, disengage sensibly
+      this.guardT = Math.max(this.guardT, 0.9);
       const playerArmedGun = !isMeleeWeapon(g.player.weapon) && (g.player.ammo[g.player.weapon] ?? 0) > 0 && (g.input.aim || g.playerFiring);
       if (!g.playerAlive || !g.playerOnFoot || dp > 28 || this.brawlT <= 0) {
         this.brawlPunchT = 0;
+        this.brawlPunchProgress = 0;
         if (this.crowdHome) this.pickCrowdTarget();
         else {
           this.state = 'walk';
@@ -366,50 +459,39 @@ export class Ped {
         this.flee(g, px, pz, 9);
       } else {
         faceYaw = Math.atan2(dxp, dzp);
-        this.yaw = dampAngle(this.yaw, faceYaw, 11, dt);
-        if (this.brawlPunchT > 0) {
-          this.brawlPunchT += dt;
-          const phase = this.brawlPunchT / Math.max(0.15, this.brawlPunchDur);
-          this.vx *= 0.8;
-          this.vz *= 0.8;
-          if (!this.brawlHitApplied && phase >= 0.42 && phase <= 0.62) {
-            this.brawlHitApplied = true;
-            if (dp < 2.3 && g.playerOnFoot && g.playerAlive) {
-              const spec = BARE_HAND_MOVES[this.brawlPunchMove];
-              g.hurtPlayer(Math.round(spec.damage * 0.42), 'melee');
-              const ux = dxp / (dp || 1), uz = dzp / (dp || 1);
-              g.player.vx += ux * 2.4;
-              g.player.vz += uz * 2.4;
-              g.audio.punch();
-            }
-          }
-          if (this.brawlPunchT >= this.brawlPunchDur) {
-            this.brawlPunchT = 0;
-            this.brawlCooldown = 0.55 + Math.random() * 0.45;
-          }
-        } else if (dp > 1.9) {
-          // Close the gap briskly in fighting stance
-          const dir = Math.atan2(dxp, dzp);
-          moveSpeed = dp > 4.5 ? 4.3 : 2.9;
-          this.moveDir(Math.sin(dir), Math.cos(dir), moveSpeed, dt);
+        this.yaw = dampAngle(this.yaw, faceYaw, 12, dt);
+        const playerPunchProg = g.player.punchT > 0 ? clamp(g.player.punchT / Math.max(0.15, g.player.punchDur), 0, 1) : 0;
+        const hasToken = g.claimMeleeToken(this.id, dp);
+        const out = stepMeleeCombat(this.meleeAI, {
+          distToTarget: dp,
+          playerAttacking: g.player.punchT > 0,
+          playerPunchProgress: playerPunchProg,
+          hasAttackToken: hasToken,
+          dt,
+        });
+        this.brawlBlocking = out.blocking;
+        this.brawlDodgeDir = out.dodging ? out.dodgeDir : 0;
+        this.brawlPunchMove = out.punchMove;
+        this.brawlPunchProgress = out.punchProgress;
+
+        const fwdX = Math.sin(faceYaw), fwdZ = Math.cos(faceYaw);
+        const strX = Math.cos(faceYaw), strZ = -Math.sin(faceYaw);
+        const mx = fwdX * out.moveForward + strX * out.moveStrafe;
+        const mz = fwdZ * out.moveForward + strZ * out.moveStrafe;
+        const ml = Math.hypot(mx, mz);
+        if (ml > 0.05 && out.moveSpeed > 0.05) {
+          this.moveDir(mx / ml, mz / ml, out.moveSpeed, dt);
         } else {
-          // Circle/weave slightly and throw varied bare-hand strikes
-          this.strafeT -= dt;
-          if (this.strafeT <= 0) {
-            this.strafe = Math.random() < 0.5 ? -1 : 1;
-            this.strafeT = 0.8 + Math.random() * 0.9;
-          }
-          const sx = Math.cos(faceYaw) * this.strafe, sz = -Math.sin(faceYaw) * this.strafe;
-          if (dp < 1.15) this.moveDir(-Math.sin(faceYaw), -Math.cos(faceYaw), 1.6, dt);
-          else this.moveDir(sx, sz, 1.4, dt);
-          if (this.brawlCooldown <= 0) {
-            const move = BARE_HAND_SEQUENCE[this.brawlComboIdx % BARE_HAND_SEQUENCE.length];
-            this.brawlComboIdx = (this.brawlComboIdx + 1) % BARE_HAND_SEQUENCE.length;
-            this.brawlPunchMove = move;
-            this.brawlPunchDur = BARE_HAND_MOVES[move].duration * 1.12;
-            this.brawlPunchT = 0.001;
-            this.brawlHitApplied = false;
-          }
+          this.vx *= 0.78;
+          this.vz *= 0.78;
+        }
+
+        if (out.deliverHit && g.playerOnFoot && g.playerAlive && dp < 2.55) {
+          g.hurtPlayer(out.hitDamage, 'melee');
+          const ux = dxp / (dp || 1), uz = dzp / (dp || 1);
+          g.player.vx += ux * out.hitKnockback;
+          g.player.vz += uz * out.hitKnockback;
+          g.audio.punch();
         }
         this.animate(dt, Math.hypot(this.vx, this.vz), false, 0, false);
         this.finish(g);
@@ -417,7 +499,7 @@ export class Ped {
       }
     }
 
-    // hostile behaviour
+    // Tactical Hostile Gunfight AI (cover crouch, peek-and-aim telegraph, burst fire, flanking, reload)
     if (this.hostile) {
       if (this.kind === 'cop') {
         this.aggro = g.wanted > 0;
@@ -430,28 +512,35 @@ export class Ped {
       }
       if (this.aggro && g.playerAlive) {
         this.state = 'attack';
-        const range = this.kind === 'cop' ? 15 : 17;
         const los = g.world.los(this.x, 1.5, this.z, px, 1.4, pz);
         faceYaw = Math.atan2(dxp, dzp);
-        if (dp > range || !los) {
-          moveSpeed = 5.3;
-          const dir = Math.atan2(dxp, dzp);
-          this.moveDir(Math.sin(dir), Math.cos(dir), moveSpeed, dt);
+        const coverNearby = dp > 9 && dp < 30 && !g.world.los(this.x + Math.cos(faceYaw) * 1.4, 0.85, this.z - Math.sin(faceYaw) * 1.4, px, 1.3, pz);
+        const gunOut = stepGunfightAI(this.gunAI, {
+          distToTarget: dp,
+          hasLos: los,
+          coverAvailable: coverNearby,
+          underFire: this.underFireT > 0 || (g.playerFiring && dp < 34),
+          dt,
+        });
+        this.gunCrouching = gunOut.crouching;
+        this.gunAiming = gunOut.aiming;
+
+        const fwdX = Math.sin(faceYaw), fwdZ = Math.cos(faceYaw);
+        const strX = Math.cos(faceYaw), strZ = -Math.sin(faceYaw);
+        const mx = fwdX * gunOut.moveForward + strX * gunOut.moveStrafe;
+        const mz = fwdZ * gunOut.moveForward + strZ * gunOut.moveStrafe;
+        const ml = Math.hypot(mx, mz);
+        if (ml > 0.05 && gunOut.moveSpeed > 0.05) {
+          this.moveDir(mx / ml, mz / ml, gunOut.moveSpeed, dt);
         } else {
-          this.strafeT -= dt;
-          if (this.strafeT <= 0) { this.strafe = Math.random() < 0.5 ? -1 : 1; this.strafeT = 1 + Math.random() * 1.5; }
-          const sx = Math.cos(faceYaw) * this.strafe, sz = -Math.sin(faceYaw) * this.strafe;
-          moveSpeed = dp < 7 ? -2.2 : 1.6;
-          if (dp < 7) this.moveDir(-Math.sin(faceYaw), -Math.cos(faceYaw), 2.2, dt);
-          else this.moveDir(sx, sz, 1.6, dt);
+          this.vx *= 0.78;
+          this.vz *= 0.78;
         }
-        this.fireT -= dt;
-        if (los && dp < 60 && this.fireT <= 0 && this.weapon) {
-          this.fireT = 0.45 + Math.random() * 0.6;
+        if (gunOut.shootNow && los && dp < 62 && this.weapon) {
           g.npcShoot(this, this.accuracy);
         }
         this.yaw = dampAngle(this.yaw, faceYaw, 12, dt);
-        this.animate(dt, Math.abs(moveSpeed), false, 1);
+        this.animate(dt, Math.hypot(this.vx, this.vz), false, gunOut.aiming ? 1 : 0.25);
         this.finish(g);
         return;
       }
@@ -567,6 +656,49 @@ export class Ped {
       fcPhoto = fc.photoPose;
     }
 
+    // Deep Non-AI Life Simulation steering: cooperative plans & independent everyday life situations
+    if (this.lifeProfile && !this.indoor && this.state !== 'flee' && this.state !== 'wait') {
+      const lp = this.lifeProfile;
+      if (lp.situationLine && lp.situation !== 'none') {
+        this.freeCityLastHint = lp.situationLine;
+      }
+      if (lp.activePlanId !== null) {
+        const plan = g.npcLife.plans.get(lp.activePlanId);
+        if (plan) {
+          const dMeet = Math.hypot(plan.meetingX - this.x, plan.meetingZ - this.z);
+          if (plan.stage === 'together' && lp.partnerOrTargetId !== null) {
+            const partner = g.peds.find((o) => o.id === lp.partnerOrTargetId && !o.dead);
+            if (partner) {
+              const pYaw = Math.atan2(partner.x - this.x, partner.z - this.z);
+              if (lp.situation === 'walking_together') {
+                // Walk side by side at synced pace
+                fcSpeedMul = 1.05;
+              } else {
+                // Stop & converse / confront / share coffee face-to-face
+                fcStop = true;
+                fcFaceYaw = pYaw;
+              }
+            }
+          } else if (dMeet > 2.6) {
+            // Head purposefully toward the planned meetup venue
+            this.moveDir((plan.meetingX - this.x) / dMeet, (plan.meetingZ - this.z) / dMeet, this.speed * 1.25, dt);
+            this.animate(dt, Math.hypot(this.vx, this.vz), false, 0, false);
+            this.finish(g);
+            return;
+          } else {
+            // Arrived first: pause & check watch while waiting for friend
+            fcStop = true;
+          }
+        }
+      } else if (lp.situation === 'dropped_item' || lp.situation === 'window_browse') {
+        fcStop = true;
+      } else if (lp.situation === 'running_late') {
+        fcSpeedMul = 2.15;
+      } else if (lp.situation === 'phone_call') {
+        fcSpeedMul = 0.85;
+      }
+    }
+
     switch (this.state) {
       case 'flee': {
         this.panicT -= dt;
@@ -574,7 +706,6 @@ export class Ped {
         const l = Math.hypot(ax, az) || 1;
         ax /= l; az /= l;
         this.moveDir(ax, az, 5.6, dt);
-        moveSpeed = 5.6;
         if (this.panicT <= 0) {
           if (this.crowdHome) this.pickCrowdTarget();
           else {
@@ -632,7 +763,6 @@ export class Ped {
           }
         } else {
           this.moveDir(dx / d, dz / d, this.speed * fcSpeedMul, dt);
-          moveSpeed = this.speed * fcSpeedMul;
         }
         break;
       }
@@ -652,7 +782,6 @@ export class Ped {
           else this.pickNext(g);
         } else {
           this.moveDir(dx / d, dz / d, this.speed * fcSpeedMul, dt);
-          moveSpeed = this.speed * fcSpeedMul;
         }
         break;
       }
@@ -688,21 +817,35 @@ export class Ped {
     this.turnRate = dt > 0.0001 ? clamp(dyaw / dt, -8, 8) : 0;
     this.prevYaw = this.yaw;
 
+    const sit = this.lifeProfile?.situation ?? 'none';
     const a: AnimIn = {
       mode: this.indoor && this.indoorRole === 'seated' && !panic && this.handsUp <= 0 ? 'sit' : 'stand',
       speed,
       aim,
       aimPitch: 0,
-      punch: this.brawlPunchT > 0 ? clamp(this.brawlPunchT / Math.max(0.15, this.brawlPunchDur), 0, 1) : 0,
+      crouch: this.gunCrouching,
+      punch: this.brawlPunchProgress > 0
+        ? this.brawlPunchProgress
+        : this.brawlPunchT > 0
+          ? clamp(this.brawlPunchT / Math.max(0.15, this.brawlPunchDur), 0, 1)
+          : 0,
       punchMove: this.brawlPunchMove,
       boxingGuard: this.state === 'brawl' ? 1 : clamp(this.guardT * 0.5, 0, 1),
+      blocking: this.brawlBlocking,
+      dodgeDir: this.brawlDodgeDir,
       panic: panic || this.handsUp > 0,
       photo,
+      phoneCall: sit === 'phone_call',
+      checkWatch: sit === 'waiting_for_friend' && speed < 0.35,
+      pickUp: sit === 'dropped_item',
+      waveGreet: sit === 'good_news' || sit === 'celebrating',
       flinch: this.flinchT > 0 ? this.flinchT / 0.28 : 0,
       turnRate: this.turnRate,
-      speaking: this.speakingT > 0,
+      speaking: this.speakingT > 0 || sit === 'rival_argument' || sit === 'sharing_coffee',
       onSand: !this.indoor && sandFactorAt(this.x, this.z, this.y) > 0.15,
       isTourist: this.kind === 'tourist',
+      experimentalBodyLogic: this.experimentalBodyLogic,
+      neuroStress: this.lifeProfile ? this.lifeProfile.stress / 100 : undefined,
     };
     animateHuman(this.rig, dt, a);
   }

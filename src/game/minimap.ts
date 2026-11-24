@@ -1,5 +1,6 @@
 // 10km x 10km Minimap, full map, and GPS route rendering on a 2048x2048 offscreen canvas.
 import { DECK, HALF, NB, OUTER_HIGHWAYS, P, WORLD_HALF, roadLine } from './config';
+import { ATM_LOCATIONS, BANK_BRANCHES } from './bankingSystem';
 import type { CityData } from './city';
 import type { Game } from './Game';
 
@@ -150,6 +151,12 @@ export class MapRenderer {
       else if (n === 'airport') list.push({ x: p.x, z: p.z, kind: 'airport', label: '✈' });
       else if (n.startsWith('gas_')) list.push({ x: p.x, z: p.z, kind: 'gas', label: 'F' });
     }
+    // NovaBank branches, ATMs & pulsing Random World Events
+    for (const b of BANK_BRANCHES) list.push({ x: b.x, z: b.z, kind: 'bank', label: '$' });
+    for (const a of ATM_LOCATIONS) list.push({ x: a.x, z: a.z, kind: 'atm', label: 'A' });
+    if (g.randomEvents?.active && !g.randomEvents.active.resolved) {
+      list.push({ x: g.randomEvents.active.x, z: g.randomEvents.active.z, kind: 'event', label: '?' });
+    }
     if (g.waypoint) list.push({ x: g.waypoint.x, z: g.waypoint.z, kind: 'waypoint' });
     if (g.finderOn) for (const pk of g.pickups) if (pk.kind === 'package' && !pk.taken && Math.hypot(pk.x - g.playerX, pk.z - g.playerZ) < 200) list.push({ x: pk.x, z: pk.z, kind: 'package' });
     if (g.wanted > 0) for (const p of g.peds) if (p.kind === 'cop' && !p.dead) list.push({ x: p.x, z: p.z, kind: 'cop' });
@@ -160,13 +167,23 @@ export class MapRenderer {
   private icon(d: CanvasRenderingContext2D, kind: string, label: string | undefined, s: number, t: number) {
     const colors: Record<string, string> = {
       mission: '#ffd23d', goal: '#ffd23d', enemy: '#ff4040', vehicle: '#3dd6ff', item: '#ffd23d',
-      hospital: '#ff5a5a', police: '#4a90ff', spray: '#ffb347', gun: '#e0e0e0', bank: '#7dff7d',
+      hospital: '#ff5a5a', police: '#4a90ff', spray: '#ffb347', gun: '#e0e0e0', bank: '#34d399',
+      atm: '#38bdf8', event: '#fbbf24',
       waypoint: '#ff2fd0', package: '#ff9d2e', cop: '#ff3030', landmark: '#38d9a9', airport: '#38bdf8', gas: '#ff7b2e',
     };
     const col = colors[kind] ?? '#fff';
     d.fillStyle = col;
     d.strokeStyle = '#000';
     d.lineWidth = 2;
+    if (kind === 'event') {
+      const pulse = 1 + 0.18 * Math.sin(t * 6.5);
+      d.beginPath(); d.arc(0, 0, 6.5 * s * pulse, 0, 7); d.fill(); d.stroke();
+      d.fillStyle = '#000';
+      d.font = `bold ${9 * s}px sans-serif`;
+      d.textAlign = 'center'; d.textBaseline = 'middle';
+      d.fillText('?', 0, 0.5);
+      return;
+    }
     if (kind === 'cop') {
       d.fillStyle = Math.floor(t * 4) % 2 ? '#ff2a2a' : '#2a6aff';
       d.beginPath(); d.arc(0, 0, 3.5 * s, 0, 7); d.fill();

@@ -21,13 +21,13 @@ function buildSkyReflectionScene(phase: RtxEnvPhase | 'flat'): THREE.Scene {
   const cols = new Float32Array(pos.count * 3);
 
   const zenith = new THREE.Color(
-    phase === 'day' ? 0x1d66d4 : phase === 'sunset' ? 0x2a1f66 : phase === 'night' ? 0x05091c : 0x5c6878,
+    phase === 'day' ? 0x0f56c8 : phase === 'sunset' ? 0x24175e : phase === 'night' ? 0x040818 : 0x5c6878,
   );
   const horizon = new THREE.Color(
-    phase === 'day' ? 0xcce8ff : phase === 'sunset' ? 0xff8c48 : phase === 'night' ? 0x182246 : 0x8d97a4,
+    phase === 'day' ? 0x9ed8ff : phase === 'sunset' ? 0xff7b36 : phase === 'night' ? 0x162048 : 0x8d97a4,
   );
   const ground = new THREE.Color(
-    phase === 'day' ? 0x6b6154 : phase === 'sunset' ? 0x452b34 : phase === 'night' ? 0x0b0d18 : 0x3b3d42,
+    phase === 'day' ? 0x5c5244 : phase === 'sunset' ? 0x3b222c : phase === 'night' ? 0x080a14 : 0x3b3d42,
   );
   const c = new THREE.Color();
 
@@ -64,29 +64,28 @@ function buildSkyReflectionScene(phase: RtxEnvPhase | 'flat'): THREE.Scene {
   };
 
   if (phase === 'day') {
-    // Crisp tropical sun hotspot + bright cumulus sky lightbanks + sunlit turquoise ocean bounce
-    addPanel(0xfff8e6, 7.5, 22, 18, 12, 8.5, 8.5);
-    addPanel(0xeef7ff, 2.2, -18, 14, -14, 18, 7);
-    addPanel(0xdcf3ff, 1.8, 0, 24, -10, 22, 10);
-    addPanel(0x7be0f5, 1.25, 0, -4, 24, 34, 4.5);
-    addPanel(0xffe5c2, 1.15, -24, 3, 6, 16, 4.5);
+    // Crisp tropical sun hotspot + azure zenith contrast + vivid turquoise ocean reflection band
+    addPanel(0xfff6dc, 6.2, 22, 18, 12, 7.5, 7.5);
+    addPanel(0xc8ecff, 1.8, -18, 14, -14, 16, 6);
+    addPanel(0x28c6e8, 1.35, 0, -4, 24, 34, 4.5);
+    addPanel(0xffd29e, 1.1, -24, 3, 6, 14, 4.0);
   } else if (phase === 'sunset') {
     // Fiery Leonida golden-hour sun + coral/magenta horizon ribbon + warm Art Deco neon glints
-    addPanel(0xffaa44, 8.5, 26, 7, 10, 10, 7.5);
-    addPanel(0xff5e7e, 2.8, 18, 4, -18, 22, 5.5);
-    addPanel(0xff9b52, 2.4, -22, 6, 12, 20, 5.5);
-    addPanel(0x6b5bff, 1.6, -10, 18, -16, 20, 8);
-    addPanel(0x22e8ff, 2.1, -18, 1.5, -18, 12, 2.2);
-    addPanel(0xff3db4, 2.2, 16, 1.5, 20, 12, 2.2);
+    addPanel(0xff9933, 7.2, 26, 7, 10, 9, 6.5);
+    addPanel(0xff4a7a, 2.5, 18, 4, -18, 22, 5.0);
+    addPanel(0xff8e42, 2.2, -22, 6, 12, 20, 5.0);
+    addPanel(0x5d4eff, 1.5, -10, 18, -16, 20, 8);
+    addPanel(0x18e0ff, 2.1, -18, 1.5, -18, 12, 2.2);
+    addPanel(0xff2ea8, 2.2, 16, 1.5, 20, 12, 2.2);
   } else {
     // Vice Neon Night: vivid magenta, electric cyan, warm sodium streetlights & skyline window bands
-    addPanel(0xff35a8, 4.6, 22, 4, 10, 14, 3.2);
-    addPanel(0x1ee8ff, 4.4, -22, 4, -10, 14, 3.2);
-    addPanel(0xffa63d, 3.4, 10, 3, -22, 12, 2.6);
-    addPanel(0x7e4dff, 2.8, -12, 5, 22, 14, 3.4);
-    addPanel(0xffe2a8, 3.2, 0, 12, 24, 6, 2.0);
-    addPanel(0xffe2a8, 3.0, 24, 10, -8, 5, 2.0);
-    addPanel(0x88b4ff, 1.8, -16, 22, 8, 9, 6);
+    addPanel(0xff289c, 4.2, 22, 4, 10, 14, 3.0);
+    addPanel(0x14e0ff, 4.0, -22, 4, -10, 14, 3.0);
+    addPanel(0xff9c32, 3.1, 10, 3, -22, 12, 2.4);
+    addPanel(0x7444ff, 2.6, -12, 5, 22, 14, 3.0);
+    addPanel(0xffdca0, 2.8, 0, 12, 24, 6, 2.0);
+    addPanel(0xffdca0, 2.6, 24, 10, -8, 5, 2.0);
+    addPanel(0x74a4ff, 1.6, -16, 22, 8, 9, 6);
   }
 
   return sc;

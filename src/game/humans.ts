@@ -21,6 +21,12 @@ import {
   evaluateBareHandPose,
   stepMotionSubAnim,
 } from './subAnimations';
+import {
+  type BodyIntentKind,
+  type NeuroBodyState,
+  createNeuroBodyState,
+  stepNeuroBody,
+} from './neuroBodyEngine';
 
 export interface Look {
   gender: 'm' | 'f';
@@ -687,6 +693,7 @@ export interface HumanRig {
   pose: Record<string, number>;
   poseVel: Record<string, number>;
   motionState: MotionAnimState;
+  neuroState: NeuroBodyState;
   subAnimName: string;
   meshes: THREE.Mesh[];
   look: Look;
@@ -761,6 +768,7 @@ export function createHuman(L: Look): HumanRig {
       lean: 0, headX: 0, headY: 0, hipsY: 0, hipsX: 0, twist: 0, bank: 0,
     },
     motionState: createMotionAnimState(),
+    neuroState: createNeuroBodyState(humanSeedSeq * 31 + 17),
     subAnimName: 'none',
   };
   upgradeHumanToGlb(rig);
@@ -934,6 +942,8 @@ export interface AnimIn {
   punch: number; // 0..1 progress, 0 = none
   punchMove?: BareHandMove;
   boxingGuard?: number; // 0..1 raised boxing guard blend
+  blocking?: boolean;   // active tight-shell boxing block
+  dodgeDir?: number;    // -1 left, +1 right slip/bob weave
   isPlayer?: boolean;
   panic?: boolean;
   steer?: number;
@@ -941,6 +951,10 @@ export interface AnimIn {
   slide?: boolean;
   airborne?: boolean;
   photo?: boolean;
+  phoneCall?: boolean;
+  checkWatch?: boolean;
+  pickUp?: boolean;
+  waveGreet?: boolean;
   flinch?: number;     // 0..1 hit stagger reaction
   recoil?: number;     // 0..1 firearm recoil kick
   turnRate?: number;   // rad/s yaw rate for natural turn banking
@@ -948,6 +962,11 @@ export interface AnimIn {
   onSand?: boolean;    // soft beach/dune sand trudge gait
   isTourist?: boolean; // tourist boardwalk/beach animation catalog preference
   inAircraft?: boolean;
+  // Experimental BETA: Algorithmic Body-Logic Kinematics (eliminates all canned NPC animation clips)
+  experimentalBodyLogic?: boolean;
+  neuroIntent?: BodyIntentKind;
+  neuroGazeYaw?: number;
+  neuroStress?: number;
 }
 
 const TWO_HANDED_GUNS = new Set<GunKind>(['shotgun', 'autoshotgun', 'rifle', 'carbine', 'lmg', 'sniper']);
@@ -962,17 +981,90 @@ export function animateHuman(r: HumanRig, dt: number, a: AnimIn) {
   const guardW = clamp(a.boxingGuard ?? 0, 0, 1);
   r.shadow.visible = a.mode === 'stand' && !a.airborne;
 
-  // Model-Site rigged .glb character playback (Soldier.glb / CesiumMan.glb) for calm standing/walking/running unarmed NPCs
+  // EXPERIMENTAL BETA: Pure Algorithmic Body-Logic Kinematics (zero canned animation clips for NPCs!)
+  if (a.experimentalBodyLogic && !a.isPlayer && (a.mode === 'stand' || a.mode === 'sit')) {
+    if (r.siteChar) r.siteChar.root.visible = false;
+    r.hips.visible = true;
+    const intentKind: BodyIntentKind =
+      a.mode === 'sit'
+        ? 'sit_chair'
+        : a.neuroIntent ??
+          (a.panic
+            ? 'shield_panic'
+            : a.blocking
+              ? 'combat_block'
+              : a.punch > 0
+                ? 'combat_strike'
+                : guardW > 0.35
+                  ? 'combat_guard'
+                  : holding && a.aim > 0.35
+                    ? 'aim_weapon'
+                    : a.phoneCall
+                      ? 'phone_call'
+                      : a.checkWatch
+                        ? 'check_watch'
+                        : a.pickUp
+                          ? 'pick_up_item'
+                          : a.waveGreet
+                            ? 'wave_greet'
+                            : a.photo
+                              ? 'photo_hold'
+                              : a.speaking
+                                ? 'converse'
+                                : a.speed > 0.18
+                                  ? 'locomote'
+                                  : 'stand_relaxed');
+    const strikeSide = a.punchMove === 'jab_left' || a.punchMove === 'hook_left' || a.punchMove === 'haymaker_left' ? -1 : 1;
+    const pose = stepNeuroBody(
+      r.neuroState,
+      {
+        kind: intentKind,
+        vx: a.speed,
+        vz: (a.dodgeDir ?? 0) * 1.4,
+        turnRate: a.turnRate ?? 0,
+        gazeYaw: a.neuroGazeYaw ?? 0,
+        gazePitch: a.aimPitch ?? 0,
+        strikeTargetSide: strikeSide,
+        strikeProgress: a.punch,
+        stress: a.neuroStress ?? (a.panic ? 0.95 : guardW > 0.2 ? 0.72 : 0.15),
+        fatigue: 0.15,
+        crouch: !!a.crouch,
+        onSand: !!a.onSand,
+        shoveX: (a.flinch ?? 0) * 1.1,
+      },
+      dt,
+    );
+    r.animClipName = `neuro_beta_${intentKind}`;
+    r.subAnimName = 'neuro_ik';
+    r.hips.position.set(pose.hipsX, pose.hipsY, 0);
+    r.legL.rotation.set(pose.hipL, 0, 0);
+    r.legR.rotation.set(pose.hipR, 0, 0);
+    r.knL.rotation.x = pose.knL;
+    r.knR.rotation.x = pose.knR;
+    r.armL.rotation.set(pose.aLx, 0, pose.aLz);
+    r.armR.rotation.set(pose.aRx, 0, pose.aRz);
+    r.elL.rotation.x = pose.elL;
+    r.elR.rotation.x = pose.elR;
+    r.spine.rotation.set(pose.lean, pose.twist, pose.bank);
+    r.head.rotation.set(pose.headX, pose.headY, -pose.bank * 0.4);
+    return;
+  }
+
+  // Model-Site rigged .glb character playback (disabled automatically when using handcrafted modular rigs)
   if (r.siteChar) {
     const useSiteChar =
       isGlbWorldMode() &&
       a.mode === 'stand' &&
       !holding &&
       !a.photo &&
+      !a.phoneCall &&
+      !a.checkWatch &&
+      !a.pickUp &&
       !a.panic &&
       !a.crouch &&
       !a.slide &&
       !a.airborne &&
+      !a.blocking &&
       a.punch <= 0 &&
       guardW < 0.05 &&
       (a.flinch ?? 0) < 0.05;
@@ -1270,6 +1362,49 @@ export function animateHuman(r: HumanRig, dt: number, a: AnimIn) {
         T.twist = -0.72 * s + sweep * 0.28; T.lean = 0.16 * s;
         T.aLx = 0.42 * s;
         rate = 30;
+      }
+    }
+    // Active tactical combat defense overlays (tight boxing shell block & slip/bob weave)
+    if (a.blocking && !a.panic) {
+      T.aLx = -1.68; T.elL = -1.78; T.aLz = -0.22;
+      T.aRx = -1.72; T.elR = -1.82; T.aRz = 0.22;
+      T.lean += 0.16;
+      T.headX = 0.12;
+      T.hipsY -= 0.05;
+      rate = Math.max(rate, 24);
+    }
+    if (a.dodgeDir && Math.abs(a.dodgeDir) > 0.1 && !a.panic) {
+      const dd = Math.sign(a.dodgeDir);
+      T.bank += dd * 0.34;
+      T.hipsX += dd * 0.14;
+      T.hipsY -= 0.12;
+      T.lean += 0.18;
+      T.knL += 0.32;
+      T.knR += 0.32;
+      rate = Math.max(rate, 28);
+    }
+    // Everyday life situation pose overlays (phone call, check watch, pick up dropped keys, friendly wave)
+    if (!holding && !a.panic && a.punch <= 0 && guardW < 0.1) {
+      if (a.phoneCall) {
+        T.aRx = -1.88; T.elR = -1.75; T.aRz = 0.22;
+        T.headY = -0.14;
+        rate = Math.max(rate, 12);
+      } else if (a.checkWatch) {
+        T.aLx = -1.05; T.elL = -1.35; T.aLz = -0.28;
+        T.headX = 0.36; T.headY = 0.24;
+        rate = Math.max(rate, 12);
+      } else if (a.pickUp) {
+        T.hipsY = 0.62;
+        T.lean = 0.56;
+        T.knL = 0.85; T.knR = 0.72;
+        T.hipL = -0.62; T.hipR = -0.45;
+        T.aRx = -1.25; T.elR = -0.28;
+        T.headX = 0.45;
+        rate = Math.max(rate, 14);
+      } else if (a.waveGreet) {
+        const wv = Math.sin(performance.now() * 0.0085 + r.entitySeed) * 0.24;
+        T.aRx = -2.65; T.elR = -0.42 + wv; T.aRz = -0.35 + wv;
+        rate = Math.max(rate, 16);
       }
     }
     // Hit flinch stagger overlay

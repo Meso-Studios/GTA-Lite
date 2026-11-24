@@ -364,23 +364,142 @@ export interface BloodBurstSpec {
   arterialPulses: number;
 }
 
+export type VehicleImpactSeverity = 'none' | 'tap' | 'moderate' | 'severe' | 'catastrophic';
+
+export interface VehiclePedImpactResult {
+  severity: VehicleImpactSeverity;
+  damage: number;
+  knockdown: boolean;
+  lethal: boolean;
+  pushSpeed: number;
+  launchUp: number;
+  bloodDamage: number; // 0 for minor taps — no absurd blood explosion!
+  allowGibs: boolean;
+}
+
+/**
+ * Physically grounded car-vs-pedestrian kinetic impact model:
+ * - Slight tap (< 5.5 m/s, ~12 mph): stumble/shove, minor bruise (3-8 dmg), ZERO blood explosion!
+ * - Moderate bump (5.5 - 13.5 m/s, 12-30 mph): knockdown/ragdoll, modest localized bleed, zero gibs.
+ * - Severe hit (13.5 - 25 m/s, 30-56 mph): heavy ragdoll launch, directional blood spray & puddle.
+ * - Catastrophic impact (>= 25 m/s, 56+ mph): high-energy lethal trauma with full gore ballistics.
+ */
+export function computeVehiclePedImpact(speedMs: number, vehicleMassKg = 1450): VehiclePedImpactResult {
+  const sp = Math.max(0, speedMs);
+  const massFactor = clampVal(Math.sqrt(vehicleMassKg / 1450), 0.78, 1.38);
+  const effSp = sp * massFactor;
+
+  if (effSp < 1.8) {
+    return { severity: 'none', damage: 0, knockdown: false, lethal: false, pushSpeed: 0, launchUp: 0, bloodDamage: 0, allowGibs: false };
+  }
+  if (effSp < 5.5) {
+    // Low-speed tap: shove pedestrian safely off bumper with ZERO blood explosion
+    return {
+      severity: 'tap',
+      damage: Math.round(clampVal((effSp - 1.5) * 1.8, 2, 8)),
+      knockdown: false,
+      lethal: false,
+      pushSpeed: clampVal(effSp * 0.9 + 1.4, 2.0, 5.2),
+      launchUp: 0,
+      bloodDamage: 0,
+      allowGibs: false,
+    };
+  }
+  if (effSp < 13.5) {
+    // Moderate urban collision: painful knockdown, small localized blood only
+    const dmg = Math.round(clampVal((effSp - 4.0) * 3.1, 12, 34));
+    return {
+      severity: 'moderate',
+      damage: dmg,
+      knockdown: true,
+      lethal: false,
+      pushSpeed: clampVal(effSp * 0.95, 5.5, 12.5),
+      launchUp: clampVal(1.4 + (effSp - 5.5) * 0.22, 1.4, 3.2),
+      bloodDamage: Math.round(dmg * 0.42),
+      allowGibs: false,
+    };
+  }
+  if (effSp < 25.0) {
+    // High-speed hit: severe trauma, full ragdoll, realistic arterial bleeding & splatters (no exploding gibs yet)
+    const dmg = Math.round(clampVal(36 + (effSp - 13.5) * 3.8, 36, 85));
+    return {
+      severity: 'severe',
+      damage: dmg,
+      knockdown: true,
+      lethal: true,
+      pushSpeed: clampVal(effSp * 1.05, 13.5, 25.0),
+      launchUp: clampVal(3.4 + (effSp - 13.5) * 0.25, 3.4, 6.2),
+      bloodDamage: Math.round(dmg * 0.85),
+      allowGibs: false,
+    };
+  }
+  // Catastrophic highway-speed strike (>= 56 mph)
+  const dmg = Math.round(clampVal(88 + (effSp - 25) * 3.2, 88, 160));
+  return {
+    severity: 'catastrophic',
+    damage: dmg,
+    knockdown: true,
+    lethal: true,
+    pushSpeed: clampVal(effSp * 1.12, 26.0, 38.0),
+    launchUp: clampVal(6.2 + (effSp - 25) * 0.16, 6.2, 9.0),
+    bloodDamage: dmg,
+    allowGibs: true,
+  };
+}
+
 /** Computes realistic ballistic blood spray, splatter count, arterial pulses, pooling radius, and gib count from impact energy. */
 export function computeBloodBurst(
   damage: number,
   headshot: boolean,
   explosive: boolean,
   shotgun: boolean,
+  blunt = false,
 ): BloodBurstSpec {
-  const power = clampVal(damage / 22, 0.45, 5.5);
+  if (damage <= 0) {
+    return { dropletCount: 0, spraySpeed: 0, spreadAngle: 0, puddleTargetRadius: 0, gibCount: 0, splatterCount: 0, arterialPulses: 0 };
+  }
+  if (blunt && !explosive) {
+    // Punches, bats, and low-energy blunt impacts produce subtle nose/lip bleed — never a crimson geyser
+    const lightPower = clampVal(damage / 24, 0.2, 1.4);
+    return {
+      dropletCount: Math.round(clampVal(3 + lightPower * 5, 3, 10)),
+      spraySpeed: clampVal(1.6 + lightPower * 1.2, 1.5, 3.4),
+      spreadAngle: 0.34,
+      puddleTargetRadius: damage >= 24 ? 0.36 : 0.0,
+      gibCount: 0,
+      splatterCount: damage >= 18 ? 2 : 0,
+      arterialPulses: 0,
+    };
+  }
+  const power = clampVal(damage / 26, 0.35, 5.0);
   const dropletCount = Math.round(
-    clampVal(18 + power * 14 + (headshot ? 24 : 0) + (shotgun ? 18 : 0) + (explosive ? 32 : 0), 16, 96),
+    clampVal(10 + power * 12 + (headshot ? 20 : 0) + (shotgun ? 16 : 0) + (explosive ? 30 : 0), 8, 88),
   );
-  const spraySpeed = clampVal(3.8 + power * 1.9 + (headshot ? 2.8 : 0) + (explosive ? 5.2 : 0), 3.4, 16.5);
-  const spreadAngle = explosive ? Math.PI : shotgun ? 0.92 : headshot ? 0.72 : 0.46;
-  const puddleTargetRadius = clampVal(0.55 + power * 0.28 + (headshot ? 0.45 : 0) + (explosive ? 0.65 : 0), 0.55, 2.25);
-  const gibCount = explosive ? 14 : shotgun && damage >= 26 ? 7 : headshot && damage >= 48 ? 5 : damage >= 42 ? 3 : 0;
-  const splatterCount = Math.round(clampVal(5 + power * 4 + (headshot ? 6 : 0) + (shotgun ? 5 : 0) + (explosive ? 10 : 0), 4, 28));
-  const arterialPulses = headshot ? 7 : shotgun || explosive ? 5 : damage >= 30 ? 4 : 2;
+  const spraySpeed = clampVal(3.1 + power * 1.7 + (headshot ? 2.5 : 0) + (explosive ? 5.0 : 0), 2.8, 15.8);
+  const spreadAngle = explosive ? Math.PI : shotgun ? 0.88 : headshot ? 0.68 : 0.42;
+  const puddleTargetRadius = clampVal(0.42 + power * 0.26 + (headshot ? 0.42 : 0) + (explosive ? 0.65 : 0), 0.38, 2.15);
+  // Gibs only on truly extreme kinetic/explosive/point-blank trauma (never on regular taps or pistol hits)
+  const gibCount = explosive
+    ? 12
+    : shotgun && damage >= 36
+      ? 6
+      : headshot && damage >= 58
+        ? 4
+        : damage >= 95
+          ? 3
+          : 0;
+  const splatterCount = Math.round(clampVal(3 + power * 3.6 + (headshot ? 5 : 0) + (shotgun ? 5 : 0) + (explosive ? 10 : 0), 2, 26));
+  const arterialPulses = explosive
+    ? 5
+    : headshot
+      ? 6
+      : shotgun
+        ? 4
+        : damage >= 34
+          ? 3
+          : damage >= 22
+            ? 1
+            : 0;
   return { dropletCount, spraySpeed, spreadAngle, puddleTargetRadius, gibCount, splatterCount, arterialPulses };
 }
 
@@ -392,14 +511,14 @@ export interface ArterialJetSpec {
   arcUp: number;
 }
 
-/** Computes pressurized heart-beat pulsing arterial jet parameters for heavy/fatal trauma. */
+/** Computes pressurized heart-beat pulsing arterial jet parameters for heavy/fatal penetrating trauma. */
 export function computeArterialJet(damage: number, headshot: boolean, katana: boolean): ArterialJetSpec {
-  const severity = clampVal(damage / 35, 0.5, 3.0);
-  const pulses = headshot ? 7 : katana ? 6 : Math.round(clampVal(2 + severity * 2, 2, 7));
-  const pulseInterval = headshot ? 0.24 : 0.28;
-  const dropletsPerPulse = Math.round(clampVal(5 + severity * 3 + (headshot ? 4 : 0) + (katana ? 3 : 0), 5, 16));
-  const jetSpeed = clampVal(4.5 + severity * 1.6 + (headshot ? 2.2 : 0), 4.2, 11.5);
-  const arcUp = headshot ? 3.4 : katana ? 2.8 : 2.1;
+  const severity = clampVal(damage / 38, 0.4, 3.0);
+  const pulses = headshot ? 6 : katana ? 5 : Math.round(clampVal(1 + severity * 1.8, 1, 6));
+  const pulseInterval = headshot ? 0.25 : 0.29;
+  const dropletsPerPulse = Math.round(clampVal(4 + severity * 3 + (headshot ? 4 : 0) + (katana ? 3 : 0), 4, 15));
+  const jetSpeed = clampVal(4.1 + severity * 1.5 + (headshot ? 2.0 : 0), 3.8, 10.8);
+  const arcUp = headshot ? 3.1 : katana ? 2.6 : 1.9;
   return { pulses, pulseInterval, dropletsPerPulse, jetSpeed, arcUp };
 }
 

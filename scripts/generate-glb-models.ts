@@ -119,7 +119,7 @@ function extrudeProfile(
     curveSegments: 8,
   });
   g.translate(0, 0, -depth / 2);
-  g.rotateY(Math.PI / 2);
+  g.rotateY(-Math.PI / 2);
   g.computeVertexNormals();
   return normalizeGeo(g);
 }
@@ -298,7 +298,7 @@ const CAR_MATS: MatSpec[] = [
   { name: 'caliper_red', baseColorFactor: hexToRgba(0xd62424), metallicFactor: 0.32, roughnessFactor: 0.28 },
 ];
 
-function buildCarGlb(kind: 'sports' | 'sedan' | 'suv' | 'police'): Buffer {
+function buildCarGlb(kind: 'sports' | 'hyper' | 'sedan' | 'suv' | 'police' | 'van'): Buffer {
   const paintGeos: THREE.BufferGeometry[] = [];
   const secGeos: THREE.BufferGeometry[] = [];
   const glassGeos: THREE.BufferGeometry[] = [];
@@ -311,38 +311,51 @@ function buildCarGlb(kind: 'sports' | 'sedan' | 'suv' | 'police'): Buffer {
   const sirenB: THREE.BufferGeometry[] = [];
   const carbonGeos: THREE.BufferGeometry[] = [];
 
-  const isSports = kind === 'sports';
+  const isHyper = kind === 'hyper';
+  const isSports = kind === 'sports' || isHyper;
   const isSuv = kind === 'suv';
+  const isVan = kind === 'van';
   const isPolice = kind === 'police';
-  const W = isSports ? 2.04 : isSuv ? 2.12 : 1.96;
-  const L = isSports ? 4.46 : isSuv ? 4.8 : isPolice ? 4.74 : 4.58;
+  const W = isHyper ? 2.12 : isSports ? 2.04 : isVan ? 2.14 : isSuv ? 2.12 : 1.96;
+  const L = isHyper ? 4.56 : isSports ? 4.46 : isVan ? 5.05 : isSuv ? 4.8 : isPolice ? 4.74 : 4.58;
   const halfL = L / 2;
   const halfW = W / 2;
 
-  const sillY = isSuv ? 0.42 : isSports ? 0.24 : 0.32;
-  const beltY = isSuv ? 1.06 : isSports ? 0.84 : 0.92;
-  const roofY = isSuv ? 1.76 : isSports ? 1.24 : 1.44;
-  const hoodY = isSuv ? 1.04 : isSports ? 0.72 : 0.86;
-  const noseY = isSuv ? 0.72 : isSports ? 0.42 : 0.56;
+  const sillY = isSuv || isVan ? 0.42 : isHyper ? 0.21 : isSports ? 0.24 : 0.32;
+  const beltY = isVan ? 1.18 : isSuv ? 1.06 : isHyper ? 0.80 : isSports ? 0.84 : 0.92;
+  const roofY = isVan ? 2.04 : isSuv ? 1.76 : isHyper ? 1.18 : isSports ? 1.24 : 1.44;
+  const hoodY = isVan ? 1.12 : isSuv ? 1.04 : isHyper ? 0.66 : isSports ? 0.72 : 0.86;
+  const noseY = isVan ? 0.78 : isSuv ? 0.72 : isHyper ? 0.38 : isSports ? 0.42 : 0.56;
 
-  // 1. Sculpted multi-point lower body silhouette with smooth bevel
+  // 1. Sculpted multi-point lower body silhouette with smooth bevel (+X in 2D shape maps to +Z front)
   const bodyPts: [number, number][] = isSports
     ? [
         [-halfL + 0.08, sillY + 0.08],
-        [-halfL + 0.02, beltY + 0.06],
-        [-halfL + 0.48, beltY + 0.1],
-        [halfL - 1.32, beltY + 0.02],
-        [halfL - 0.55, hoodY + 0.05],
-        [halfL - 0.04, noseY + 0.06],
+        [-halfL + 0.02, beltY + 0.04],
+        [-halfL + 0.48, beltY + 0.06],
+        [halfL - 1.32, beltY],
+        [halfL - 0.55, hoodY + 0.04],
+        [halfL - 0.04, noseY + 0.04],
         [halfL, sillY + 0.04],
         [halfL - 0.14, sillY],
         [-halfL + 0.14, sillY],
       ]
+    : isVan
+    ? [
+        [-halfL + 0.04, sillY + 0.06],
+        [-halfL + 0.02, beltY + 0.04],
+        [halfL - 0.92, beltY + 0.04],
+        [halfL - 0.14, hoodY - 0.04],
+        [halfL, noseY + 0.06],
+        [halfL - 0.02, sillY + 0.05],
+        [halfL - 0.12, sillY],
+        [-halfL + 0.12, sillY],
+      ]
     : isSuv
     ? [
         [-halfL + 0.04, sillY + 0.06],
-        [-halfL + 0.02, beltY + 0.08],
-        [halfL - 1.38, beltY + 0.06],
+        [-halfL + 0.02, beltY + 0.06],
+        [halfL - 1.38, beltY + 0.04],
         [halfL - 0.12, hoodY],
         [halfL, noseY + 0.08],
         [halfL - 0.02, sillY + 0.06],
@@ -352,29 +365,30 @@ function buildCarGlb(kind: 'sports' | 'sedan' | 'suv' | 'police'): Buffer {
     : [
         [-halfL + 0.06, sillY + 0.06],
         [-halfL + 0.02, beltY + 0.04],
-        [-halfL + 0.65, beltY + 0.06],
-        [halfL - 1.36, beltY + 0.02],
+        [-halfL + 0.65, beltY + 0.05],
+        [halfL - 1.36, beltY + 0.01],
         [halfL - 0.16, hoodY - 0.02],
         [halfL, noseY + 0.04],
         [halfL - 0.04, sillY + 0.04],
         [halfL - 0.12, sillY],
         [-halfL + 0.12, sillY],
       ];
-  paintGeos.push(extrudeProfile(bodyPts, W - 0.18, 0.06, 0.06, 3));
+  paintGeos.push(extrudeProfile(bodyPts, W - 0.18, 0.055, 0.055, 3));
 
-  // 2. Sculpted upper fenders & haunches + recessed dark wheel-well arches
-  const wheelZ = isSports ? 1.38 : isSuv ? 1.48 : 1.42;
+  // 2. Sculpted upper fenders & subtle flush wheel-arch trim
+  const wheelZ = isSports ? 1.38 : isVan ? 1.56 : isSuv ? 1.48 : 1.42;
   for (const s of [-1, 1]) {
     // Upper shoulder crease line along flanks
-    paintGeos.push(tx(new THREE.BoxGeometry(0.11, 0.16, L * 0.78), s * (halfW - 0.07), beltY - 0.08, 0, 0, 0, s * -0.14));
-    // Sculpted flared wheel arches (front & rear)
+    paintGeos.push(tx(new THREE.BoxGeometry(0.09, 0.14, L * 0.78), s * (halfW - 0.07), beltY - 0.09, 0, 0, 0, s * -0.12));
+    // Subtle flush wheel-arch eyebrows (sized neatly below beltline)
     for (const wz of [wheelZ, -wheelZ]) {
-      const archR = isSuv ? 0.5 : 0.44;
-      const archGeo = new THREE.TorusGeometry(archR, 0.062, 8, 16, Math.PI);
+      const archR = isSuv || isVan ? 0.43 : 0.37;
+      const archY = isSuv || isVan ? 0.41 : 0.34;
+      const archGeo = new THREE.TorusGeometry(archR, 0.032, 8, 16, Math.PI);
       archGeo.rotateY(Math.PI / 2);
-      paintGeos.push(tx(archGeo, s * (halfW - 0.05), sillY + 0.16, wz));
-      // Inner dark wheelhouse liner
-      trimGeos.push(tx(new THREE.CylinderGeometry(archR - 0.02, archR - 0.02, 0.34, 14, 1, false, 0, Math.PI), s * (halfW - 0.24), sillY + 0.15, wz, 0, 0, Math.PI / 2));
+      paintGeos.push(tx(archGeo, s * (halfW - 0.04), archY, wz));
+      // Recessed dark wheelwell backing plate
+      trimGeos.push(tx(new THREE.CylinderGeometry(archR - 0.03, archR - 0.03, 0.08, 14), s * (halfW - 0.24), archY, wz, 0, 0, Math.PI / 2));
     }
     // Carbon/trim side skirts between wheels
     carbonGeos.push(tx(new THREE.BoxGeometry(0.14, 0.1, wheelZ * 1.38), s * (halfW - 0.04), sillY + 0.03, 0));
@@ -390,20 +404,40 @@ function buildCarGlb(kind: 'sports' | 'sedan' | 'suv' | 'police'): Buffer {
     }
   }
 
-  // 3. Hood power dome & subtle cowl vents
-  if (isSports) {
+  // 3. Hood power dome, wipers, sharkfin antenna & hypercar mid-engine louvers
+  if (isHyper) {
+    // Low-slung aero nose ducts + mid-engine glass bay + visible V10 intake plenum
+    carbonGeos.push(tx(new THREE.BoxGeometry(W * 0.42, 0.04, 0.55), 0, hoodY + 0.03, halfL - 0.82, 0.14, 0, 0));
+    // Sculpted side air-intake scoops behind doors
+    for (const s of [-1, 1]) {
+      carbonGeos.push(tx(new THREE.BoxGeometry(0.18, 0.34, 0.72), s * (halfW - 0.04), beltY - 0.16, -0.58));
+      paintGeos.push(tx(new THREE.BoxGeometry(0.08, 0.42, 0.82), s * (halfW + 0.02), beltY - 0.14, -0.62, 0, 0, s * -0.18));
+    }
+    // Exposed twin-turbo V10 engine block under louvered rear deck
+    chromeGeos.push(tx(new THREE.BoxGeometry(0.56, 0.18, 0.86), 0, beltY - 0.05, -1.32));
+    for (let i = 0; i < 4; i++) {
+      carbonGeos.push(tx(new THREE.BoxGeometry(0.68, 0.02, 0.08), 0, beltY + 0.08, -1.04 - i * 0.2, -0.22, 0, 0));
+    }
+  } else if (isSports) {
     paintGeos.push(tx(new THREE.BoxGeometry(W * 0.46, 0.07, 1.05), 0, hoodY + 0.05, halfL - 0.92, 0.1, 0, 0));
     carbonGeos.push(tx(new THREE.BoxGeometry(W * 0.28, 0.03, 0.24), 0, hoodY + 0.08, halfL - 0.85, 0.1, 0, 0));
   } else {
     paintGeos.push(tx(new THREE.BoxGeometry(W * 0.54, 0.045, 1.1), 0, hoodY + 0.03, halfL - 0.95, 0.05, 0, 0));
   }
 
+  // Windshield wiper blades + roof sharkfin antenna
+  trimGeos.push(tx(new THREE.BoxGeometry(0.56, 0.018, 0.025), -0.22, beltY + 0.02, isVan ? 1.25 : 0.74, 0, 0.12, 0));
+  trimGeos.push(tx(new THREE.BoxGeometry(0.54, 0.018, 0.025), 0.34, beltY + 0.02, isVan ? 1.22 : 0.72, 0, 0.14, 0));
+  if (!isVan && !isPolice) {
+    carbonGeos.push(tx(new THREE.BoxGeometry(0.035, 0.075, 0.16), 0, roofY + 0.055, isSports ? -0.78 : -0.82, -0.25, 0, 0));
+  }
+
   // 4. Pinched-in Greenhouse / Cabin + Glass + Pillars
-  const cabFront = isSports ? 0.68 : isSuv ? 0.72 : 0.74;
-  const cabRear = isSports ? -1.35 : isSuv ? -halfL + 0.2 : -1.45;
-  const cabTopFront = isSports ? 0.02 : isSuv ? 0.2 : 0.14;
-  const cabTopRear = isSports ? -0.95 : isSuv ? -halfL + 0.34 : -0.96;
-  const cabW = W * (isSuv ? 0.86 : isSports ? 0.8 : 0.82);
+  const cabFront = isVan ? 1.28 : isHyper ? 0.78 : isSports ? 0.68 : isSuv ? 0.72 : 0.74;
+  const cabRear = isVan ? -halfL + 0.12 : isHyper ? -1.18 : isSports ? -1.35 : isSuv ? -halfL + 0.2 : -1.45;
+  const cabTopFront = isVan ? 0.82 : isHyper ? 0.08 : isSports ? 0.02 : isSuv ? 0.2 : 0.14;
+  const cabTopRear = isVan ? -halfL + 0.18 : isHyper ? -0.86 : isSports ? -0.95 : isSuv ? -halfL + 0.34 : -0.96;
+  const cabW = W * (isVan ? 0.92 : isSuv ? 0.86 : isHyper ? 0.78 : isSports ? 0.8 : 0.82);
 
   // Dark cabin core glass shell
   const glassPts: [number, number][] = [
@@ -486,6 +520,19 @@ function buildCarGlb(kind: 'sports' | 'sedan' | 'suv' | 'police'): Buffer {
       carbonGeos.push(tx(new THREE.BoxGeometry(0.05, 0.26, 0.16), s * 0.46, beltY + 0.14, -halfL + 0.2));
       carbonGeos.push(tx(new THREE.BoxGeometry(0.035, 0.14, 0.32), s * (W * 0.46), beltY + 0.27, -halfL + 0.16));
     }
+  } else if (isVan) {
+    // Solid cargo side panels, sliding door track, roof rack bars, and twin rear cargo hinges
+    for (const s of [-1, 1]) {
+      paintGeos.push(tx(new THREE.BoxGeometry(0.12, roofY - beltY + 0.04, 2.85), s * (cabW * 0.48), (beltY + roofY) * 0.5, -0.95));
+      trimGeos.push(tx(new THREE.BoxGeometry(0.035, 0.04, 1.45), s * (halfW + 0.01), beltY - 0.12, -0.65));
+      chromeGeos.push(tx(new THREE.BoxGeometry(0.05, 0.06, 3.1), s * (cabW * 0.42), roofY + 0.07, -0.65));
+    }
+    for (const rz of [0.55, -0.45, -1.45]) {
+      trimGeos.push(tx(new THREE.BoxGeometry(cabW * 0.86, 0.045, 0.06), 0, roofY + 0.08, rz));
+    }
+    paintGeos.push(tx(new THREE.BoxGeometry(cabW * 0.92, roofY - beltY, 0.1), 0, (beltY + roofY) * 0.5, -halfL + 0.16));
+    trimGeos.push(tx(new THREE.BoxGeometry(0.03, roofY - sillY - 0.12, 0.06), 0, (sillY + roofY) * 0.5, -halfL + 0.06));
+    trimGeos.push(tx(new THREE.BoxGeometry(W * 0.92, 0.1, 0.22), 0, sillY + 0.05, -halfL - 0.05));
   } else if (isSuv) {
     // Roof luggage rails + rear roof lip + rear step bumper
     for (const s of [-1, 1]) {
@@ -784,6 +831,66 @@ function buildWynwoodGlb(): Buffer {
   }], BLDG_MATS);
 }
 
+function buildBankGlb(): Buffer {
+  const bankMats: MatSpec[] = [
+    { name: 'marble', baseColorFactor: hexToRgba(0xf0ece2), metallicFactor: 0.06, roughnessFactor: 0.44 },
+    { name: 'limestone', baseColorFactor: hexToRgba(0xd9d2c5), metallicFactor: 0.05, roughnessFactor: 0.62 },
+    { name: 'glass', baseColorFactor: hexToRgba(0x16384d, 0.92), metallicFactor: 0.72, roughnessFactor: 0.08 },
+    { name: 'gold_bronze', baseColorFactor: hexToRgba(0xd6a648), metallicFactor: 0.88, roughnessFactor: 0.22 },
+    { name: 'emerald_neon', baseColorFactor: hexToRgba(0x10b981), metallicFactor: 0.12, roughnessFactor: 0.2, emissiveFactor: [0.08, 0.85, 0.52] },
+    { name: 'dark_steel', baseColorFactor: hexToRgba(0x1d232b), metallicFactor: 0.8, roughnessFactor: 0.32 },
+  ];
+  const marble: THREE.BufferGeometry[] = [];
+  const stone: THREE.BufferGeometry[] = [];
+  const glass: THREE.BufferGeometry[] = [];
+  const bronze: THREE.BufferGeometry[] = [];
+  const neon: THREE.BufferGeometry[] = [];
+  const steel: THREE.BufferGeometry[] = [];
+
+  // Monumental 3-tier marble plinth & front grand steps
+  stone.push(tx(new THREE.BoxGeometry(1.06, 0.14, 1.06), 0, 0.02, 0));
+  stone.push(tx(new THREE.BoxGeometry(0.98, 0.06, 1.12), 0, 0.07, 0.04));
+  // Main classical bank vault hall
+  marble.push(tx(new THREE.BoxGeometry(0.92, 0.68, 0.82), 0, 0.45, -0.05));
+  // 6 fluted classical front portico columns with plinth & capital
+  for (let i = 0; i < 6; i++) {
+    const cx = -0.38 + (i / 5) * 0.76;
+    marble.push(tx(new THREE.CylinderGeometry(0.032, 0.038, 0.62, 12), cx, 0.42, 0.44));
+    stone.push(tx(new THREE.BoxGeometry(0.09, 0.05, 0.09), cx, 0.12, 0.44));
+    bronze.push(tx(new THREE.BoxGeometry(0.095, 0.045, 0.095), cx, 0.74, 0.44));
+  }
+  // Entablature cornice + triangular classical pediment roof
+  stone.push(tx(new THREE.BoxGeometry(1.02, 0.08, 1.02), 0, 0.81, 0.02));
+  const pedPts: [number, number][] = [[-0.5, 0], [0.5, 0], [0, 0.17]];
+  const ped = extrudeProfile(pedPts, 0.96, 0.015, 0.015, 1);
+  ped.rotateY(-Math.PI / 2);
+  marble.push(tx(ped, 0, 0.85, 0.02));
+  // Bronze dome cupola + illuminated emerald NovaBank fascia strip
+  bronze.push(tx(new THREE.SphereGeometry(0.22, 16, 10, 0, Math.PI * 2, 0, Math.PI * 0.5), 0, 0.92, -0.06));
+  neon.push(tx(new THREE.BoxGeometry(0.76, 0.03, 0.04), 0, 0.81, 0.535));
+  // Grand bronze arched entrance + tall security glass bays
+  bronze.push(tx(new THREE.BoxGeometry(0.26, 0.36, 0.08), 0, 0.28, 0.37));
+  steel.push(tx(new THREE.BoxGeometry(0.2, 0.32, 0.09), 0, 0.27, 0.375));
+  for (const sx of [-0.3, 0.3]) {
+    glass.push(tx(new THREE.BoxGeometry(0.16, 0.42, 0.04), sx, 0.44, 0.37));
+  }
+  for (const sz of [-0.24, 0.02, 0.22]) {
+    glass.push(tx(new THREE.BoxGeometry(0.94, 0.38, 0.14), 0, 0.45, sz));
+  }
+
+  return encodeGLB([{
+    name: 'building_bank',
+    primitives: [
+      { geo: mergeSimple(marble), materialIndex: 0 },
+      { geo: mergeSimple(stone), materialIndex: 1 },
+      { geo: mergeSimple(glass), materialIndex: 2 },
+      { geo: mergeSimple(bronze), materialIndex: 3 },
+      { geo: mergeSimple(neon), materialIndex: 4 },
+      { geo: mergeSimple(steel), materialIndex: 5 },
+    ],
+  }], bankMats);
+}
+
 // ========================================================================= HANDCRAFTED ANATOMICAL HUMAN PARTS (Zero Cubic Limbs!)
 function buildHumanBaseGlb(): Buffer {
   const mats: MatSpec[] = [
@@ -791,39 +898,36 @@ function buildHumanBaseGlb(): Buffer {
     { name: 'secondary', baseColorFactor: hexToRgba(0x262930), metallicFactor: 0.25, roughnessFactor: 0.45 },
   ];
 
-  // 1. TorsoMesh: sculpted anatomical lathe chest + trapezius + waist + belt & buckle
+  // 1. TorsoMesh: sculpted anatomical lathe chest + trapezius + waist + belt & buckle (smooth natural shoulders)
   const torsoMain = latheProfile([
-    [0.01, -0.06], [0.132, -0.055], [0.145, 0.01], [0.136, 0.11],
-    [0.146, 0.21], [0.172, 0.31], [0.184, 0.39], [0.174, 0.45],
-    [0.142, 0.485], [0.088, 0.505], [0.055, 0.515], [0.01, 0.515],
+    [0.01, -0.06], [0.130, -0.055], [0.142, 0.01], [0.134, 0.11],
+    [0.144, 0.21], [0.164, 0.31], [0.172, 0.39], [0.156, 0.455],
+    [0.122, 0.488], [0.080, 0.506], [0.052, 0.515], [0.01, 0.515],
   ], 20);
-  // Subtle non-uniform scale (wider X shoulders, trimmer Z chest depth)
-  const torsoScaled = tx(torsoMain, 0, 0, 0, 0, 0, 0, 1.06, 1.0, 0.76);
+  // Natural anatomical silhouette (wider X shoulders, trimmer Z chest depth)
+  const torsoScaled = tx(torsoMain, 0, 0, 0, 0, 0, 0, 1.04, 1.0, 0.74);
   const chestDetail = [
     torsoScaled,
-    // Sculpted deltoid shoulder caps
-    tx(new THREE.SphereGeometry(0.066, 12, 10), 0.17, 0.435, 0, 0, 0, 0, 1.0, 0.92, 0.92),
-    tx(new THREE.SphereGeometry(0.066, 12, 10), -0.17, 0.435, 0, 0, 0, 0, 1.0, 0.92, 0.92),
     // Subtle collar hem
-    tx(new THREE.TorusGeometry(0.068, 0.012, 8, 16), 0, 0.495, 0.004, Math.PI / 2, 0, 0),
+    tx(new THREE.TorusGeometry(0.064, 0.011, 8, 16), 0, 0.495, 0.004, Math.PI / 2, 0, 0),
   ];
   const torsoBelt = [
-    tx(new THREE.CylinderGeometry(0.142, 0.146, 0.045, 20), 0, -0.01, 0, 0, 0, 0, 1.05, 1.0, 0.78),
-    tx(new THREE.BoxGeometry(0.054, 0.036, 0.022), 0, -0.01, 0.115),
+    tx(new THREE.CylinderGeometry(0.140, 0.144, 0.042, 20), 0, -0.01, 0, 0, 0, 0, 1.04, 1.0, 0.76),
+    tx(new THREE.BoxGeometry(0.052, 0.034, 0.022), 0, -0.01, 0.112),
   ];
 
   // 2. PelvisMesh: sculpted tapered hip basin
   const pelvis = tx(
     latheProfile([
-      [0.01, -0.11], [0.11, -0.1], [0.148, -0.04], [0.152, 0.03], [0.138, 0.075], [0.01, 0.08],
+      [0.01, -0.11], [0.108, -0.1], [0.144, -0.04], [0.148, 0.03], [0.134, 0.075], [0.01, 0.08],
     ], 18),
-    0, 0, 0, 0, 0, 0, 1.04, 1.0, 0.78,
+    0, 0, 0, 0, 0, 0, 1.03, 1.0, 0.76,
   );
 
-  // 3. UpperArmMesh: sculpted deltoid -> bicep -> elbow taper (pivot at shoulder y=0, goes down to -0.30)
+  // 3. UpperArmMesh: smooth deltoid -> bicep -> elbow taper (pivot at shoulder y=0, goes down to -0.30)
   const upperArm = latheProfile([
-    [0.01, 0.045], [0.056, 0.025], [0.062, -0.02], [0.056, -0.09],
-    [0.058, -0.16], [0.049, -0.24], [0.046, -0.295], [0.01, -0.32],
+    [0.01, 0.038], [0.048, 0.02], [0.054, -0.02], [0.051, -0.09],
+    [0.052, -0.16], [0.046, -0.24], [0.043, -0.295], [0.01, -0.315],
   ], 14);
 
   // 4. ForeArmMesh: sculpted brachioradialis -> wrist taper (pivot at elbow y=0, goes down to -0.26)
@@ -870,15 +974,32 @@ function buildHumanBaseGlb(): Buffer {
     tx(new THREE.CapsuleGeometry(0.046, 0.135, 6, 10), 0, 0.006, 0.036, Math.PI / 2, 0, 0, 1.05, 1.0, 0.36),
   ];
 
+  // 9. HeadMesh: sculpted anatomical cranium, jawline, neck column, nose bridge & ears
+  const headGeos = [
+    tx(
+      latheProfile([
+        [0.01, -0.05], [0.056, -0.04], [0.054, 0.02], [0.072, 0.06],
+        [0.092, 0.11], [0.102, 0.17], [0.098, 0.23], [0.076, 0.275], [0.01, 0.29],
+      ], 16),
+      0, -0.03, 0, 0, 0, 0, 0.94, 1.0, 1.04,
+    ),
+    // Subtle nose bridge + ears
+    tx(new THREE.BoxGeometry(0.024, 0.044, 0.032), 0, 0.125, 0.105, -0.18, 0, 0),
+    tx(new THREE.SphereGeometry(0.022, 8, 8), 0.095, 0.135, -0.005, 0, 0, 0, 0.55, 1.25, 0.8),
+    tx(new THREE.SphereGeometry(0.022, 8, 8), -0.095, 0.135, -0.005, 0, 0, 0, 0.55, 1.25, 0.8),
+  ];
+
+  // Names intentionally match glbAssets.ts humanParts keys ('head', 'torso', 'arm_u', 'arm_l', 'hand', 'leg_u', 'leg_l', 'shoe')
   return encodeGLB([
-    { name: 'TorsoMesh', primitives: [{ geo: mergeSimple(chestDetail), materialIndex: 0 }, { geo: mergeSimple(torsoBelt), materialIndex: 1 }] },
-    { name: 'PelvisMesh', primitives: [{ geo: pelvis, materialIndex: 0 }] },
-    { name: 'UpperArmMesh', primitives: [{ geo: upperArm, materialIndex: 0 }] },
-    { name: 'ForeArmMesh', primitives: [{ geo: foreArm, materialIndex: 0 }] },
-    { name: 'HandMesh', primitives: [{ geo: mergeSimple(handGeos), materialIndex: 0 }] },
-    { name: 'ThighMesh', primitives: [{ geo: thigh, materialIndex: 0 }] },
-    { name: 'ShinMesh', primitives: [{ geo: shin, materialIndex: 0 }] },
-    { name: 'ShoeMesh', primitives: [{ geo: mergeSimple(shoeUpper), materialIndex: 0 }, { geo: mergeSimple(shoeSole), materialIndex: 1 }] },
+    { name: 'head', primitives: [{ geo: mergeSimple(headGeos), materialIndex: 0 }] },
+    { name: 'torso', primitives: [{ geo: mergeSimple(chestDetail), materialIndex: 0 }, { geo: mergeSimple(torsoBelt), materialIndex: 1 }] },
+    { name: 'pelvis', primitives: [{ geo: pelvis, materialIndex: 0 }] },
+    { name: 'arm_u', primitives: [{ geo: upperArm, materialIndex: 0 }] },
+    { name: 'arm_l', primitives: [{ geo: foreArm, materialIndex: 0 }] },
+    { name: 'hand', primitives: [{ geo: mergeSimple(handGeos), materialIndex: 0 }] },
+    { name: 'leg_u', primitives: [{ geo: thigh, materialIndex: 0 }] },
+    { name: 'leg_l', primitives: [{ geo: shin, materialIndex: 0 }] },
+    { name: 'shoe', primitives: [{ geo: mergeSimple(shoeUpper), materialIndex: 0 }, { geo: mergeSimple(shoeSole), materialIndex: 1 }] },
   ], mats);
 }
 
@@ -941,6 +1062,34 @@ function buildBinGlb(): Buffer {
   return encodeGLB([{ name: 'prop_bin', primitives: [{ geo: mergeSimple(body), materialIndex: 0 }, { geo: mergeSimple(trim), materialIndex: 1 }] }], mats);
 }
 
+function buildConeGlb(): Buffer {
+  const mats: MatSpec[] = [
+    { name: 'cone_orange', baseColorFactor: hexToRgba(0xf95716), metallicFactor: 0.04, roughnessFactor: 0.42 },
+    { name: 'cone_stripe', baseColorFactor: hexToRgba(0xf4f7fa), metallicFactor: 0.15, roughnessFactor: 0.22, emissiveFactor: [0.12, 0.12, 0.12] },
+    { name: 'cone_base', baseColorFactor: hexToRgba(0x1b1e24), metallicFactor: 0.08, roughnessFactor: 0.88 },
+  ];
+  const orange = [
+    tx(new THREE.CylinderGeometry(0.048, 0.19, 0.72, 16), 0, 0.40, 0),
+    tx(new THREE.TorusGeometry(0.048, 0.014, 8, 14), 0, 0.76, 0, Math.PI / 2, 0, 0),
+  ];
+  const stripes = [
+    tx(new THREE.CylinderGeometry(0.086, 0.106, 0.11, 16, 1, true), 0, 0.56, 0),
+    tx(new THREE.CylinderGeometry(0.126, 0.144, 0.09, 16, 1, true), 0, 0.36, 0),
+  ];
+  const base = [
+    tx(new THREE.BoxGeometry(0.42, 0.055, 0.42), 0, 0.028, 0),
+    tx(new THREE.CylinderGeometry(0.21, 0.22, 0.045, 8), 0, 0.05, 0),
+  ];
+  return encodeGLB([{
+    name: 'prop_cone',
+    primitives: [
+      { geo: mergeSimple(orange), materialIndex: 0 },
+      { geo: mergeSimple(stripes), materialIndex: 1 },
+      { geo: mergeSimple(base), materialIndex: 2 },
+    ],
+  }], mats);
+}
+
 function buildPalmGlb(): Buffer {
   const mats: MatSpec[] = [
     { name: 'bark', baseColorFactor: hexToRgba(0x7c6148), metallicFactor: 0.02, roughnessFactor: 0.9 },
@@ -974,20 +1123,20 @@ function buildPalmGlb(): Buffer {
     const a = (i / 4) * Math.PI * 2 + 0.4;
     nuts.push(tx(new THREE.SphereGeometry(0.14, 8, 8), cx + Math.cos(a) * 0.22, totalH - 0.22, cz + Math.sin(a) * 0.22));
   }
-  // 11 gracefully arched multi-segment palm fronds
-  for (let i = 0; i < 11; i++) {
-    const a = (i / 11) * Math.PI * 2 + (i % 2) * 0.18;
-    const elev = i % 2 === 0 ? 0.36 : 0.12;
+  // 12 lush gracefully arched tropical palm fronds
+  for (let i = 0; i < 12; i++) {
+    const a = (i / 12) * Math.PI * 2 + (i % 2) * 0.16;
+    const elev = i % 2 === 0 ? 0.44 : 0.18;
     const dirX = Math.cos(a), dirZ = Math.sin(a);
     let px = cx, py = totalH, pz = cz;
     for (let s = 0; s < 4; s++) {
-      const segLen = 0.85 - s * 0.08;
-      const pitch = elev - s * 0.34;
+      const segLen = 1.02 - s * 0.08;
+      const pitch = elev - s * 0.36;
       const nx = px + dirX * Math.cos(pitch) * segLen;
       const ny = py + Math.sin(pitch) * segLen;
       const nz = pz + dirZ * Math.cos(pitch) * segLen;
-      const w = 0.56 - s * 0.11;
-      fronds.push(tx(new THREE.BoxGeometry(segLen, 0.045, w), (px + nx) * 0.5, (py + ny) * 0.5, (pz + nz) * 0.5, 0, -a, pitch));
+      const w = 0.72 - s * 0.12;
+      fronds.push(tx(new THREE.BoxGeometry(segLen, 0.05, w), (px + nx) * 0.5, (py + ny) * 0.5, (pz + nz) * 0.5, 0, -a, pitch));
       px = nx; py = ny; pz = nz;
     }
   }
@@ -1145,18 +1294,22 @@ fs.mkdirSync(outDir, { recursive: true });
 
 const files: [string, Buffer][] = [
   ['car_sports.glb', buildCarGlb('sports')],
+  ['car_hyper.glb', buildCarGlb('hyper')],
   ['car_sedan.glb', buildCarGlb('sedan')],
   ['car_suv.glb', buildCarGlb('suv')],
   ['car_police.glb', buildCarGlb('police')],
+  ['car_van.glb', buildCarGlb('van')],
   ['car_wheel.glb', buildCarWheelGlb()],
   ['building_artdeco.glb', buildArtDecoGlb()],
   ['building_tower.glb', buildTowerGlb()],
   ['building_havana.glb', buildHavanaGlb()],
   ['building_wynwood.glb', buildWynwoodGlb()],
+  ['building_bank.glb', buildBankGlb()],
   ['human_base.glb', buildHumanBaseGlb()],
   ['prop_crate.glb', buildCrateGlb()],
   ['prop_barrel.glb', buildBarrelGlb()],
   ['prop_bin.glb', buildBinGlb()],
+  ['prop_cone.glb', buildConeGlb()],
   ['prop_palm.glb', buildPalmGlb()],
   ['prop_lamp.glb', buildLampGlb()],
   ['plane_jet.glb', buildAircraftGlb(true)],

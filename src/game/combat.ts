@@ -217,25 +217,36 @@ export function playerMelee(g: Game) {
 
   const fx = Math.sin(p.yaw), fz = Math.cos(p.yaw);
   let hitAny = false;
+  let blockedAny = false;
+  const isBlunt = isFists || p.weapon === 'bat';
   for (const o of g.peds) {
     if (o.dead) continue;
     const dx = o.x - p.x, dz = o.z - p.z;
     const d = Math.hypot(dx, dz);
     if (d > reach || (dx * fx + dz * fz) / (d || 1) < cone) continue;
     const l = d || 1;
+    const wasBlocking = o.state === 'brawl' && (o.meleeAI.blocking || o.meleeAI.phase === 'dodge_slip');
     o.hit(g, dmgBase + Math.random() * 5, dx / l, dz / l, true, false, {
       katana: p.weapon === 'katana',
       meleeKind: isFists ? 'fists' : 'melee',
+      blunt: isBlunt,
     });
-    o.vx += (dx / l) * knock;
-    o.vz += (dz / l) * knock;
-    if (o.dead) { o.rvx = (dx / l) * (knock + 1.8); o.rvz = (dz / l) * (knock + 1.8); }
+    if (wasBlocking) {
+      blockedAny = true;
+      o.vx += (dx / l) * knock * 0.32;
+      o.vz += (dz / l) * knock * 0.32;
+    } else {
+      o.vx += (dx / l) * knock;
+      o.vz += (dz / l) * knock;
+      if (o.dead) { o.rvx = (dx / l) * (knock + 1.8); o.rvz = (dz / l) * (knock + 1.8); }
+    }
     hitAny = true;
     if (p.weapon !== 'katana') break; // katana can cleave multiple targets
   }
   if (p.weapon === 'katana') g.audio.katanaSlash();
+  else if (blockedAny) g.audio.hit(0.45);
   else if (hitAny) g.audio.punch();
-  else g.audio.hit(0.3);
+  else g.audio.hit(0.28);
 }
 
 export function npcShoot(g: Game, p: Ped, acc: number) {

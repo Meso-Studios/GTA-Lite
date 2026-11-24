@@ -418,14 +418,16 @@ export class FX {
     shotgun: boolean,
     groundY: number,
     wallHit?: { x: number; y: number; z: number; nx: number; nz: number } | null,
+    blunt = false,
   ) {
-    if (!this.goreEnabled) return;
-    const spec = computeBloodBurst(damage, headshot, explosive, shotgun);
+    if (!this.goreEnabled || damage <= 0) return;
+    const spec = computeBloodBurst(damage, headshot, explosive, shotgun, blunt);
+    if (spec.dropletCount <= 0) return;
     const len = Math.hypot(dx, dy, dz) || 1;
     const ndx = dx / len, ndy = dy / len, ndz = dz / len;
 
-    // 1. Aerosolized arterial mist cloud right at wound exit
-    const mistCount = headshot ? 10 : explosive ? 14 : 6;
+    // 1. Aerosolized arterial mist cloud right at wound exit (skipped on low-energy blunt impacts)
+    const mistCount = blunt && !explosive ? (damage >= 26 ? 2 : 0) : headshot ? 10 : explosive ? 14 : 6;
     for (let i = 0; i < mistCount; i++) {
       this.pt.emit(
         x + (Math.random() - 0.5) * 0.2,
@@ -484,8 +486,8 @@ export class FX {
     }
 
     // 4. Vertical wall splatter if a nearby surface was behind the victim
-    if (wallHit) {
-      for (let i = 0; i < (headshot ? 7 : 4); i++) {
+    if (wallHit && (!blunt || damage >= 28)) {
+      for (let i = 0; i < (headshot ? 7 : blunt ? 2 : 4); i++) {
         this.bloodSplatter(
           wallHit.x + (Math.random() - 0.5) * 0.6,
           Math.max(groundY + 0.3, wallHit.y + (Math.random() - 0.5) * 0.65),
@@ -496,8 +498,8 @@ export class FX {
       }
     }
 
-    // 5. Pressurized pulsing arterial jet fountain
-    if (damage >= 26 || headshot || shotgun || explosive) {
+    // 5. Pressurized pulsing arterial jet fountain (only for penetrating / catastrophic trauma)
+    if (!blunt && spec.arterialPulses > 0 && (damage >= 26 || headshot || shotgun || explosive)) {
       const jet = computeArterialJet(damage, headshot, shotgun);
       if (this.spurts.length > 18) this.spurts.shift();
       this.spurts.push({
@@ -513,15 +515,17 @@ export class FX {
       });
     }
 
-    // 6. Primary + satellite coagulating ground blood pools
-    this.bloodPuddle(x + ndx * 0.35, groundY, z + ndz * 0.35, spec.puddleTargetRadius);
-    if (headshot || explosive || shotgun) {
-      this.bloodPuddle(
-        x + ndx * 1.15 + (Math.random() - 0.5) * 0.6,
-        groundY,
-        z + ndz * 1.15 + (Math.random() - 0.5) * 0.6,
-        spec.puddleTargetRadius * 0.62,
-      );
+    // 6. Primary + satellite coagulating ground blood pools (skipped when energy is too low)
+    if (spec.puddleTargetRadius > 0.05) {
+      this.bloodPuddle(x + ndx * 0.35, groundY, z + ndz * 0.35, spec.puddleTargetRadius);
+      if (!blunt && (headshot || explosive || shotgun)) {
+        this.bloodPuddle(
+          x + ndx * 1.15 + (Math.random() - 0.5) * 0.6,
+          groundY,
+          z + ndz * 1.15 + (Math.random() - 0.5) * 0.6,
+          spec.puddleTargetRadius * 0.62,
+        );
+      }
     }
 
     // 7. Tumbling anatomical tissue & bone gibs

@@ -103,6 +103,8 @@ export interface Room {
   pendantLights: [number, number, number][];
   light: THREE.Vector3;
   warmTint: number;
+  vaultPos?: { x: number; z: number };
+  tellerPos?: { x: number; z: number };
 }
 
 const FLOOR_Y = 0.26;
@@ -713,6 +715,12 @@ function buildRoom(c: BCtx, kind: Door['kind'], cx: number, cz: number, id: numb
       officeDesk(-5.6, -8.2, 0, MEZZ_Y, true);
       sofa(2.4, -8.2, 0, 0x6e2d2d, 3.0, MEZZ_Y);
 
+      // Glowing NovaBank Self-Service ATM Terminal near lobby entrance
+      B('propMetal', 0.95, 2.05, 0.72, 9.8, FLOOR_Y, 1.4, 0x16242b);
+      B('emit', 0.68, 0.56, 0.06, 9.8, FLOOR_Y + 1.24, 1.78, 0x18f2a2);
+      B('propMetal', 0.72, 0.14, 0.24, 9.8, FLOOR_Y + 0.88, 1.84, 0xc8d2da);
+      P(0.95, 2.05, 0.72, 9.8, FLOOR_Y, 1.4);
+
       npcSpots.push({ x: cx - 7.6, z: cz - 3.3, y: FLOOR_Y, yaw: 0, role: 'clerk' });
       npcSpots.push({ x: cx - 2.0, z: cz - 3.3, y: FLOOR_Y, yaw: 0, role: 'clerk' });
       npcSpots.push({ x: cx + 3.6, z: cz - 3.3, y: FLOOR_Y, yaw: 0, role: 'clerk' });
@@ -1040,6 +1048,8 @@ function buildRoom(c: BCtx, kind: Door['kind'], cx: number, cz: number, id: numb
     pendantLights,
     light: new THREE.Vector3(cx, RH - 0.8, cz),
     warmTint: spec.warmTint,
+    vaultPos: kind === 'bank' ? { x: cx - 9.2, z: cz - RD / 2 + 2.2 } : undefined,
+    tellerPos: kind === 'bank' ? { x: cx - 2.0, z: cz - 0.2 } : undefined,
   };
 }
 void finish;

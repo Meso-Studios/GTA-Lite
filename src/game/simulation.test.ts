@@ -48,8 +48,57 @@ import {
   computeCoagulationColor,
   computePuddleRadius,
   computeRagdollImpulse,
+  computeVehiclePedImpact,
   type AircraftSpec,
 } from './physics';
+import { createSteeringState, stepRealisticSteering } from './steeringPhysics';
+import {
+  createMeleeCombatState,
+  resolveIncomingMeleeHit,
+  stepMeleeCombat,
+  createGunfightState,
+  stepGunfightAI,
+} from './combatAI';
+import {
+  createNeuroBodyState,
+  solveTwoBoneLegIK,
+  solveTwoBoneArmIK,
+  stepNeuroBody,
+  type BodyIntentKind,
+} from './neuroBodyEngine';
+import {
+  createNpcLifeWorld,
+  registerCitizen,
+  tryCreateSharedPlan,
+  triggerUnrelatedLifeSituation,
+  stepNpcLifeWorld,
+  evaluateWitnessReasoning,
+} from './npcLifeSim';
+import {
+  BANK_BRANCHES,
+  ATM_LOCATIONS,
+  createBankingState,
+  depositCash,
+  withdrawCash,
+  startBankRobbery,
+  stepBankHeist,
+  findNearestBankOrAtm,
+} from './bankingSystem';
+import {
+  RANDOM_EVENTS,
+  createRandomEventManager,
+  spawnRandomEventNear,
+  resolveActiveRandomEvent,
+} from './randomEvents';
+import {
+  DEFAULT_CONTACTS,
+  createPhoneState,
+  sendSmsMessage,
+  startPhoneCall,
+  endPhoneCall,
+  publishSnapNovaPost,
+  togglePostLike,
+} from './phoneSystem';
 import { AmbientDialogueController, speakerLabelFor } from './ambientDialogue';
 import {
   ANIMATION_CATEGORIES,
@@ -802,47 +851,41 @@ test('PBR Microtextures generate seamless normal & roughness buffers with unit t
   }
 });
 
-test('all 18 local .glb, 5 site .glb packs, and 3 Draco decoder assets exist on disk with valid glTF 2.0 headers', () => {
+test('all 22 handcrafted zero-Draco .glb 3D model files exist in public/models/ with valid glTF 2.0 headers', () => {
   const modelsDir = path.resolve(process.cwd(), 'public/models');
   const allGlbs = [
     'car_sports.glb',
+    'car_hyper.glb',
     'car_sedan.glb',
     'car_suv.glb',
+    'car_van.glb',
     'car_police.glb',
     'car_wheel.glb',
     'building_artdeco.glb',
     'building_tower.glb',
     'building_havana.glb',
     'building_wynwood.glb',
+    'building_bank.glb',
     'human_base.glb',
     'prop_crate.glb',
     'prop_barrel.glb',
     'prop_bin.glb',
+    'prop_cone.glb',
     'prop_palm.glb',
     'prop_lamp.glb',
     'plane_jet.glb',
     'plane_prop.glb',
     'weapon_pack.glb',
-    'sites/ferrari.glb',
-    'sites/CesiumMilkTruck.glb',
-    'sites/TrafficCone.glb',
-    'sites/Soldier.glb',
-    'sites/CesiumMan.glb',
   ];
 
   for (const rel of allGlbs) {
     const full = path.join(modelsDir, rel);
-    assert.ok(fs.existsSync(full), `Missing GLB file: ${rel}`);
+    assert.ok(fs.existsSync(full), `Missing handcrafted GLB file: ${rel}`);
     const buf = fs.readFileSync(full);
     assert.ok(buf.length > 1024, `${rel} is unexpectedly small (${buf.length} bytes)`);
     assert.equal(buf.subarray(0, 4).toString('ascii'), 'glTF', `${rel} missing glTF magic header`);
     assert.equal(buf.readUInt32LE(4), 2, `${rel} must be glTF version 2`);
     assert.equal(buf.readUInt32LE(8), buf.length, `${rel} header byteLength must match file size`);
-  }
-
-  const dracoDir = path.resolve(process.cwd(), 'public/draco');
-  for (const df of ['draco_decoder.js', 'draco_decoder.wasm', 'draco_wasm_wrapper.js']) {
-    assert.ok(fs.existsSync(path.join(dracoDir, df)), `Missing Draco file: ${df}`);
   }
 });
 
@@ -959,6 +1002,301 @@ test('expanded suburban districts and 6 rural highway gas stations sit on flat t
   // North Observatory is also flattened cleanly so it never floats
   assert.equal(terrainHeightAt(0, -3400), 0);
 });
+
+test('realistic vehicle-pedestrian impact physics produces zero blood explosion on light taps and scales kinetically', () => {
+  const slightTap = computeVehiclePedImpact(3.2, 1450);
+  assert.equal(slightTap.severity, 'tap');
+  assert.equal(slightTap.bloodDamage, 0, 'Lightly tapping a pedestrian with a car must cause ZERO blood explosion');
+  assert.equal(slightTap.lethal, false);
+  assert.equal(slightTap.knockdown, false);
+  assert.equal(slightTap.allowGibs, false);
+  assert.ok(slightTap.damage > 0 && slightTap.damage <= 22);
+
+  // Zero-blood burst returns 0 droplets/gibs/puddles
+  const zeroBurst = computeBloodBurst(0, false, false, false, true);
+  assert.equal(zeroBurst.dropletCount, 0);
+  assert.equal(zeroBurst.gibCount, 0);
+  assert.equal(zeroBurst.puddleTargetRadius, 0);
+
+  // Blunt moderate impact causes bruises/drops with zero gibs
+  const moderate = computeVehiclePedImpact(8.5, 1450);
+  assert.equal(moderate.severity, 'moderate');
+  assert.equal(moderate.allowGibs, false);
+  const bluntBurst = computeBloodBurst(moderate.bloodDamage, false, false, false, true);
+  assert.equal(bluntBurst.gibCount, 0);
+  assert.ok(bluntBurst.dropletCount <= 12);
+
+  // High-speed catastrophic collision is lethal and scales kinetically
+  const highSpeed = computeVehiclePedImpact(28.0, 2100);
+  assert.equal(highSpeed.severity, 'catastrophic');
+  assert.equal(highSpeed.lethal, true);
+  assert.equal(highSpeed.allowGibs, true);
+  assert.ok(highSpeed.damage >= 100);
+});
+
+test('realistic steering physics ramps smoothly, self-centers, and tapers lock angle at highway speeds', () => {
+  const lowSpeedState = createSteeringState();
+  const hiSpeedState = createSteeringState();
+
+  // Single 16ms tap should ramp progressively (not snap instantly to full lock)
+  const tapRes = stepRealisticSteering(lowSpeedState, {
+    rawSteer: 1,
+    speedFwd: 10,
+    speedLat: 0,
+    maxSteerRad: 0.45,
+    wheelBase: 2.6,
+    baseGrip: 9.0,
+    handbrake: false,
+    sandFactor: 0,
+    isPlayer: true,
+  }, 0.016);
+  assert.ok(Math.abs(tapRes.steerAngle) < 0.12, `Single-frame tap must ramp gently, got ${tapRes.steerAngle}`);
+
+  // Holding full steer at 6 m/s vs 36 m/s: high speed must have significantly tighter max lock
+  let lowLock = 0;
+  let hiLock = 0;
+  for (let i = 0; i < 40; i++) {
+    lowLock = stepRealisticSteering(lowSpeedState, {
+      rawSteer: 1, speedFwd: 6, speedLat: 0, maxSteerRad: 0.48, wheelBase: 2.6, baseGrip: 9.0, handbrake: false, sandFactor: 0, isPlayer: true,
+    }, 0.02).steerAngle;
+    hiLock = stepRealisticSteering(hiSpeedState, {
+      rawSteer: 1, speedFwd: 36, speedLat: 0, maxSteerRad: 0.48, wheelBase: 2.6, baseGrip: 9.0, handbrake: false, sandFactor: 0, isPlayer: true,
+    }, 0.02).steerAngle;
+  }
+  assert.ok(Math.abs(lowLock) > Math.abs(hiLock) * 2.0, `High-speed steering lock (${hiLock}) must be far calmer than low-speed lock (${lowLock})`);
+
+  // Releasing steering self-centers smoothly toward 0
+  let centered = lowLock;
+  for (let i = 0; i < 30; i++) {
+    centered = stepRealisticSteering(lowSpeedState, {
+      rawSteer: 0, speedFwd: 12, speedLat: 0, maxSteerRad: 0.48, wheelBase: 2.6, baseGrip: 9.0, handbrake: false, sandFactor: 0, isPlayer: true,
+    }, 0.02).steerAngle;
+  }
+  assert.ok(Math.abs(centered) < 0.03, `Caster self-centering should return near 0, got ${centered}`);
+});
+
+test('tactical enemy combat AI supports guard blocking, dodge slips, melee combos, and gunfight cover/reloads', () => {
+  const m = createMeleeCombatState(17);
+  m.phase = 'guard_block';
+  m.blocking = true;
+  const blocked = resolveIncomingMeleeHit(m, 20);
+  assert.equal(blocked.blocked, true);
+  assert.ok(blocked.appliedDamage < 10, `Blocking should mitigate raw damage, got ${blocked.appliedDamage}`);
+
+  m.phase = 'dodge_slip';
+  m.phaseT = 0.05;
+  m.phaseDur = 0.35;
+  m.blocking = false;
+  const slipped = resolveIncomingMeleeHit(m, 25);
+  assert.equal(slipped.appliedDamage, 0, 'Active bob-and-weave slip should evade punch completely');
+  assert.equal(slipped.blocked, true);
+
+  // Stepping melee AI with attack token delivers hits over a realistic combat exchange
+  const brawler = createMeleeCombatState(9);
+  let deliveredHits = 0;
+  for (let i = 0; i < 160; i++) {
+    const out = stepMeleeCombat(brawler, {
+      distToTarget: 1.8,
+      playerAttacking: false,
+      playerPunchProgress: 0,
+      hasAttackToken: true,
+      dt: 0.03,
+      rand: () => 0.35,
+    });
+    if (out.deliverHit) deliveredHits++;
+  }
+  assert.ok(deliveredHits >= 1, 'Tactical brawler with attack token should execute at least one combo strike');
+
+  // Gunfight AI cycles through aiming, burst firing, and reloading when mag empties
+  const gun = createGunfightState(4, 3);
+  let shotsFired = 0;
+  let sawReload = false;
+  for (let i = 0; i < 200; i++) {
+    const out = stepGunfightAI(gun, {
+      distToTarget: 16,
+      hasLos: true,
+      coverAvailable: true,
+      underFire: i % 40 > 30,
+      dt: 0.03,
+      rand: () => 0.4,
+    });
+    if (out.shootNow) shotsFired++;
+    if (out.reloading) sawReload = true;
+  }
+  assert.ok(shotsFired >= 4, `Expected gunfight AI to fire burst rounds, fired ${shotsFired}`);
+  assert.equal(sawReload, true, 'Gunfight AI should trigger tactical reload when magazine empties');
+});
+
+test('non-AI NPC life simulation builds social relationships, cooperative plans, everyday situations, and witness reasoning', () => {
+  const world = createNpcLifeWorld(9001);
+  const c1 = registerCitizen(world, 1);
+  const c2 = registerCitizen(world, 2);
+  registerCitizen(world, 3);
+  assert.ok(c1.fullName.includes(' '));
+  assert.ok(c2.links.length >= 1, 'Citizens should establish social graph links with existing citizens');
+
+  const posMap = new Map<number, { x: number; z: number }>([
+    [1, { x: 98, z: -40 }],
+    [2, { x: 102, z: -40 }],
+    [3, { x: 110, z: -45 }],
+  ]);
+  c2.lastPlanCooldown = 0;
+  const plan = tryCreateSharedPlan(world, 2, posMap, 120);
+  assert.ok(plan !== null, 'Should form a cooperative multi-agent plan');
+  assert.ok(plan!.memberIds.length >= 2);
+
+  const sit = triggerUnrelatedLifeSituation(world, 3);
+  assert.ok(sit !== 'none');
+
+  stepNpcLifeWorld(world, 1.0, posMap);
+  assert.ok(world.plans.size >= 0);
+
+  // Witness reasoning: loved one assaulted by unarmed player makes a brave citizen confront
+  c1.links.push({ targetId: 2, kind: 'partner', affinity: 0.95 });
+  c1.traits = ['brave', 'empathetic'];
+  const reaction = evaluateWitnessReasoning(c1, 'assault', 2, false);
+  assert.equal(reaction.decision, 'confront');
+  assert.ok(reaction.line.length > 5);
+});
+
+test('experimental Beta Body-Logic Engine synthesizes finite IK joints across all 14 intents without canned clips', () => {
+  const leg = solveTwoBoneLegIK(0.15, -0.78);
+  assert.ok(Number.isFinite(leg.hipPitch) && Number.isFinite(leg.kneeBend) && leg.kneeBend >= 0);
+
+  const arm = solveTwoBoneArmIK(1, 0.1, -0.1, 0.45);
+  assert.ok(Number.isFinite(arm.aX) && Number.isFinite(arm.aZ) && Number.isFinite(arm.elbow));
+
+  const intents: BodyIntentKind[] = [
+    'stand_relaxed', 'locomote', 'converse', 'phone_call', 'check_watch',
+    'pick_up_item', 'shield_panic', 'wave_greet', 'photo_hold',
+    'combat_guard', 'combat_block', 'combat_strike', 'aim_weapon', 'sit_chair',
+  ];
+  const st = createNeuroBodyState(42);
+  for (const kind of intents) {
+    for (let step = 0; step < 6; step++) {
+      const pose = stepNeuroBody(st, {
+        kind,
+        vx: kind === 'locomote' ? 3.2 : 0,
+        vz: 0,
+        turnRate: kind === 'locomote' ? 0.5 : 0,
+        gazeYaw: 0.25,
+        gazePitch: -0.05,
+        strikeTargetSide: 1,
+        strikeProgress: 0.5,
+        stress: kind === 'shield_panic' ? 0.9 : 0.1,
+        fatigue: 0.15,
+        crouch: false,
+        onSand: false,
+        shoveX: 0,
+      }, 0.02);
+      for (const [k, v] of Object.entries(pose)) {
+        assert.ok(Number.isFinite(v), `NeuroBody ${kind}.${k} must be finite, got ${v}`);
+      }
+    }
+  }
+});
+
+test('NovaBank supports deposits, withdrawals, nearest branch/ATM lookup, and full 4-stage Bank Robbery', () => {
+  assert.equal(BANK_BRANCHES.length, 4);
+  assert.equal(ATM_LOCATIONS.length, 6);
+
+  const bank = createBankingState(2500);
+  const dep = depositCash(bank, 1000, 600, '10:15');
+  assert.equal(dep.ok, true);
+  assert.equal(dep.newWallet, 400);
+  assert.equal(dep.newBank, 3100);
+
+  const overDep = depositCash(bank, 400, 900, '10:16');
+  assert.equal(overDep.ok, false);
+
+  const wd = withdrawCash(bank, 400, 500, '10:20');
+  assert.equal(wd.ok, true);
+  assert.equal(wd.newWallet, 900);
+  assert.equal(wd.newBank, 2600);
+
+  const nearest = findNearestBankOrAtm(BANK_BRANCHES[0].x + 2, BANK_BRANCHES[0].z + 2, 14);
+  assert.equal(nearest?.kind, 'bank');
+  assert.equal(nearest?.id, BANK_BRANCHES[0].id);
+
+  // Full multi-stage heist: intimidating -> drilling -> looting -> escaping -> completed
+  const start = startBankRobbery(bank, BANK_BRANCHES[0].id, () => 0.5);
+  assert.equal(start.ok, true);
+  assert.equal(bank.heist.stage, 'intimidating');
+
+  let totalLootGained = 0;
+  let completed = false;
+  const stagesSeen = new Set<string>([bank.heist.stage]);
+  for (let i = 0; i < 200 && !completed; i++) {
+    const curStage: string = bank.heist.stage;
+    const isEscaping = curStage === 'escaping';
+    const r = stepBankHeist(bank, {
+      dt: 0.25,
+      playerInBank: !isEscaping,
+      nearVault: !isEscaping,
+      distFromBank: isEscaping ? 235 : 4,
+      wantedLevel: isEscaping ? 0 : 4,
+      playerAlive: true,
+    });
+    totalLootGained += r.cashGainedNow;
+    stagesSeen.add(bank.heist.stage);
+    if (r.completed) completed = true;
+  }
+  assert.equal(completed, true, 'Bank robbery should complete cleanly through all 4 stages');
+  assert.ok(stagesSeen.has('drilling') && stagesSeen.has('looting') && stagesSeen.has('escaping'));
+  assert.ok(totalLootGained >= BANK_BRANCHES[0].vaultPayoutMin);
+  assert.equal(bank.totalHeistsCompleted, 1);
+  assert.ok((bank.branchCooldowns[BANK_BRANCHES[0].id] || 0) > 0, 'Robbed branch must enter lockdown cooldown');
+});
+
+test('192 handcrafted random world events have unique IDs/titles across 12 categories and resolve with cash rewards', () => {
+  assert.ok(RANDOM_EVENTS.length >= 180, `Expected >= 180 random events, got ${RANDOM_EVENTS.length}`);
+  const ids = new Set(RANDOM_EVENTS.map((e) => e.id));
+  const titles = new Set(RANDOM_EVENTS.map((e) => e.title));
+  const categories = new Set(RANDOM_EVENTS.map((e) => e.category));
+  assert.equal(ids.size, RANDOM_EVENTS.length, 'Every random event must have a unique ID');
+  assert.equal(titles.size, RANDOM_EVENTS.length, 'Every random event must have a unique title');
+  assert.equal(categories.size, 12, 'Random events must span all 12 categories');
+
+  const mgr = createRandomEventManager(4242);
+  const active = spawnRandomEventNear(mgr, 10, 20, 15.0);
+  assert.ok(active.def.rewardCash > 0);
+  const res = resolveActiveRandomEvent(mgr);
+  assert.ok(res !== null && res.rewardCash === active.def.rewardCash);
+  assert.equal(mgr.completedCount, 1);
+  assert.equal(mgr.active, null);
+});
+
+test('GTA 5 smartphone supports contextual SMS replies, calls, and SnapNova photo posts with likes', () => {
+  const phone = createPhoneState();
+  assert.equal(DEFAULT_CONTACTS.length, 5);
+
+  const sms = sendSmsMessage(phone, 'mechanic', 'Deliver my ride please', '13:05');
+  assert.equal(sms.playerMsg.sender, 'player');
+  assert.equal(sms.replyMsg.sender, 'contact');
+  assert.ok(sms.replyMsg.text.toLowerCase().includes('supercar') || sms.replyMsg.text.toLowerCase().includes('call'));
+
+  const call = startPhoneCall(phone, 'fixer');
+  assert.ok(call !== null && call.action === 'fixer_clear_wanted');
+  endPhoneCall(phone);
+  assert.equal(phone.activeCall, null);
+
+  const beforePosts = phone.posts.length;
+  const post = publishSnapNovaPost(phone, {
+    caption: 'Sunset over Ocean Beach!',
+    location: 'OCEAN BEACH',
+    filter: 'vice',
+    imageDataUrl: 'data:image/jpeg;base64,TEST',
+    timeStr: '18:30',
+  });
+  assert.equal(phone.posts.length, beforePosts + 1);
+  assert.equal(phone.posts[0].id, post.id);
+  const likesBefore = post.likes;
+  togglePostLike(phone, post.id);
+  assert.equal(post.likes, likesBefore - 1);
+  togglePostLike(phone, post.id);
+  assert.equal(post.likes, likesBefore);
+});
+
 
 
 

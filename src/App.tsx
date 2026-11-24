@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Game, HudState } from './game/Game';
 import { MobileControls } from './components/MobileControls';
+import { PhoneOverlay } from './components/PhoneOverlay';
+import { BankModal } from './components/BankModal';
 
 type Toast = { id: number; text: string; kind: string };
 type Banner = { kind: 'wasted' | 'passed' | 'failed'; title: string; sub?: string } | null;
@@ -12,15 +14,17 @@ const CONTROLS: [string, string][] = [
   ['C / Ctrl', 'Crouch · Sprint+C Slide'],
   ['Space', 'Jump · Handbrake · Climb'],
   ['↑ / ↓', 'Plane Dive / Climb'],
-  ['Left Click', 'Shoot / swing / rocket'],
+  ['Left Click', 'Shoot / punch combo / rocket'],
   ['Right Click', 'Aim'],
-  ['F / E', 'Cars, planes, 328 stores'],
+  ['Tab', 'Smartphone (Text, Call, SnapNova)'],
+  ['E', 'NovaBank, ATMs & Random Events'],
+  ['F', 'Cars, planes, stores & banks'],
   ['Q / Z / Wheel', '15 weapons · Rudder'],
   ['1–0 / - / =', 'Quick weapon slots'],
   ['R / H', 'Radio station · Horn'],
   ['G / T', 'Scope · Package finder'],
-  ['M', '10km Map, Airport & GPS'],
-  ['Esc / P', 'Pause · Mobile / RTX / Gore'],
+  ['M', '10km Map, Banks & GPS'],
+  ['Esc / P', 'Pause · RTX / GLB / Beta IK'],
 ];
 
 function Skyline() {
@@ -101,6 +105,7 @@ export default function App() {
   const [voicesEnabled, setVoicesEnabled] = useState<boolean>(true);
   const [hdGlbMode, setHdGlbMode] = useState<boolean>(true);
   const [microtexturesEnabled, setMicrotexturesEnabled] = useState<boolean>(true);
+  const [experimentalBodyLogic, setExperimentalBodyLogic] = useState<boolean>(false);
   const [hud, setHud] = useState<HudState | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [banner, setBanner] = useState<Banner>(null);
@@ -136,6 +141,7 @@ export default function App() {
         g.setVoicesEnabled(voicesEnabled);
         g.setHdGlbMode(hdGlbMode);
         g.setMicrotexturesEnabled(microtexturesEnabled);
+        g.setExperimentalBodyLogic(experimentalBodyLogic);
         g.setVoiceVolume(volume / 100);
         gameRef.current = g;
         (window as any).__game = g;
@@ -149,7 +155,7 @@ export default function App() {
         setPhase('title');
       }
     }, 60);
-  }, [quality, mobileMode, rtxEnabled, goreEnabled, voicesEnabled, hdGlbMode, microtexturesEnabled, volume]);
+  }, [quality, mobileMode, rtxEnabled, goreEnabled, voicesEnabled, hdGlbMode, microtexturesEnabled, experimentalBodyLogic, volume]);
 
   // Support ?autostart=1 and Enter/Space to start on title screen
   useEffect(() => {
@@ -223,6 +229,11 @@ export default function App() {
     setMicrotexturesEnabled(next);
     g?.setMicrotexturesEnabled(next);
   };
+  const toggleExperimentalBodyLogic = () => {
+    const next = !(hud?.experimentalBodyLogic ?? experimentalBodyLogic);
+    setExperimentalBodyLogic(next);
+    g?.setExperimentalBodyLogic(next);
+  };
   const onMapClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
     const c = e.currentTarget;
     const r = c.getBoundingClientRect();
@@ -288,6 +299,9 @@ export default function App() {
               <span className={`gta-font text-white ${isMobileHud ? 'text-sm' : 'text-lg'}`}>{hud.time}</span>
             </div>
             <div className={`gta-font text-[#8ee06c] hud-text ${isMobileHud ? 'text-2xl leading-none' : 'text-4xl'}`}>${hud.money.toLocaleString()}</div>
+            <div className={`font-bold tracking-wider text-sky-300/95 hud-text ${isMobileHud ? 'text-[10px]' : 'text-xs'}`}>
+              CARD ${hud.bankBalance.toLocaleString()}
+            </div>
             <Stars n={hud.wanted} searching={hud.searching} compact={isMobileHud} />
             {hud.wanted > 0 && <div className={`text-[10px] font-bold tracking-[0.28em] hud-text ${hud.searching ? 'animate-pulse text-sky-300' : 'text-red-400'}`}>{hud.searching ? 'EVADING' : 'WANTED'}</div>}
             <div className={`flex items-center gap-2 rounded bg-black/75 border border-white/15 ${isMobileHud ? 'px-2 py-0.5' : 'mt-1 px-3 py-1 gap-3'}`}>
@@ -301,7 +315,8 @@ export default function App() {
                 <div className="mt-0.5 flex items-center gap-3 rounded bg-black/70 px-3 py-1 text-[11px]">
                   <span className="text-sky-300">CREW {hud.allies}/3</span>
                   <span className="text-lime-300">GRENADES {hud.grenades}</span>
-                  {hud.rtxEnabled && <span className="font-bold text-fuchsia-300">RTX</span>}
+                  {hud.rtxEnabled && <span className="font-bold text-fuchsia-300">RT-RTX</span>}
+                  {hud.experimentalBodyLogic && <span className="font-bold text-amber-300">BETA IK</span>}
                 </div>
               </>
             )}
@@ -340,6 +355,54 @@ export default function App() {
                 </div>
               )
             )}
+
+            {/* Random World Event Tracker */}
+            {hud.activeEvent && !hud.bankOpen && (
+              <div
+                data-testid="random-event-hud"
+                className="mt-2.5 rounded-md border-l-4 border-amber-400 bg-black/80 px-3.5 py-2.5"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[10px] font-black uppercase tracking-[0.24em] text-amber-300">
+                    ? RANDOM EVENT · {hud.activeEvent.dist}M
+                  </span>
+                  <span className="rounded bg-emerald-600/85 px-1.5 py-0.5 text-[10px] font-extrabold text-white">
+                    +${hud.activeEvent.rewardCash}
+                  </span>
+                </div>
+                <div className="mt-0.5 text-sm font-extrabold text-white">{hud.activeEvent.title}</div>
+                <div className="text-xs leading-snug text-white/75">{hud.activeEvent.headline}</div>
+                {hud.activeEvent.dist <= 11 && (
+                  <div className="mt-1 text-[10px] font-black uppercase tracking-widest text-amber-300">
+                    Press [E] to Interact
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Active Bank Robbery Heist HUD */}
+        {hud && hud.heist.active && !hud.scope && (
+          <div
+            data-testid="heist-hud"
+            className="absolute left-1/2 top-4 w-[min(460px,88vw)] -translate-x-1/2 rounded-lg border border-red-500/60 bg-[#18070a]/95 px-4 py-2.5 shadow-xl"
+          >
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[10px] font-black uppercase tracking-[0.28em] text-red-400">
+                BANK ROBBERY · {hud.heist.stage.toUpperCase()}
+              </span>
+              <span className="gta-font text-lg text-emerald-400">
+                ${hud.heist.lootCollected.toLocaleString()} / ${hud.heist.maxLoot.toLocaleString()}
+              </span>
+            </div>
+            <div className="mt-0.5 text-xs font-bold text-white">{hud.heist.promptText}</div>
+            <div className="mt-1.5 h-2 overflow-hidden rounded bg-white/15">
+              <div
+                className="h-full bg-gradient-to-r from-red-500 to-amber-400 transition-[width] duration-150"
+                style={{ width: `${Math.round(hud.heist.progress * 100)}%` }}
+              />
+            </div>
           </div>
         )}
 
@@ -534,20 +597,58 @@ export default function App() {
         )}
 
         {/* click to capture (desktop only) */}
-        {phase === 'playing' && hud && !hud.mobileMode && !hud.locked && !hud.paused && !hud.mapOpen && !banner && !hud.scope && (
+        {phase === 'playing' && hud && !hud.mobileMode && !hud.locked && !hud.paused && !hud.mapOpen && !hud.phoneOpen && !hud.bankOpen && !banner && !hud.scope && (
           <div className="pointer-events-auto absolute inset-x-0 bottom-4 flex justify-center">
             <div className="rounded-full bg-black/80 px-5 py-1.5 text-center text-[11px] tracking-wide border border-white/15">
               <span className="font-bold text-amber-300">CLICK TO CAPTURE MOUSE</span>
-              <span className="ml-2 text-white/70">or press Esc for Mobile Mode / RTX settings</span>
+              <span className="ml-2 text-white/70">Tab for Phone · E for Banks/Events · Esc for Settings</span>
             </div>
           </div>
         )}
 
-        {hud && !isMobileHud && <div className="absolute bottom-1 right-2 text-[10px] text-white/45">{hud.fps} FPS · {hud.storeCount} STORES</div>}
+        {/* Quick Phone Button */}
+        {playing && !hud.phoneOpen && !hud.paused && !hud.mapOpen && !hud.bankOpen && !hud.scope && !isMobileHud && (
+          <button
+            type="button"
+            aria-label="Open Smartphone"
+            data-testid="open-phone-btn"
+            onClick={() => g?.togglePhone(true)}
+            className={`pointer-events-auto absolute right-6 flex items-center gap-2 rounded-xl border border-white/20 bg-[#0d1422] px-3.5 py-2 text-xs font-extrabold tracking-wider text-white shadow-lg transition hover:border-amber-300 hover:bg-[#162138] ${
+              hud.speed !== null ? 'bottom-44' : 'bottom-8'
+            }`}
+          >
+            <span className="text-amber-300">PHONE</span>
+            <span className="rounded bg-white/10 px-1.5 py-0.5 font-mono text-[10px] text-white/80">Tab</span>
+            {hud.phoneUnread > 0 && (
+              <span className="flex h-4 min-w-[16px] items-center justify-center rounded-full bg-red-600 px-1 text-[10px] font-black text-white">
+                {hud.phoneUnread}
+              </span>
+            )}
+          </button>
+        )}
+
+        {hud && !isMobileHud && <div className="absolute bottom-1 right-2 text-[10px] text-white/45">{hud.fps} FPS · {hud.storeCount} STORES · {hud.randomEventsTotal} EVENTS</div>}
       </div>
 
+      {/* ------------------------------------------------------------ GTA 5 Smartphone */}
+      {playing && hud.phoneOpen && !hud.paused && g && (
+        <PhoneOverlay
+          game={g}
+          hud={hud}
+          onToggleRtx={toggleRtx}
+          onToggleGlb={toggleHdGlb}
+          onToggleMicro={toggleMicrotextures}
+          onToggleGore={toggleGore}
+          onToggleVoices={toggleVoices}
+          onToggleBetaBody={toggleExperimentalBodyLogic}
+        />
+      )}
+
+      {/* ------------------------------------------------------------ NovaBank / ATM Modal */}
+      {playing && hud.bankOpen && !hud.paused && g && <BankModal game={g} hud={hud} />}
+
       {/* ------------------------------------------------------------ mobile touch controls */}
-      {playing && hud.mobileMode && !hud.paused && !hud.mapOpen && !banner && g && (
+      {playing && hud.mobileMode && !hud.paused && !hud.mapOpen && !hud.phoneOpen && !hud.bankOpen && !banner && g && (
         <MobileControls game={g} hud={hud} />
       )}
 
@@ -559,11 +660,12 @@ export default function App() {
               <div className="gta-font whitespace-nowrap text-xl tracking-widest text-white sm:text-2xl">SAN NOVA · 10 KM × 10 KM</div>
               <div className="flex flex-wrap gap-2.5 text-xs text-white/85">
                 <span><b className="text-yellow-300">●</b> Mission</span>
+                <span><b className="text-emerald-400">$</b> NovaBank</span>
+                <span><b className="text-amber-300">?</b> Random Event</span>
                 <span><b className="text-sky-400">●</b> Police</span>
                 <span><b className="text-red-400">●</b> Hospital</span>
                 <span><b className="text-orange-300">●</b> Ammu-Nation</span>
                 <span><b className="text-sky-300">✈</b> Airport</span>
-                <span><b className="text-emerald-400">●</b> Landmarks</span>
                 <span><b className="text-fuchsia-400">●</b> GPS</span>
               </div>
               <button onClick={() => g?.setMapOpen(false)} className="whitespace-nowrap rounded bg-white/15 px-4 py-1.5 text-sm font-semibold hover:bg-white/25">Close (M)</button>
@@ -623,8 +725,8 @@ export default function App() {
                 }`}
               >
                 <div>
-                  <div className="text-xs font-extrabold tracking-widest">SIMULATED RTX</div>
-                  <div className="text-[11px] text-white/60">PBR lighting & reflections</div>
+                  <div className="text-xs font-extrabold tracking-widest">RAY-TRACED RTX</div>
+                  <div className="text-[11px] text-white/60">SSR reflections, RTAO & sun shadows</div>
                 </div>
                 <span className={`rounded px-2 py-0.5 text-xs font-black ${hud.rtxEnabled ? 'bg-fuchsia-400 text-black' : 'bg-white/15 text-white/70'}`}>
                   {hud.rtxEnabled ? 'ON' : 'OFF'}
@@ -642,8 +744,8 @@ export default function App() {
                 }`}
               >
                 <div>
-                  <div className="text-xs font-extrabold tracking-widest">MODEL-SITE .GLB PACK</div>
-                  <div className="text-[11px] text-white/60">Site 3D cars, planes, props & NPCs</div>
+                  <div className="text-xs font-extrabold tracking-widest">HANDCRAFTED .GLB PACK</div>
+                  <div className="text-[11px] text-white/60">22 custom 3D cars, banks, props & NPCs</div>
                 </div>
                 <span className={`rounded px-2 py-0.5 text-xs font-black ${hud.hdGlbMode ? 'bg-cyan-400 text-black' : 'bg-white/15 text-white/70'}`}>
                   {hud.hdGlbMode ? 'ON' : 'OFF'}
@@ -680,8 +782,8 @@ export default function App() {
                 }`}
               >
                 <div>
-                  <div className="text-xs font-extrabold tracking-widest">GORE & BLOOD</div>
-                  <div className="text-[11px] text-white/60">Arterial spray, smears & gibs</div>
+                  <div className="text-xs font-extrabold tracking-widest">REALISTIC GORE</div>
+                  <div className="text-[11px] text-white/60">Kinetic impact blood & wound physics</div>
                 </div>
                 <span className={`rounded px-2 py-0.5 text-xs font-black ${hud.goreEnabled ? 'bg-red-500 text-white' : 'bg-white/15 text-white/70'}`}>
                   {hud.goreEnabled ? 'ON' : 'OFF'}
@@ -700,10 +802,34 @@ export default function App() {
               >
                 <div>
                   <div className="text-xs font-extrabold tracking-widest">NPC VOICES</div>
-                  <div className="text-[11px] text-white/60">Live API speech synthesis</div>
+                  <div className="text-[11px] text-white/60">Natural volume ambient speech</div>
                 </div>
                 <span className={`rounded px-2 py-0.5 text-xs font-black ${hud.voicesEnabled ? 'bg-emerald-400 text-black' : 'bg-white/15 text-white/70'}`}>
                   {hud.voicesEnabled ? 'ON' : 'OFF'}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                data-toggle-beta-body="true"
+                onClick={toggleExperimentalBodyLogic}
+                className={`flex items-center justify-between rounded-lg border px-4 py-3 text-left transition sm:col-span-2 lg:col-span-3 ${
+                  hud.experimentalBodyLogic
+                    ? 'border-amber-400 bg-amber-500/20 text-amber-200'
+                    : 'border-white/15 bg-white/5 text-white/85 hover:bg-white/10'
+                }`}
+              >
+                <div>
+                  <div className="flex items-center gap-2 text-xs font-extrabold tracking-widest">
+                    <span>EXPERIMENTAL BODY-LOGIC NPCS</span>
+                    <span className="rounded bg-amber-400 px-1.5 py-0.5 text-[9px] font-black text-black">BETA</span>
+                  </div>
+                  <div className="text-[11px] text-white/65">
+                    Eliminates canned NPC animations — drives joints via real-time ZMP balance, 2-bone IK & intent physics
+                  </div>
+                </div>
+                <span className={`rounded px-2.5 py-0.5 text-xs font-black ${hud.experimentalBodyLogic ? 'bg-amber-400 text-black' : 'bg-white/15 text-white/70'}`}>
+                  {hud.experimentalBodyLogic ? 'ON' : 'OFF'}
                 </span>
               </button>
             </div>
@@ -769,7 +895,7 @@ export default function App() {
             </div>
             <div className="mt-2 text-xs font-semibold tracking-[0.42em] text-cyan-200 sm:text-lg">10 KM × 10 KM LEONIDA OPEN WORLD SANDBOX</div>
             <div className="mt-3 flex flex-wrap justify-center gap-1.5 text-[10px] font-bold tracking-[0.18em] text-white/90">
-              {['328 UNIQUE STORES', 'MODEL-SITE .GLB PACK', 'TRAFFIC MANAGER', 'FREE CITY NPCS', 'PBR MICROTEXTURES', '3,240+ ANIMATIONS', 'LIVE NPC VOICES', 'MOBILE MODE'].map((f) => (
+              {['HANDCRAFTED .GLB PACK', 'RAY-TRACED RTX', 'GTA 5 PHONE & SNAPNOVA', 'NOVABANK & HEISTS', '192 RANDOM EVENTS', 'LIVING NPC PLANS', 'BETA BODY-LOGIC IK', '328 UNIQUE STORES'].map((f) => (
                 <span key={f} className="rounded border border-white/25 bg-black/55 px-2.5 py-1">{f}</span>
               ))}
             </div>
@@ -807,7 +933,7 @@ export default function App() {
                     <span>{mobileMode ? 'ON' : 'OFF'}</span>
                   </button>
 
-                  {/* Simulated RTX Menu Toggle */}
+                  {/* Ray-Traced RTX Menu Toggle */}
                   <button
                     type="button"
                     data-title-rtx="true"
@@ -818,11 +944,11 @@ export default function App() {
                         : 'border-white/20 bg-black/65 text-white/80 hover:bg-white/15'
                     }`}
                   >
-                    <span>SIMULATED RTX:</span>
+                    <span>RAY-TRACED RTX:</span>
                     <span>{rtxEnabled ? 'ON' : 'OFF'}</span>
                   </button>
 
-                  {/* Model-Site .GLB Pack Toggle */}
+                  {/* Handcrafted .GLB Pack Toggle */}
                   <button
                     type="button"
                     data-title-glb="true"
@@ -833,7 +959,7 @@ export default function App() {
                         : 'border-white/20 bg-black/65 text-white/80 hover:bg-white/15'
                     }`}
                   >
-                    <span>MODEL-SITE .GLB PACK:</span>
+                    <span>HANDCRAFTED .GLB:</span>
                     <span>{hdGlbMode ? 'ON' : 'OFF'}</span>
                   </button>
 
@@ -851,9 +977,24 @@ export default function App() {
                     <span>PBR MICROTEXTURES:</span>
                     <span>{microtexturesEnabled ? 'ON' : 'OFF'}</span>
                   </button>
+
+                  {/* Optional Beta Body-Logic NPCs Toggle */}
+                  <button
+                    type="button"
+                    data-title-beta-body="true"
+                    onClick={() => setExperimentalBodyLogic((v) => !v)}
+                    className={`flex items-center gap-2 rounded-lg border px-4 py-2 text-xs font-extrabold tracking-widest transition ${
+                      experimentalBodyLogic
+                        ? 'border-amber-300 bg-amber-400 text-black'
+                        : 'border-white/20 bg-black/65 text-white/80 hover:bg-white/15'
+                    }`}
+                  >
+                    <span>BODY-LOGIC NPCS (BETA):</span>
+                    <span>{experimentalBodyLogic ? 'ON' : 'OFF'}</span>
+                  </button>
                 </div>
 
-                <div className="mt-1.5 text-[11px] text-white/75">Graphics quality · toggle Mobile Mode, Simulated RTX, Model-Site .GLB Pack & PBR Microtextures</div>
+                <div className="mt-1.5 text-[11px] text-white/75">Graphics quality · toggle Mobile Mode, Ray-Traced RTX, Handcrafted .GLB Pack, PBR Microtextures & Beta Body-Logic NPCs</div>
                 <button
                   data-start="true"
                   onClick={start}

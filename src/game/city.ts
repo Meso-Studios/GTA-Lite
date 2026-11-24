@@ -19,6 +19,7 @@ import type { FacadeStyle } from './textures';
 import { buildInfrastructure } from './infra';
 import { buildInteriors, Room } from './interiors';
 import { microtextures } from './microtextures';
+import { ATM_LOCATIONS, BANK_BRANCHES } from './bankingSystem';
 
 export interface ParkingSpot { x: number; z: number; yaw: number; used: boolean; id: number; police?: boolean }
 export interface CityData {
@@ -598,13 +599,27 @@ export function buildCity(): CityData {
       }
     }
 
-  // Spawn-corner curb props so sculpted TrafficCone.glb & wooden crate are visible near spawn
+  // Spawn-corner curb props so sculpted prop_cone.glb & wooden crate are visible near spawn
   ctx.props.push(
     { kind: 'cone', x: -292, z: 33.8 },
     { kind: 'cone', x: -288.5, z: 33.8 },
     { kind: 'crate', x: -293.5, z: 36.2 },
     { kind: 'barrel', x: -292.0, z: 36.4 },
   );
+
+  // Handcrafted NovaBank Sidewalk ATM Kiosks & Branch Entrance Plinths
+  for (const atm of ATM_LOCATIONS) {
+    const ch = chunk(atm.x, atm.z);
+    const gy = Math.max(0, groundHeight(atm.x, atm.z));
+    batch.add('propMetal', box(0.95, 2.05, 0.72, atm.x, gy, atm.z, 0x18262e), ch);
+    batch.add('propMetal', box(1.12, 0.14, 0.96, atm.x, gy + 2.05, atm.z, 0x0f9d76), ch);
+    batch.add('emit', box(0.68, 0.52, 0.06, atm.x, gy + 1.24, atm.z + 0.37, 0x1cf2a8), ch);
+    batch.add('emit', box(0.68, 0.52, 0.06, atm.x, gy + 1.24, atm.z - 0.37, 0x1cf2a8), ch);
+    world.addBox(atm.x - 0.52, atm.x + 0.52, atm.z - 0.42, atm.z + 0.42, gy + 2.2);
+  }
+  for (const br of BANK_BRANCHES) {
+    ctx.doors.push({ x: br.x, z: br.z, yaw: br.doorYaw, name: br.name, kind: 'bank' });
+  }
 
   // ---------------------------------------------------------------- build batches
   batch.build(group, mats);
