@@ -1,6 +1,6 @@
 // Dynamic physics props (cones, barrels, bins, crates, debris) and collectible pickups.
 import * as THREE from 'three';
-import { clamp } from './config';
+import { clamp, groundHeight } from './config';
 import { gunMesh } from './humans';
 import { clonePropGlb, cloneWeaponPickupGlb, isGlbWorldMode, type PropGlbKey } from './glbAssets';
 import type { Game } from './Game';
@@ -242,6 +242,7 @@ export type PickKind = 'cash' | 'health' | 'armor' | 'weapon' | 'package';
 export class Pickup {
   kind: PickKind;
   x: number; z: number;
+  baseY: number;
   value: number;
   group: THREE.Group;
   private procVisual: THREE.Object3D | null = null;
@@ -251,7 +252,7 @@ export class Pickup {
   weapon = '';
   life = -1;
   constructor(kind: PickKind, x: number, z: number, value = 0, weapon = '') {
-    this.kind = kind; this.x = x; this.z = z; this.value = value; this.weapon = weapon;
+    this.kind = kind; this.x = x; this.z = z; this.baseY = groundHeight(x, z); this.value = value; this.weapon = weapon;
     const g = new THREE.Group();
     const col = { cash: 0x2ecc71, health: 0xff3b3b, armor: 0x3b82f6, weapon: 0xffd23d, package: 0xff9d2e }[kind];
     if (kind === 'cash') {
@@ -286,7 +287,7 @@ export class Pickup {
       g.add(beam);
     }
     void col;
-    g.position.set(x, 0.9, z);
+    g.position.set(x, this.baseY + 0.95, z);
     this.group = g;
     this.setGlbMode(isGlbWorldMode());
   }
@@ -316,7 +317,7 @@ export class Pickup {
   update(dt: number) {
     this.t += dt;
     this.group.rotation.y = this.t * 1.8;
-    this.group.position.y = 0.95 + Math.sin(this.t * 2.4) * 0.12;
+    this.group.position.y = this.baseY + 0.95 + Math.sin(this.t * 2.4) * 0.12;
     if (this.life > 0) { this.life -= dt; if (this.life <= 0) this.taken = true; }
   }
 }

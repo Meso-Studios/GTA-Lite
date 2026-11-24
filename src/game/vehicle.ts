@@ -4,7 +4,7 @@ import {
   LANE_INNER, LANE_OUTER, NB, STOP_DIST, angDiff, applySandVehiclePhysics, clamp, deckHeight, lerp, roadLine, sandFactorAt, signalState, terrainSlopeAt,
 } from './config';
 import {
-  SPECS, VehicleModel, VehicleSpec, VehicleType, buildVehicle, dentModel, tailBright, tailDim, wreckMat, sirenRed, sirenBlue,
+  SPECS, VehicleModel, VehicleSpec, VehicleType, buildVehicle, dentModel, disposeVehicleModel, tailBright, tailDim, wreckMat, sirenRed, sirenBlue,
 } from './vehicles';
 import {
   FlightState, SuspensionState, createFlightState, createSuspensionState, stepFlightPhysics, stepSuspensionPhysics,
@@ -792,8 +792,7 @@ export class Vehicle {
 
   dispose(g: Game) {
     g.scene.remove(this.group);
-    // geometries are shared, dented bodies are unique
-    if (this.model.dented) this.model.body.geometry.dispose();
+    disposeVehicleModel(this.model);
   }
 
   get dead() { return this.mode === 'wreck'; }

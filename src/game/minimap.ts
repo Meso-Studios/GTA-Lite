@@ -122,6 +122,11 @@ export class MapRenderer {
     d.fillText('GOLDEN DUNES', toX(-2600), toZ(1500));
     d.fillText('SAN NOVA INTL AIRPORT', toX(1700), toZ(-455));
     d.fillText('NOVA KEYS ISLAND', toX(DECK.ISLAND.cx), toZ(DECK.ISLAND.cz + 580));
+    d.fillStyle = 'rgba(210,235,215,0.58)';
+    d.font = 'bold 20px sans-serif';
+    d.fillText('NORTH PALMS SUBURBS', toX(0), toZ(-1180));
+    d.fillText('PALMETTO HEIGHTS', toX(-1040), toZ(-340));
+    d.fillText('BAYVIEW SUBURBS', toX(980), toZ(260));
     d.fillStyle = 'rgba(255,235,170,0.65)';
     d.font = 'bold 22px sans-serif';
     d.fillText('SAN NOVA METRO · LEONIDA', toX(0), toZ(-680));
@@ -143,6 +148,7 @@ export class MapRenderer {
       else if (n === 'oasis') list.push({ x: p.x, z: p.z, kind: 'landmark', label: 'O' });
       else if (n === 'observatory') list.push({ x: p.x, z: p.z, kind: 'landmark', label: '★' });
       else if (n === 'airport') list.push({ x: p.x, z: p.z, kind: 'airport', label: '✈' });
+      else if (n.startsWith('gas_')) list.push({ x: p.x, z: p.z, kind: 'gas', label: 'F' });
     }
     if (g.waypoint) list.push({ x: g.waypoint.x, z: g.waypoint.z, kind: 'waypoint' });
     if (g.finderOn) for (const pk of g.pickups) if (pk.kind === 'package' && !pk.taken && Math.hypot(pk.x - g.playerX, pk.z - g.playerZ) < 200) list.push({ x: pk.x, z: pk.z, kind: 'package' });
@@ -155,7 +161,7 @@ export class MapRenderer {
     const colors: Record<string, string> = {
       mission: '#ffd23d', goal: '#ffd23d', enemy: '#ff4040', vehicle: '#3dd6ff', item: '#ffd23d',
       hospital: '#ff5a5a', police: '#4a90ff', spray: '#ffb347', gun: '#e0e0e0', bank: '#7dff7d',
-      waypoint: '#ff2fd0', package: '#ff9d2e', cop: '#ff3030', landmark: '#38d9a9', airport: '#38bdf8',
+      waypoint: '#ff2fd0', package: '#ff9d2e', cop: '#ff3030', landmark: '#38d9a9', airport: '#38bdf8', gas: '#ff7b2e',
     };
     const col = colors[kind] ?? '#fff';
     d.fillStyle = col;

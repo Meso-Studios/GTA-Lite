@@ -1,15 +1,16 @@
 // Pedestrian entity: sidewalk navigation, panic, combat AI and ragdoll.
 import * as THREE from 'three';
 import { CORNER, NB, applySandFootPhysics, clamp, dampAngle, isMeleeWeapon, nearestNode, redRemaining, roadLine, sandFactorAt, signalState } from './config';
-import { AnimIn, GunKind, HumanRig, Look, Ragdoll, animateHuman, createHuman, muzzleWorld, setWeapon } from './humans';
+import { AnimIn, GunKind, HumanRig, Look, Ragdoll, animateHuman, createHuman, disposeHumanRig, muzzleWorld, setWeapon } from './humans';
 import { computeRagdollImpulse } from './physics';
 import { createFreeCityBrain, stepFreeCityNpc, type FreeCityArchetype, type FreeCityBrain, type FreeCityContext } from './freeCityNpc';
+import { BARE_HAND_MOVES, BARE_HAND_SEQUENCE, BRAWL_TAUNTS, type BareHandMove, shouldNpcFightBack } from './subAnimations';
 import type { Game } from './Game';
 import type { PushOut } from './world';
 
 export type PedKind = 'civ' | 'tourist' | 'cop' | 'gang' | 'guard' | 'target' | 'ally';
 type Node4 = [number, number, number, number];
-type State = 'walk' | 'wait' | 'flee' | 'idle' | 'attack' | 'guard' | 'cower' | 'crowd_stroll' | 'photo';
+type State = 'walk' | 'wait' | 'flee' | 'idle' | 'attack' | 'guard' | 'cower' | 'crowd_stroll' | 'photo' | 'brawl';
 const _po: PushOut = { x: 0, z: 0, nx: 0, nz: 0, hit: false, depth: 0 };
 const _v = new THREE.Vector3();
 
@@ -73,6 +74,17 @@ export class Ped {
   speakingT = 0;
   freeCity: FreeCityBrain | null = null;
   freeCityLastHint: string | null = null;
+  canFightBack = false;
+  brawlT = 0;
+  brawlPunchT = 0;
+  brawlPunchDur = 0.36;
+  brawlPunchMove: BareHandMove = 'jab_left';
+  brawlComboIdx = 0;
+  brawlCooldown = 0;
+  brawlHitApplied = false;
+  guardT = 0;
+  prevYaw = 0;
+  turnRate = 0;
 
   constructor(kind: PedKind, look: Look) {
     this.kind = kind;
@@ -83,11 +95,13 @@ export class Ped {
     if (kind === 'civ' || kind === 'tourist' || kind === 'guard') {
       this.freeCity = createFreeCityBrain(this.id * 13 + 7, kind);
     }
+    this.canFightBack = shouldNpcFightBack(this.id, kind, this.freeCity?.archetype, 'fists');
   }
 
   setFreeCityArchetype(arch: FreeCityArchetype) {
     this.freeCity = createFreeCityBrain(this.id * 13 + 7, this.kind, arch);
     this.rig.kindHint = arch === 'guy' ? 'guy' : this.kind;
+    this.canFightBack = shouldNpcFightBack(this.id, this.kind, arch, 'fists');
   }
 
   get group() { return this.rig.root; }
@@ -196,7 +210,7 @@ export class Ped {
     dz: number,
     byPlayer: boolean,
     headshot = false,
-    opts?: { shotgun?: boolean; explosive?: boolean; katana?: boolean },
+    opts?: { shotgun?: boolean; explosive?: boolean; katana?: boolean; meleeKind?: 'fists' | 'melee' },
   ): boolean {
     if (this.dead) return false;
     const effDmg = dmg * (headshot ? 2.5 : 1);
@@ -236,7 +250,27 @@ export class Ped {
       this.kill(g, imp.vx, imp.vy, imp.vz, byPlayer, imp.headWhip);
       return true;
     }
-    if (!this.hostile) this.flee(g, this.x - dx * 5, this.z - dz * 5, 10);
+    if (!this.hostile) {
+      const attackerWeapon = opts?.meleeKind ?? (opts?.explosive ? 'explosion' : 'gun');
+      if (
+        byPlayer &&
+        !this.indoor &&
+        this.hp > 6 &&
+        shouldNpcFightBack(this.id, this.kind, this.freeCity?.archetype, attackerWeapon)
+      ) {
+        const wasBrawl = this.state === 'brawl';
+        this.state = 'brawl';
+        this.brawlT = 18;
+        this.guardT = 4.5;
+        this.brawlCooldown = Math.max(this.brawlCooldown, 0.38 + Math.random() * 0.25);
+        this.handsUp = 0;
+        if (!wasBrawl) {
+          this.freeCityLastHint = BRAWL_TAUNTS[this.id % BRAWL_TAUNTS.length];
+        }
+      } else {
+        this.flee(g, this.x - dx * 5, this.z - dz * 5, 10);
+      }
+    }
     return false;
   }
 
@@ -294,6 +328,8 @@ export class Ped {
     if (this.dead) { this.ragdoll(dt, g); return; }
     if (this.flinchT > 0) this.flinchT = Math.max(0, this.flinchT - dt);
     if (this.speakingT > 0) this.speakingT = Math.max(0, this.speakingT - dt);
+    if (this.guardT > 0) this.guardT = Math.max(0, this.guardT - dt);
+    if (this.brawlCooldown > 0) this.brawlCooldown = Math.max(0, this.brawlCooldown - dt);
     if (this.kind === 'ally') { this.allyUpdate(dt, g); return; }
     const px = g.playerX, pz = g.playerZ;
     const dxp = px - this.x, dzp = pz - this.z;
@@ -308,6 +344,77 @@ export class Ped {
       if (this.handsUp <= 0) this.flee(g, px, pz, 8);
       this.finish(g);
       return;
+    }
+
+    // Bare-hand street brawler retaliation state for tough civilians/tourists who fight back when punched
+    if (this.state === 'brawl' && !this.hostile) {
+      this.brawlT -= dt;
+      this.guardT = Math.max(this.guardT, 0.85);
+      // If player pulls a firearm and aims, or escapes in a vehicle, or dies, disengage sensibly
+      const playerArmedGun = !isMeleeWeapon(g.player.weapon) && (g.player.ammo[g.player.weapon] ?? 0) > 0 && (g.input.aim || g.playerFiring);
+      if (!g.playerAlive || !g.playerOnFoot || dp > 28 || this.brawlT <= 0) {
+        this.brawlPunchT = 0;
+        if (this.crowdHome) this.pickCrowdTarget();
+        else {
+          this.state = 'walk';
+          this.cur = this.nearestCorner();
+          this.prev = null;
+          this.pickNext(g);
+        }
+      } else if (playerArmedGun && dp < 14) {
+        this.brawlPunchT = 0;
+        this.flee(g, px, pz, 9);
+      } else {
+        faceYaw = Math.atan2(dxp, dzp);
+        this.yaw = dampAngle(this.yaw, faceYaw, 11, dt);
+        if (this.brawlPunchT > 0) {
+          this.brawlPunchT += dt;
+          const phase = this.brawlPunchT / Math.max(0.15, this.brawlPunchDur);
+          this.vx *= 0.8;
+          this.vz *= 0.8;
+          if (!this.brawlHitApplied && phase >= 0.42 && phase <= 0.62) {
+            this.brawlHitApplied = true;
+            if (dp < 2.3 && g.playerOnFoot && g.playerAlive) {
+              const spec = BARE_HAND_MOVES[this.brawlPunchMove];
+              g.hurtPlayer(Math.round(spec.damage * 0.42), 'melee');
+              const ux = dxp / (dp || 1), uz = dzp / (dp || 1);
+              g.player.vx += ux * 2.4;
+              g.player.vz += uz * 2.4;
+              g.audio.punch();
+            }
+          }
+          if (this.brawlPunchT >= this.brawlPunchDur) {
+            this.brawlPunchT = 0;
+            this.brawlCooldown = 0.55 + Math.random() * 0.45;
+          }
+        } else if (dp > 1.9) {
+          // Close the gap briskly in fighting stance
+          const dir = Math.atan2(dxp, dzp);
+          moveSpeed = dp > 4.5 ? 4.3 : 2.9;
+          this.moveDir(Math.sin(dir), Math.cos(dir), moveSpeed, dt);
+        } else {
+          // Circle/weave slightly and throw varied bare-hand strikes
+          this.strafeT -= dt;
+          if (this.strafeT <= 0) {
+            this.strafe = Math.random() < 0.5 ? -1 : 1;
+            this.strafeT = 0.8 + Math.random() * 0.9;
+          }
+          const sx = Math.cos(faceYaw) * this.strafe, sz = -Math.sin(faceYaw) * this.strafe;
+          if (dp < 1.15) this.moveDir(-Math.sin(faceYaw), -Math.cos(faceYaw), 1.6, dt);
+          else this.moveDir(sx, sz, 1.4, dt);
+          if (this.brawlCooldown <= 0) {
+            const move = BARE_HAND_SEQUENCE[this.brawlComboIdx % BARE_HAND_SEQUENCE.length];
+            this.brawlComboIdx = (this.brawlComboIdx + 1) % BARE_HAND_SEQUENCE.length;
+            this.brawlPunchMove = move;
+            this.brawlPunchDur = BARE_HAND_MOVES[move].duration * 1.12;
+            this.brawlPunchT = 0.001;
+            this.brawlHitApplied = false;
+          }
+        }
+        this.animate(dt, Math.hypot(this.vx, this.vz), false, 0, false);
+        this.finish(g);
+        return;
+      }
     }
 
     // hostile behaviour
@@ -575,15 +682,24 @@ export class Ped {
   }
 
   animate(dt: number, speed: number, panic: boolean, aim = 0, photo = false) {
+    let dyaw = this.yaw - this.prevYaw;
+    while (dyaw > Math.PI) dyaw -= Math.PI * 2;
+    while (dyaw < -Math.PI) dyaw += Math.PI * 2;
+    this.turnRate = dt > 0.0001 ? clamp(dyaw / dt, -8, 8) : 0;
+    this.prevYaw = this.yaw;
+
     const a: AnimIn = {
       mode: this.indoor && this.indoorRole === 'seated' && !panic && this.handsUp <= 0 ? 'sit' : 'stand',
       speed,
       aim,
       aimPitch: 0,
-      punch: 0,
+      punch: this.brawlPunchT > 0 ? clamp(this.brawlPunchT / Math.max(0.15, this.brawlPunchDur), 0, 1) : 0,
+      punchMove: this.brawlPunchMove,
+      boxingGuard: this.state === 'brawl' ? 1 : clamp(this.guardT * 0.5, 0, 1),
       panic: panic || this.handsUp > 0,
       photo,
       flinch: this.flinchT > 0 ? this.flinchT / 0.28 : 0,
+      turnRate: this.turnRate,
       speaking: this.speakingT > 0,
       onSand: !this.indoor && sandFactorAt(this.x, this.z, this.y) > 0.15,
       isTourist: this.kind === 'tourist',
@@ -732,6 +848,7 @@ export class Ped {
     return this.rig.weapon ? muzzleWorld(this.rig, out) : out.set(this.x, 1.4, this.z);
   }
   dispose(g: Game) {
+    disposeHumanRig(this.rig);
     g.scene.remove(this.rig.root);
   }
 }

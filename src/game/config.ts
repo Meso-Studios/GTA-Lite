@@ -10,6 +10,8 @@ import {
   CORE_SIDEWALK_Y,
   DECK,
   OUTER_HIGHWAYS,
+  RURAL_GAS_STATIONS,
+  SUBURBAN_ZONES,
   WEAPONS,
   WEAPON_ORDER,
   WEAPON_SHOP_ORDER,
@@ -23,10 +25,12 @@ import {
   distToOuterHighway,
   districtNameAt,
   groundHeightAt,
+  isInSuburbanZone,
   isMeleeWeapon,
   isOceanAt,
   isOnOuterHighway,
   lerpVal,
+  nearestRuralGasStation,
   sandFactorAt,
   smoothVal,
   stepMovementState,
@@ -34,11 +38,22 @@ import {
   terrainHeightAt,
   terrainSlopeAt,
 } from './terrain';
-import type { HighwayCorridor, MovementInput, MovementState, SurfaceType, WeaponDef, WeaponId } from './terrain';
+import type {
+  HighwayCorridor,
+  MovementInput,
+  MovementState,
+  RuralGasStationDef,
+  SuburbanZone,
+  SurfaceType,
+  WeaponDef,
+  WeaponId,
+} from './terrain';
 
 export {
   DECK,
   OUTER_HIGHWAYS,
+  RURAL_GAS_STATIONS,
+  SUBURBAN_ZONES,
   WEAPONS,
   WEAPON_ORDER,
   WEAPON_SHOP_ORDER,
@@ -49,16 +64,27 @@ export {
   deckHeight,
   distToOuterHighway,
   districtNameAt,
+  isInSuburbanZone,
   isMeleeWeapon,
   isOceanAt,
   isOnOuterHighway,
+  nearestRuralGasStation,
   sandFactorAt,
   stepMovementState,
   surfaceAt,
   terrainHeightAt,
   terrainSlopeAt,
 };
-export type { HighwayCorridor, MovementInput, MovementState, SurfaceType, WeaponDef, WeaponId };
+export type {
+  HighwayCorridor,
+  MovementInput,
+  MovementState,
+  RuralGasStationDef,
+  SuburbanZone,
+  SurfaceType,
+  WeaponDef,
+  WeaponId,
+};
 
 export const P = CORE_P; // distance between road center lines
 export const ROAD_W = CORE_ROAD_W; // asphalt width

@@ -2,8 +2,9 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import {
-  BLOCK_HALF, DECK, DISTRICTS, HALF, INNER_HALF, NB, P, PARK_OFF, PIER_X, ROAD_W, Rng, SIDEWALK_Y,
-  WORLD_HALF, blockCenter, isOceanAt, roadLine, signalState, terrainHeightAt,
+  BLOCK_HALF, DECK, DISTRICTS, HALF, INNER_HALF, NB, P, PARK_OFF, PIER_X, ROAD_W, RURAL_GAS_STATIONS, Rng,
+  SIDEWALK_Y, SUBURBAN_ZONES, WORLD_HALF, blockCenter, groundHeight, isInSuburbanZone, isOceanAt,
+  nearestRuralGasStation, roadLine, signalState, terrainHeightAt,
 } from './config';
 import { Batcher, box, cyl, finish, flat, sph } from './geo';
 import * as T from './textures';
@@ -11,8 +12,8 @@ import { World } from './world';
 import {
   BCtx, Door, Lot, MapRect, Place, PropSpawn, addAirport, addBank, addBeachfront, addBoardwalkWheel, addBuilding,
   addContainers, addCrane, addGas, addGunShop, addHospital, addHouse, addLamp, addLittleHavanaBlock, addPark,
-  addPaySpray, addPolice, addSilos, addStripMallBlock, addTower, addTree, addWarehouse, addWynwoodArtsBlock,
-  beachProps, buildingInLot, splitLots,
+  addPaySpray, addPolice, addRuralGasStation, addSilos, addStripMallBlock, addSuburbanDistrict, addTower, addTree,
+  addWarehouse, addWynwoodArtsBlock, beachProps, buildingInLot, splitLots,
 } from './buildings';
 import type { FacadeStyle } from './textures';
 import { buildInfrastructure } from './infra';
@@ -202,15 +203,19 @@ export function buildCity(): CityData {
       const vx = pos.getX(i);
       const vz = pos.getZ(i);
       const h = terrainHeightAt(vx, vz);
-      // Slight -0.05 offset in the flat city core so crisp roads/sidewalks never z-fight
+      // Slight -0.06 offset in flat core/suburbs/gas-pads so crisp roads/sidewalks never z-fight
       const flatCore = Math.abs(vx) <= 700 && vz >= -700 && vz <= 630;
-      pos.setY(i, flatCore ? -0.06 : h - 0.04);
+      const inSuburb = isInSuburbanZone(vx, vz, 16) !== null;
+      const inGasPad = nearestRuralGasStation(vx, vz).dist <= 60;
+      pos.setY(i, flatCore || inSuburb || inGasPad ? -0.06 : h - 0.04);
       const isl = DECK.ISLAND;
       const di = Math.hypot(vx - isl.cx, vz - isl.cz);
       if (isOceanAt(vx, vz)) {
         cc.copy(cWetSand).multiplyScalar(0.75);
       } else if (di < isl.r + 30) {
         cc.copy(di > isl.r - 160 ? cSand : cGrass);
+      } else if (inSuburb) {
+        cc.copy(cCityBase);
       } else if (vx < -730) {
         // Golden Dunes & Western Desert
         const ridge = Math.min(1, Math.max(0, h / 16));
@@ -511,7 +516,7 @@ export function buildCity(): CityData {
       for (let a = 20; a < s.len - 18; a += 22) {
         if (!rng.chance(treeP)) continue;
         const aa = a + rng.range(-2, 2) + (side > 0 ? 6 : 0);
-        const [tx, tz] = at(aa, side * (RW + 3.7));
+        const [tx, tz] = at(aa, side * (RW + 2.35));
         addTree(ctx, tx, tz, rng.chance(0.15) ? 2 : -1, 0.8);
       }
     }
@@ -624,7 +629,8 @@ export function buildCity(): CityData {
   const pools = new THREE.InstancedMesh(new THREE.PlaneGeometry(26, 26).rotateX(-Math.PI / 2), poolMat, Math.max(1, ctx.lampBulbs.length));
   ctx.lampBulbs.forEach((b, i) => {
     bulbs.setMatrixAt(i, m4.makeTranslation(b.x, b.y, b.z));
-    pools.setMatrixAt(i, m4.makeTranslation(b.x, 0.22, b.z));
+    const py = Math.max(0.035, groundHeight(b.x, b.z) + 0.035);
+    pools.setMatrixAt(i, m4.makeTranslation(b.x, py, b.z));
   });
   bulbs.frustumCulled = false;
   pools.frustumCulled = false;
@@ -727,31 +733,43 @@ function buildBeachTouristZone(c: BCtx, rng: Rng) {
     const x = -480 + i * 32 + rng.range(-7, 7);
     const z = 545 + rng.range(-8, 36);
     if (Math.abs(x - PIER_X) < 16) continue;
+    const y0 = Math.max(0, terrainHeightAt(x, z));
     const ch = c.chunk(x, z);
     const col = cols[i % cols.length];
-    // umbrella pole + tilted canopy
-    c.b.add('propMetal', cyl(0.05, 0.05, 2.35, x, 0, z, 0xe8eaec, 6), ch);
+    // umbrella pole embedded cleanly into sand + canopy
+    c.b.add('propMetal', cyl(0.05, 0.05, 2.55, x, y0 - 0.2, z, 0xe8eaec, 6), ch);
     const cone = new THREE.ConeGeometry(1.75, 0.58, 8);
-    cone.translate(x, 2.35, z);
+    cone.translate(x, y0 + 2.35, z);
     c.b.add('prop', finish(cone, col), ch);
-    // beach towel & cooler
-    c.b.add('prop', box(1.05, 0.04, 2.1, x + 0.9, 0.02, z + 0.5, cols[(i + 2) % cols.length], rng.range(-0.3, 0.3)), ch);
-    if (i % 3 === 0) c.b.add('prop', box(0.65, 0.42, 0.42, x - 0.85, 0.02, z + 0.4, 0x2a7de1), ch);
+    // beach towel & cooler seated flush on sand
+    c.b.add('prop', box(1.05, 0.04, 2.1, x + 0.9, y0 + 0.01, z + 0.5, cols[(i + 2) % cols.length], rng.range(-0.3, 0.3)), ch);
+    if (i % 3 === 0) c.b.add('prop', box(0.65, 0.42, 0.42, x - 0.85, y0, z + 0.4, 0x2a7de1), ch);
   }
-  // Lifeguard towers
+  // Lifeguard towers with grounded pilings
   for (const lx of [-340, 20, 260]) {
     const lz = 576, ch = c.chunk(lx, lz);
-    for (const ox of [-1.2, 1.2]) for (const oz of [-1.2, 1.2]) c.b.add('wood', box(0.22, 2.6, 0.22, lx + ox, 0, lz + oz, 0xa87d4b), ch);
-    c.b.add('prop', box(3.0, 2.2, 3.0, lx, 2.5, lz, 0xf2f4f7), ch);
-    c.b.add('prop', box(3.4, 0.28, 3.4, lx, 4.7, lz, 0xd63638), ch);
-    c.b.add('glass', box(2.5, 0.9, 3.05, lx, 3.3, lz, 0x2a4e60), ch);
-    c.world.addBox(lx - 1.5, lx + 1.5, lz - 1.5, lz + 1.5, 4.8, 'lifeguard');
+    const y0 = Math.max(0, terrainHeightAt(lx, lz));
+    for (const ox of [-1.2, 1.2]) for (const oz of [-1.2, 1.2]) c.b.add('wood', box(0.22, 2.85, 0.22, lx + ox, y0 - 0.25, lz + oz, 0xa87d4b), ch);
+    c.b.add('prop', box(3.0, 2.2, 3.0, lx, y0 + 2.5, lz, 0xf2f4f7), ch);
+    c.b.add('prop', box(3.4, 0.28, 3.4, lx, y0 + 4.7, lz, 0xd63638), ch);
+    c.b.add('glass', box(2.5, 0.9, 3.05, lx, y0 + 3.3, lz, 0x2a4e60), ch);
+    c.world.addBox(lx - 1.5, lx + 1.5, lz - 1.5, lz + 1.5, y0 + 4.8, 'lifeguard');
   }
 }
 
-/** Populates outer-map landmarks across the 10km x 10km world (San Nova Intl Airport, Nova Keys Resort, Golden Dunes Oasis, North Observatory). */
+/** Populates expanded suburbs, 6 rural highway gas stations, airport, island resort, desert motel & outer landmarks. */
 function buildOuterLandmarks(c: BCtx, rng: Rng) {
-  // 0. San Nova International Airport (Eastern Coastal Plains, x = 1220..2180, z = -410..-110)
+  // 0a. Expanded Suburban Neighborhoods ringing the urban core
+  for (const sub of SUBURBAN_ZONES) {
+    addSuburbanDistrict(c, sub);
+  }
+
+  // 0b. 6 Rural Highway Gas Stations & Truck Stops along the outer expressways & beltway
+  for (const st of RURAL_GAS_STATIONS) {
+    addRuralGasStation(c, st);
+  }
+
+  // 0c. San Nova International Airport (Eastern Coastal Plains, x = 1220..2180, z = -410..-110)
   addAirport(c);
 
   // 1. Nova Keys Resort Island (south across the cable-stayed ocean causeway)
@@ -759,7 +777,8 @@ function buildOuterLandmarks(c: BCtx, rng: Rng) {
   {
     const ch = c.chunk(isl.cx, isl.cz);
     const y0 = Math.max(1.8, terrainHeightAt(isl.cx, isl.cz));
-    // Resort hotel tower & pool plaza
+    // Grounded foundation skirt + Resort hotel tower & pool plaza
+    c.b.add('prop', box(44, 1.4, 22, isl.cx, y0 - 1.2, isl.cz + 40, 0xb8ad98), ch);
     c.b.add('f_apartment', box(42, 36, 20, isl.cx, y0, isl.cz + 40, 0xfff0d8), ch);
     c.b.add('prop', box(46, 1.2, 24, isl.cx, y0 + 36, isl.cz + 40, 0xd8c8a8), ch);
     c.b.add('pool', box(28, 0.2, 14, isl.cx, y0 + 0.05, isl.cz + 6, 0x35c4e6), ch);
@@ -776,8 +795,9 @@ function buildOuterLandmarks(c: BCtx, rng: Rng) {
   // 2. Golden Dunes Oasis & Desert Motel (West Dunes at -2200, 1200)
   {
     const ox = -2200, oz = 1200;
-    const y0 = terrainHeightAt(ox, oz);
+    const y0 = Math.max(0, terrainHeightAt(ox, oz));
     const ch = c.chunk(ox, oz);
+    c.b.add('prop', box(112, 0.8, 92, ox, y0 - 0.72, oz, 0x7c7465), ch);
     c.b.add('g_asph', flat(ox - 55, oz - 45, ox + 55, oz + 45, y0 + 0.08, (px, pz) => [px / 6, pz / 6]), ch);
     c.b.add('f_stone', box(38, 8.4, 14, ox, y0, oz - 24, 0xe8caa0), ch);
     c.b.add('prop', box(18, 4.5, 10, ox - 28, y0, oz + 12, 0xd85a3a), ch);
@@ -791,11 +811,12 @@ function buildOuterLandmarks(c: BCtx, rng: Rng) {
   // 3. North Ridge Observatory & Radio Peak (0, -3400)
   {
     const nx = 0, nz = -3400;
-    const y0 = terrainHeightAt(nx, nz);
+    const y0 = Math.max(0, terrainHeightAt(nx, nz));
     const ch = c.chunk(nx, nz);
+    c.b.add('prop', cyl(21.5, 22.5, 1.2, nx, y0 - 0.9, nz, 0x8e949c, 20), ch);
     c.b.add('prop', cyl(18, 20, 10, nx, y0, nz, 0xe6e8ec, 20), ch);
     c.b.add('prop', sph(17, nx, y0 + 10, nz, 0xf2f4f8, 1, 0.85, 1, 16), ch);
-    c.b.add('propMetal', box(3, 18, 3, nx + 24, y0, nz - 10, 0x9aa2a8), ch);
+    c.b.add('propMetal', box(3, 18, 3, nx + 24, y0 - 0.35, nz - 10, 0x9aa2a8), ch);
     c.world.addCircle(nx, nz, 20, y0 + 20, 'observatory');
     c.mapRects.push({ x0: nx - 30, z0: nz - 30, x1: nx + 30, z1: nz + 30, c: '#c8d0d8' });
     c.places.observatory = { x: nx, z: nz };
@@ -805,7 +826,9 @@ function buildOuterLandmarks(c: BCtx, rng: Rng) {
   const hubs: [number, number][] = [[-3000, 0], [3000, 0], [0, -3000], [-3000, -3000], [3000, -3000]];
   for (const [hx, hz] of hubs) {
     const ch = c.chunk(hx, hz);
-    const y0 = terrainHeightAt(hx, hz);
+    const y0 = Math.max(0, terrainHeightAt(hx, hz));
+    c.b.add('prop', box(25, 0.8, 19, hx + 46, y0 - 0.6, hz - 38, 0x7c8188), ch);
+    c.b.add('prop', box(33, 0.8, 23, hx - 52, y0 - 0.6, hz + 40, 0x7c8188), ch);
     c.b.add('f_office', box(24, 14, 18, hx + 46, y0, hz - 38, 0xd8dce0), ch);
     c.b.add('f_industrial', box(32, 10, 22, hx - 52, y0, hz + 40, 0xb8bec2), ch);
     c.world.addBox(hx + 34, hx + 58, hz - 47, hz - 29, y0 + 14);
@@ -813,11 +836,15 @@ function buildOuterLandmarks(c: BCtx, rng: Rng) {
     c.mapRects.push({ x0: hx - 70, z0: hz - 50, x1: hx + 60, z1: hz + 55, c: '#787e88' });
   }
 
-  // Scattered scenic desert palms & northern hillside pines
-  for (let i = 0; i < 75; i++) {
+  // Scattered scenic desert palms & northern hillside pines (skip suburbs, airport, gas stations & highways)
+  const ap = DECK.AIRPORT;
+  for (let i = 0; i < 85; i++) {
     const rx = rng.range(-4200, 4200), rz = rng.range(-4200, 2200);
     if (Math.abs(rx) < 760 && Math.abs(rz) < 760) continue;
     if (isOceanAt(rx, rz)) continue;
+    if (isInSuburbanZone(rx, rz, 24)) continue;
+    if (nearestRuralGasStation(rx, rz).dist < 78) continue;
+    if (rx >= ap.x0 - 40 && rx <= ap.x1 + 40 && rz >= ap.z0 - 40 && rz <= ap.z1 + 60) continue;
     if (Math.abs(rx) < 55 || Math.abs(rz) < 55 || Math.abs(Math.abs(rx) - 3000) < 55 || Math.abs(rz + 3000) < 55) continue;
     const kind = rx < -750 ? 2 : rz < -750 ? 1 : 0;
     addTree(c, rx, rz, kind, rng.range(0.95, 1.45));

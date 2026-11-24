@@ -2,6 +2,7 @@
 import * as THREE from 'three';
 import { WEAPONS, clamp, isMeleeWeapon } from './config';
 import { muzzleWorld } from './humans';
+import { BARE_HAND_MOVES, BARE_HAND_SEQUENCE } from './subAnimations';
 import type { Game } from './Game';
 import type { Ped } from './ped';
 import type { Prop } from './props';
@@ -188,11 +189,33 @@ export function playerFire(g: Game) {
 export function playerMelee(g: Game) {
   const p = g.player;
   const w = WEAPONS[p.weapon];
-  p.fireT = 1 / w.rate;
-  p.punchT = 0.001;
+  const isFists = p.weapon === 'fists';
+  let dmgBase: number = w.dmg;
+  let reach = p.weapon === 'katana' ? 3.2 : p.weapon === 'bat' ? 2.9 : 2.35;
+  let cone = p.weapon === 'katana' ? 0.15 : 0.35;
+  let knock = p.weapon === 'katana' ? 4.2 : 3.2;
+
+  if (isFists) {
+    const move = BARE_HAND_SEQUENCE[p.comboIdx % BARE_HAND_SEQUENCE.length];
+    const spec = BARE_HAND_MOVES[move];
+    p.punchMove = move;
+    p.punchDur = spec.duration;
+    p.punchT = 0.001;
+    p.fireT = spec.duration * 0.72;
+    p.comboIdx = (p.comboIdx + 1) % BARE_HAND_SEQUENCE.length;
+    p.comboResetT = 1.65;
+    p.guardT = 2.8;
+    dmgBase = spec.damage;
+    reach = spec.reach;
+    cone = spec.cone;
+    knock = spec.knockback;
+  } else {
+    p.fireT = 1 / w.rate;
+    p.punchDur = p.weapon === 'katana' ? 0.34 : 0.38;
+    p.punchT = 0.001;
+  }
+
   const fx = Math.sin(p.yaw), fz = Math.cos(p.yaw);
-  const reach = p.weapon === 'katana' ? 3.2 : p.weapon === 'bat' ? 2.9 : 2.3;
-  const cone = p.weapon === 'katana' ? 0.15 : 0.35;
   let hitAny = false;
   for (const o of g.peds) {
     if (o.dead) continue;
@@ -200,10 +223,13 @@ export function playerMelee(g: Game) {
     const d = Math.hypot(dx, dz);
     if (d > reach || (dx * fx + dz * fz) / (d || 1) < cone) continue;
     const l = d || 1;
-    o.hit(g, w.dmg + Math.random() * 6, dx / l, dz / l, true, false, { katana: p.weapon === 'katana' });
-    o.vx += (dx / l) * (p.weapon === 'katana' ? 4.2 : 3);
-    o.vz += (dz / l) * (p.weapon === 'katana' ? 4.2 : 3);
-    if (o.dead) { o.rvx = (dx / l) * 5.5; o.rvz = (dz / l) * 5.5; }
+    o.hit(g, dmgBase + Math.random() * 5, dx / l, dz / l, true, false, {
+      katana: p.weapon === 'katana',
+      meleeKind: isFists ? 'fists' : 'melee',
+    });
+    o.vx += (dx / l) * knock;
+    o.vz += (dz / l) * knock;
+    if (o.dead) { o.rvx = (dx / l) * (knock + 1.8); o.rvz = (dz / l) * (knock + 1.8); }
     hitAny = true;
     if (p.weapon !== 'katana') break; // katana can cleave multiple targets
   }

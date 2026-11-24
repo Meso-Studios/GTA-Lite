@@ -4,9 +4,23 @@ import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js
 import { Rng, clamp } from './config';
 import { box, capsule, cyl, finish, sph } from './geo';
 import { makeContactShadow } from './textures';
-import { cloneHumanGlbPart, cloneSiteCharacterGlb, isGlbWorldMode, type SiteCharacterInstance } from './glbAssets';
+import {
+  cloneHumanGlbPart,
+  cloneSiteCharacterGlb,
+  disposeSiteCharacterGlb,
+  isGlbWorldMode,
+  updateSiteCharacterGlb,
+  type SiteCharacterInstance,
+} from './glbAssets';
 import { microtextures } from './microtextures';
 import { evaluateAnimationPose, selectContextAnimation } from './animations';
+import {
+  type BareHandMove,
+  type MotionAnimState,
+  createMotionAnimState,
+  evaluateBareHandPose,
+  stepMotionSubAnim,
+} from './subAnimations';
 
 export interface Look {
   gender: 'm' | 'f';
@@ -671,6 +685,9 @@ export interface HumanRig {
   weaponKind: GunKind | null;
   phase: number;
   pose: Record<string, number>;
+  poseVel: Record<string, number>;
+  motionState: MotionAnimState;
+  subAnimName: string;
   meshes: THREE.Mesh[];
   look: Look;
   entitySeed: number;
@@ -739,9 +756,23 @@ export function createHuman(L: Look): HumanRig {
       hipL: 0, hipR: 0, knL: 0, knR: 0, aLx: 0, aLz: 0, aRx: 0, aRz: 0, elL: 0, elR: 0,
       lean: 0, headX: 0, headY: 0, hipsY: 0.92, hipsX: 0, twist: 0, bank: 0,
     },
+    poseVel: {
+      hipL: 0, hipR: 0, knL: 0, knR: 0, aLx: 0, aLz: 0, aRx: 0, aRz: 0, elL: 0, elR: 0,
+      lean: 0, headX: 0, headY: 0, hipsY: 0, hipsX: 0, twist: 0, bank: 0,
+    },
+    motionState: createMotionAnimState(),
+    subAnimName: 'none',
   };
   upgradeHumanToGlb(rig);
   return rig;
+}
+
+export function disposeHumanRig(r: HumanRig) {
+  if (r.siteChar) {
+    r.root.remove(r.siteChar.root);
+    disposeSiteCharacterGlb(r.siteChar);
+    r.siteChar = null;
+  }
 }
 
 const glbHumanMatCache = new Map<string, THREE.MeshStandardMaterial>();
@@ -766,75 +797,88 @@ export function upgradeHumanToGlb(
   const L = r.look;
 
   if (!r.glbAttached) {
-    const topMat = getHumanPartMat(L.top, L.topStyle === 'suit' ? 0.62 : 0.78);
-    const skinMat = getHumanPartMat(L.skin, 0.58, 0.02);
+    const topRough = L.topStyle === 'suit' ? 0.62 : 0.78;
+    const topMat = getHumanPartMat(L.top, topRough);
     const botMat = getHumanPartMat(L.bottom, 0.84);
-    const shoeMat = getHumanPartMat(L.shoe, 0.48, 0.08);
-    const soleMat = getHumanPartMat(0xebeef2, 0.72, 0.02);
-    const beltMat = getHumanPartMat(0x181a1f, 0.34, 0.48);
 
-    const torsoGlb = cloneHumanGlbPart('TorsoMesh', topMat, beltMat);
+    const torsoGlb = cloneHumanGlbPart('torso', L.top, topRough);
     if (torsoGlb) {
       for (let i = 0; i < r.meshes.length; i++) {
         if (i !== 1) r.meshes[i].visible = false;
       }
 
       const b = L.build;
+      // Anatomical ribcage depth (~0.62 front-to-back ratio) eliminates barrel-chest silhouette
       torsoGlb.position.set(0, 0.03, 0);
-      torsoGlb.scale.set(b, 1.0, b);
+      torsoGlb.scale.set(b * 0.94, 1.0, b * 0.62);
       r.spine.add(torsoGlb);
 
-      // Solid collar & upper-chest seal so there is zero gap or bright back-face ring around the neck
-      const collarGeo = new THREE.CylinderGeometry(0.062 * b, 0.095 * b, 0.065, 14);
+      // Solid collar & upper-chest seal so there is zero gap around the neck
+      const collarGeo = new THREE.CylinderGeometry(0.058 * b, 0.088 * b, 0.075, 14);
       const collarMesh = new THREE.Mesh(collarGeo, topMat);
-      collarMesh.position.set(0, 0.505, 0);
+      collarMesh.position.set(0, 0.495, 0);
+      collarMesh.scale.set(1.0, 1.0, 0.72);
       collarMesh.castShadow = true;
       collarMesh.receiveShadow = true;
       r.spine.add(collarMesh);
-      r.head.position.y = 0.585;
+      r.head.position.y = 0.58;
 
-      const pelvisGlb = cloneHumanGlbPart('PelvisMesh', botMat);
-      if (pelvisGlb) {
-        pelvisGlb.position.set(0, 0.02, 0);
-        pelvisGlb.scale.set(b, 1.0, b);
-        r.hips.add(pelvisGlb);
-      }
+      // Grounded pelvis hip bridge matching trousers/skirt with natural anatomical depth
+      const pelvisGeo = new THREE.CylinderGeometry(0.142 * b, 0.132 * b, 0.16, 14);
+      const pelvisMesh = new THREE.Mesh(pelvisGeo, botMat);
+      pelvisMesh.position.set(0, 0.015, 0);
+      pelvisMesh.scale.set(0.95, 1.0, 0.66);
+      pelvisMesh.castShadow = true;
+      pelvisMesh.receiveShadow = true;
+      r.hips.add(pelvisMesh);
 
       if (L.bottomStyle === 'skirt') {
-        const skirtGeo = new THREE.CylinderGeometry(0.145 * b, 0.215 * b, 0.34, 14);
+        const skirtGeo = new THREE.CylinderGeometry(0.142 * b, 0.21 * b, 0.34, 14);
         const skirtMesh = new THREE.Mesh(skirtGeo, botMat);
         skirtMesh.position.set(0, -0.17, 0);
+        skirtMesh.scale.set(0.96, 1.0, 0.74);
         skirtMesh.castShadow = true;
         skirtMesh.receiveShadow = true;
         r.hips.add(skirtMesh);
       }
 
-      const sleeveMat = L.topStyle === 'tank' ? skinMat : topMat;
-      const foreMat = L.topStyle === 'long' || L.topStyle === 'jacket' || L.topStyle === 'suit' || L.topStyle === 'uniform' ? topMat : skinMat;
+      const sleeveHex = L.topStyle === 'tank' ? L.skin : L.top;
+      const sleeveRough = L.topStyle === 'tank' ? 0.58 : topRough;
+      const sleeveMat = getHumanPartMat(sleeveHex, sleeveRough);
+      const foreHex = L.topStyle === 'long' || L.topStyle === 'jacket' || L.topStyle === 'suit' || L.topStyle === 'uniform' ? L.top : L.skin;
+      const foreRough = foreHex === L.skin ? 0.58 : topRough;
+      const deltGeo = new THREE.SphereGeometry(0.064 * b, 12, 10);
       for (const arm of [r.armL, r.armR]) {
-        const ua = cloneHumanGlbPart('UpperArmMesh', sleeveMat);
+        const delt = new THREE.Mesh(deltGeo, sleeveMat);
+        delt.position.set(0, -0.01, 0);
+        delt.scale.set(1.0, 0.92, 0.85);
+        delt.castShadow = true;
+        arm.add(delt);
+        const ua = cloneHumanGlbPart('arm_u', sleeveHex, sleeveRough);
         if (ua) {
           ua.position.set(0, -0.02, 0);
-          ua.scale.set(b * 0.9, 1.0, b * 0.9);
+          ua.scale.set(b * 0.88, 1.0, b * 0.84);
           arm.add(ua);
         }
       }
       for (const el of [r.elL, r.elR]) {
-        const fa = cloneHumanGlbPart('ForeArmMesh', foreMat);
-        if (fa) { fa.scale.set(b, 1.04, b); el.add(fa); }
-        const hd = cloneHumanGlbPart('HandMesh', skinMat);
+        const fa = cloneHumanGlbPart('arm_l', foreHex, foreRough);
+        if (fa) { fa.scale.set(b * 0.94, 1.04, b * 0.94); el.add(fa); }
+        const hd = cloneHumanGlbPart('hand', L.skin, 0.58);
         if (hd) { hd.position.set(0, -0.25, 0); el.add(hd); }
       }
-      const thighMat = L.bottomStyle === 'skirt' ? skinMat : botMat;
-      const shinMat = L.bottomStyle === 'shorts' || L.bottomStyle === 'skirt' ? skinMat : botMat;
+      const thighHex = L.bottomStyle === 'skirt' ? L.skin : L.bottom;
+      const thighRough = L.bottomStyle === 'skirt' ? 0.58 : 0.84;
+      const shinHex = L.bottomStyle === 'shorts' || L.bottomStyle === 'skirt' ? L.skin : L.bottom;
+      const shinRough = shinHex === L.skin ? 0.58 : 0.84;
       for (const leg of [r.legL, r.legR]) {
-        const th = cloneHumanGlbPart('ThighMesh', thighMat);
-        if (th) { th.scale.set(b, 1.06, b); leg.add(th); }
+        const th = cloneHumanGlbPart('leg_u', thighHex, thighRough);
+        if (th) { th.scale.set(b * 0.94, 1.06, b * 0.9); leg.add(th); }
       }
       for (const kn of [r.knL, r.knR]) {
-        const sh = cloneHumanGlbPart('ShinMesh', shinMat);
-        if (sh) { sh.scale.set(b, 1.04, b); kn.add(sh); }
-        const shoe = cloneHumanGlbPart('ShoeMesh', shoeMat, soleMat);
+        const sh = cloneHumanGlbPart('leg_l', shinHex, shinRough);
+        if (sh) { sh.scale.set(b * 0.94, 1.04, b * 0.92); kn.add(sh); }
+        const shoe = cloneHumanGlbPart('shoe', L.shoe, 0.48);
         if (shoe) { shoe.position.set(0, -0.41, 0.01); kn.add(shoe); }
       }
 
@@ -842,10 +886,16 @@ export function upgradeHumanToGlb(
     }
   }
 
-  // Optional Model-Site skeletal characters (Soldier.glb / CesiumMan.glb) for standing/walking NPCs
-  if (hdGlbMode && kindHint !== 'player' && kindHint !== 'guy') {
+  // Optional Model-Site skeletal characters: Soldier.glb for tactical/police roles, CesiumMan.glb sparingly for walkers
+  const allowSiteChar =
+    hdGlbMode &&
+    kindHint !== 'player' &&
+    kindHint !== 'guy' &&
+    (kindHint === 'cop' || kindHint === 'gang' || (kindHint === 'civ' && r.entitySeed % 7 === 0));
+  if (allowSiteChar) {
     if (!r.siteChar) {
-      const sc = cloneSiteCharacterGlb(kindHint, r.entitySeed);
+      const siteKey: 'soldier' | 'cesium' = kindHint === 'cop' || kindHint === 'gang' ? 'soldier' : 'cesium';
+      const sc = cloneSiteCharacterGlb(siteKey);
       if (sc) {
         r.siteChar = sc;
         r.root.add(sc.root);
@@ -882,6 +932,8 @@ export interface AnimIn {
   aim: number; // 0..1 weapon raised
   aimPitch: number;
   punch: number; // 0..1 progress, 0 = none
+  punchMove?: BareHandMove;
+  boxingGuard?: number; // 0..1 raised boxing guard blend
   isPlayer?: boolean;
   panic?: boolean;
   steer?: number;
@@ -907,9 +959,10 @@ export function animateHuman(r: HumanRig, dt: number, a: AnimIn) {
   };
   const holding = !!r.weapon;
   const wk = r.weaponKind;
+  const guardW = clamp(a.boxingGuard ?? 0, 0, 1);
   r.shadow.visible = a.mode === 'stand' && !a.airborne;
 
-  // Model-Site rigged .glb character playback (Soldier.glb / CesiumMan.glb) for standing/walking/running unarmed NPCs
+  // Model-Site rigged .glb character playback (Soldier.glb / CesiumMan.glb) for calm standing/walking/running unarmed NPCs
   if (r.siteChar) {
     const useSiteChar =
       isGlbWorldMode() &&
@@ -919,21 +972,15 @@ export function animateHuman(r: HumanRig, dt: number, a: AnimIn) {
       !a.panic &&
       !a.crouch &&
       !a.slide &&
-      !a.airborne;
+      !a.airborne &&
+      a.punch <= 0 &&
+      guardW < 0.05 &&
+      (a.flinch ?? 0) < 0.05;
     r.siteChar.root.visible = useSiteChar;
     r.hips.visible = !useSiteChar;
     if (useSiteChar) {
-      const targetAct: 'idle' | 'walk' | 'run' =
-        a.speed > 3.6 ? 'run' : a.speed > 0.2 ? 'walk' : 'idle';
-      if (r.siteChar.currentAction !== targetAct) {
-        const prev = r.siteChar.currentAction ? r.siteChar.actions[r.siteChar.currentAction] : undefined;
-        const next = r.siteChar.actions[targetAct] ?? r.siteChar.actions.walk ?? r.siteChar.actions.idle;
-        if (prev && prev !== next) prev.fadeOut(0.18);
-        if (next) next.reset().fadeIn(0.18).play();
-        r.siteChar.currentAction = targetAct;
-      }
-      r.siteChar.mixer.update(dt * (targetAct === 'walk' ? clamp(a.speed / 1.5, 0.75, 1.5) : 1.0));
-      r.animClipName = `site_${r.siteChar.key}_${targetAct}`;
+      updateSiteCharacterGlb(r.siteChar, dt, a.speed, !!a.crouch);
+      r.animClipName = `site_${r.siteChar.kind}_${r.siteChar.activeClip}`;
       return;
     }
   } else {
@@ -1147,36 +1194,110 @@ export function animateHuman(r: HumanRig, dt: number, a: AnimIn) {
         T.aRx = -0.38; T.elR = -1.08; T.aRz = -0.1;
       }
     }
-    if (a.punch > 0) {
+    // Smooth physics-reactive sub-animations (sudden run-stop balance catch, landing knee absorption,
+    // quick-start lean, sharp turn pivot & hit-stumble recovery) eliminate mechanical/cubic transitions
+    const sub = stepMotionSubAnim(
+      r.motionState,
+      {
+        speed: sp,
+        airborne: !!a.airborne,
+        turnRate: a.turnRate ?? 0,
+        flinch: a.flinch ?? 0,
+        crouch: !!a.crouch,
+        slide: !!a.slide,
+        stridePhase: r.phase,
+      },
+      dt,
+    );
+    r.subAnimName = sub.activeSub;
+    T.hipsY += sub.hipsY;
+    T.hipsX += sub.hipsX;
+    T.lean += sub.lean;
+    T.twist += sub.twist;
+    T.bank += sub.bank;
+    T.headX += sub.headX;
+    T.headY += sub.headY;
+    T.hipL += sub.hipL;
+    T.hipR += sub.hipR;
+    T.knL = Math.max(0.02, T.knL + sub.knL);
+    T.knR = Math.max(0.02, T.knR + sub.knR);
+    if (!holding && a.punch <= 0 && guardW < 0.05) {
+      T.aLx += sub.aLx;
+      T.aLz += sub.aLz;
+      T.aRx += sub.aRx;
+      T.aRz += sub.aRz;
+      T.elL += sub.elL;
+      T.elR += sub.elR;
+    }
+    if (sub.springBoost > 0) rate = Math.max(rate, 16 + sub.springBoost * 10);
+
+    // Smooth bare-hand boxing guard & varied strikes (left jab, right cross, left/right hooks, uppercut, haymaker)
+    if (!holding && (a.punch > 0 || guardW > 0.02) && !a.panic) {
+      const move = a.punchMove ?? 'jab_left';
+      const bp = evaluateBareHandPose(move, a.punch, Math.max(guardW, a.punch > 0 ? 1 : 0), animClock);
+      const blend = a.punch > 0 ? 1 : guardW;
+      const legBlend = blend * clamp(1 - sp / 3.5, 0.15, 1);
+      T.aLx = T.aLx * (1 - blend) + bp.aLx * blend;
+      T.aLz = T.aLz * (1 - blend) + bp.aLz * blend;
+      T.aRx = T.aRx * (1 - blend) + bp.aRx * blend;
+      T.aRz = T.aRz * (1 - blend) + bp.aRz * blend;
+      T.elL = T.elL * (1 - blend) + bp.elL * blend;
+      T.elR = T.elR * (1 - blend) + bp.elR * blend;
+      T.lean = T.lean * (1 - blend * 0.75) + bp.lean * blend * 0.75;
+      T.twist = T.twist * (1 - blend * 0.85) + bp.twist * blend * 0.85;
+      T.bank = T.bank * (1 - blend * 0.7) + bp.bank * blend * 0.7;
+      T.headX = T.headX * (1 - blend * 0.6) + bp.headX * blend * 0.6;
+      T.headY = T.headY * (1 - blend * 0.6) + bp.headY * blend * 0.6;
+      T.hipsY += bp.hipsY * legBlend;
+      T.hipL += bp.hipL * legBlend;
+      T.hipR += bp.hipR * legBlend;
+      T.knL = Math.max(0.02, T.knL + bp.knL * legBlend);
+      T.knR = Math.max(0.02, T.knR + bp.knR * legBlend);
+      rate = Math.max(rate, a.punch > 0 ? 28 : 16);
+      if (a.punch > 0) r.animClipName = `combat_barehand_${move}`;
+    } else if (a.punch > 0) {
       const s = Math.sin(a.punch * Math.PI);
       if (wk === 'katana') {
-        // Wide diagonal two-hand katana cleave slash
         const sweep = (a.punch - 0.5) * 2.2;
         T.aRx = -1.65 * s; T.aRz = -0.65 + sweep * 0.95; T.elR = -0.18 * s;
         T.aLx = -1.25 * s; T.aLz = -0.35 + sweep * 0.5; T.elL = -0.45;
         T.twist = -0.82 * s + sweep * 0.35; T.lean = 0.22 * s;
-        rate = 48;
+        rate = 34;
       } else {
-        T.aRx = -1.62 * s; T.elR = -0.18 * s; T.twist = -0.58 * s; T.lean = 0.14 * s;
-        T.aLx = 0.52 * s;
-        rate = 42;
+        // Bat melee swing
+        const sweep = (a.punch - 0.45) * 2.0;
+        T.aRx = -1.55 * s; T.aRz = -0.52 + sweep * 0.82; T.elR = -0.25 * s;
+        T.twist = -0.72 * s + sweep * 0.28; T.lean = 0.16 * s;
+        T.aLx = 0.42 * s;
+        rate = 30;
       }
     }
     // Hit flinch stagger overlay
     if (a.flinch && a.flinch > 0.01) {
       const fl = clamp(a.flinch, 0, 1);
-      T.lean -= 0.34 * fl;
-      T.headX -= 0.28 * fl;
-      T.twist += 0.28 * fl;
-      T.aLx -= 0.32 * fl;
-      T.aRx -= 0.32 * fl;
-      rate = Math.max(rate, 32);
+      T.lean -= 0.3 * fl;
+      T.headX -= 0.26 * fl;
+      T.twist += 0.26 * fl;
+      T.aLx -= 0.28 * fl;
+      T.aRx -= 0.28 * fl;
+      rate = Math.max(rate, 26);
     }
   }
 
+  // Second-order critically-damped spring integration for buttery-smooth, velocity-continuous joint motion
   const P = r.pose;
-  const k = 1 - Math.exp(-rate * dt);
-  for (const key in T) P[key] += (T[key] - P[key]) * k;
+  const V = r.poseVel;
+  const safeDt = Math.min(Math.max(dt, 0.0005), 0.05);
+  const omega = clamp(rate * 1.05, 5.5, 36);
+  const expTerm = Math.exp(-omega * safeDt);
+  for (const key in T) {
+    const cur = P[key] ?? 0;
+    const vel = V[key] ?? 0;
+    const diff = cur - T[key];
+    const tmp = (vel + omega * diff) * safeDt;
+    V[key] = (vel - omega * tmp) * expTerm;
+    P[key] = T[key] + (diff + tmp) * expTerm;
+  }
   r.hips.position.set(P.hipsX, P.hipsY, 0);
   r.legL.rotation.x = P.hipL; r.legR.rotation.x = P.hipR;
   r.knL.rotation.x = P.knL; r.knR.rotation.x = P.knR;

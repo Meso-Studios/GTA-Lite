@@ -30,6 +30,7 @@ import { Look } from './humans';
 import { Collider } from './world';
 import { AmbientCandidate, AmbientDialogueController, AmbientSubtitle } from './ambientDialogue';
 import { GLB_CITY_LANDMARKS, cloneBuildingGlb, cloneLandmarkPropGlb, getGlbStatus, isGlbWorldMode, onGlbAssetReady, preloadGlbAssets, setGlbRtx, setGlbWorldMode } from './glbAssets';
+import type { BareHandMove } from './subAnimations';
 import { NpcVoiceEngine, VoiceKind } from './npcVoices';
 import { ANIMATION_COUNT } from './animations';
 import { TrafficManager, getDistrictTrafficMultiplier } from './trafficManager';
@@ -190,7 +191,7 @@ export class Game {
     } as Record<WeaponId, number>,
     owned: new Set<WeaponId>(['fists', 'bat', 'katana', 'pistol', 'silenced', 'revolver', 'smg', 'shotgun', 'rifle', 'sniper', 'rpg', 'grenade']),
     rig: null as unknown as HumanRig, vehicle: null as Vehicle | null,
-    alive: true, fireT: 0, punchT: 0, jumpT: 0, hurtT: 0,
+    alive: true, fireT: 0, punchT: 0, punchDur: 0.36, punchMove: 'jab_left' as BareHandMove, comboIdx: 0, comboResetT: 0, guardT: 0, jumpT: 0, hurtT: 0,
     move: createMovementState(0.16) as MovementState,
     stepT: 0,
     sandPuffT: 0,
@@ -344,6 +345,10 @@ export class Game {
     this.scene.add(this.glbPropCluster);
     this.fx = new FX(this.scene);
     this.mapR = new MapRenderer(this.city);
+    this.renderer.domElement.addEventListener('webglcontextlost', (e) => {
+      e.preventDefault();
+      console.warn('[SanNova] WebGL context lost — pausing heavy GLB upgrades');
+    });
     this.glbUnsub = onGlbAssetReady(() => this.syncGlbAssets());
     for (let i = 0; i < 6; i++) {
       const l = new THREE.PointLight(0xffe8c4, 0, 26, 1.65);
@@ -563,16 +568,22 @@ export class Game {
   }
   /** Upgrades spawned vehicles, props, pickups, player, NPCs & curated landmarks to real .glb / Model-Site .glb models. */
   syncGlbAssets() {
-    if (this.player.rig) upgradeHumanToGlb(this.player.rig, this.hdGlbMode, 'player');
-    for (const p of this.peds) upgradeHumanToGlb(p.rig, this.hdGlbMode, p.rig.kindHint);
+    try {
+      if (this.player.rig) upgradeHumanToGlb(this.player.rig, this.hdGlbMode, 'player');
+    } catch { /* isolate player GLB upgrade */ }
+    for (const p of this.peds) {
+      try { upgradeHumanToGlb(p.rig, this.hdGlbMode, p.rig.kindHint); } catch { /* isolate ped GLB */ }
+    }
     for (const v of this.vehicles) {
-      upgradeVehicleToGlb(v.model, v.type, this.hdGlbMode, v === this.player.vehicle || v.tag === 'spawn-ferrari');
+      try {
+        upgradeVehicleToGlb(v.model, v.type, this.hdGlbMode, v === this.player.vehicle || v.tag === 'spawn-ferrari');
+      } catch { /* isolate vehicle GLB */ }
     }
     for (const pr of this.props) {
-      pr.setGlbMode(this.hdGlbMode);
+      try { pr.setGlbMode(this.hdGlbMode); } catch { /* isolate prop GLB */ }
     }
     for (const pk of this.pickups) {
-      pk.setGlbMode(this.hdGlbMode);
+      try { pk.setGlbMode(this.hdGlbMode); } catch { /* isolate pickup GLB */ }
     }
     this.staticDirty = true;
 
@@ -583,15 +594,18 @@ export class Game {
       for (const lm of GLB_CITY_LANDMARKS) {
         const key = `${lm.key}_${lm.x}_${lm.z}`;
         if (this.glbLandmarksPlaced.has(key)) continue;
-        const mesh = cloneBuildingGlb(lm.key, lm.tint);
-        if (!mesh) continue;
-        const gy = groundHeight(lm.x, lm.z);
-        mesh.position.set(lm.x, gy, lm.z);
-        mesh.rotation.y = lm.yaw;
-        if (lm.scale) mesh.scale.setScalar(lm.scale);
-        this.glbLandmarkGroup.add(mesh);
-        this.world.addBox(lm.x - lm.halfW, lm.x + lm.halfW, lm.z - lm.halfD, lm.z + lm.halfD, gy + lm.height, lm.label);
-        this.glbLandmarksPlaced.add(key);
+        try {
+          const mesh = cloneBuildingGlb(lm.key, lm.tint);
+          if (!mesh) continue;
+          const gy = groundHeight(lm.x, lm.z);
+          // Seat landmark slightly into the plaza slab so plinth never floats at curb edges
+          mesh.position.set(lm.x, gy - 0.08, lm.z);
+          mesh.rotation.y = lm.yaw;
+          if (lm.scale) mesh.scale.setScalar(lm.scale);
+          this.glbLandmarkGroup.add(mesh);
+          this.world.addBox(lm.x - lm.halfW, lm.x + lm.halfW, lm.z - lm.halfD, lm.z + lm.halfD, gy + lm.height, lm.label);
+          this.glbLandmarksPlaced.add(key);
+        } catch { /* isolate single landmark */ }
       }
 
       const heroProps: { key: 'palm' | 'lamp'; x: number; z: number; yaw: number; scale: number }[] = [
@@ -602,13 +616,15 @@ export class Game {
       for (const hp of heroProps) {
         const k = `${hp.key}_${hp.x}_${hp.z}`;
         if (this.glbPropsPlaced.has(k)) continue;
-        const obj = cloneLandmarkPropGlb(hp.key);
-        if (!obj) continue;
-        obj.position.set(hp.x, groundHeight(hp.x, hp.z), hp.z);
-        obj.rotation.y = hp.yaw;
-        obj.scale.setScalar(hp.scale);
-        this.glbPropCluster.add(obj);
-        this.glbPropsPlaced.add(k);
+        try {
+          const obj = cloneLandmarkPropGlb(hp.key);
+          if (!obj) continue;
+          obj.position.set(hp.x, groundHeight(hp.x, hp.z) - 0.04, hp.z);
+          obj.rotation.y = hp.yaw;
+          obj.scale.setScalar(hp.scale);
+          this.glbPropCluster.add(obj);
+          this.glbPropsPlaced.add(k);
+        } catch { /* isolate hero prop */ }
       }
     }
   }
@@ -1368,8 +1384,15 @@ export class Game {
     // fire (supports mouse and mobile fire button)
     p.fireT -= dt;
     this.recoilT = Math.max(0, this.recoilT - dt * 5.2);
-    p.punchT = p.punchT > 0 ? p.punchT + dt * 2.8 : 0;
-    if (p.punchT > 1) p.punchT = 0;
+    if (p.comboResetT > 0) {
+      p.comboResetT = Math.max(0, p.comboResetT - dt);
+      if (p.comboResetT === 0) p.comboIdx = 0;
+    }
+    if (p.guardT > 0) p.guardT = Math.max(0, p.guardT - dt);
+    if (p.punchT > 0) {
+      p.punchT += dt / Math.max(0.18, p.punchDur);
+      if (p.punchT >= 1) p.punchT = 0;
+    }
     const firingNow = k.fire || this.touch.fire;
     if (firingNow && p.fireT <= 0 && this.input.locked !== undefined) {
       const w = WEAPONS[p.weapon];
@@ -1381,12 +1404,15 @@ export class Game {
     p.rig.root.position.set(p.x, p.y - sandFoot.sinkY, p.z);
     p.rig.root.rotation.set(0, p.yaw, 0);
     p.rig.root.visible = !this.scope;
+    const fistGuard = p.weapon === 'fists' ? clamp(Math.max(aiming ? 1 : 0, p.guardT * 0.55), 0, 1) : 0;
     animateHuman(p.rig, dt, {
       mode: 'stand',
       speed: horizSp,
       aim: aiming ? 1 : 0,
       aimPitch: clamp(-this.camPitch * 0.9 + 0.2, -0.5, 0.7),
       punch: p.punchT,
+      punchMove: p.punchMove,
+      boxingGuard: fistGuard,
       crouch: p.move.crouching,
       slide: mRes.sliding,
       airborne: !p.onGround,
@@ -2092,12 +2118,13 @@ export class Game {
     const back = { x: door.x, z: door.z, yaw: door.yaw };
     this.interior = { room, back, name: door.name };
     this.insideT = 0;
+    const baseY = room.elevation.baseY;
     this.player.x = room.spawn.x;
     this.player.z = room.spawn.z;
-    this.player.y = 0.26; this.player.vx = 0; this.player.vz = 0; this.player.vy = 0;
-    this.player.move.y = 0.26; this.player.move.vx = 0; this.player.move.vy = 0; this.player.move.vz = 0;
-    this.player.yaw = Math.PI;
-    this.camYaw = Math.PI; this.camPitch = 0.14;
+    this.player.y = baseY; this.player.vx = 0; this.player.vz = 0; this.player.vy = 0;
+    this.player.move.y = baseY; this.player.move.vx = 0; this.player.move.vy = 0; this.player.move.vz = 0;
+    this.player.yaw = room.spawn.yaw;
+    this.camYaw = room.spawn.yaw; this.camPitch = 0.14;
     this.world.boundsOff = true;
     this.scope = false;
     this.player.rig.root.visible = true;

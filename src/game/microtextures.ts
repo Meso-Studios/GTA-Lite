@@ -390,6 +390,21 @@ export class PbrMicrotextureSystem {
     mat.needsUpdate = true;
   }
 
+  unregisterMaterial(mat: THREE.Material | null | undefined): void {
+    if (!mat) return;
+    this.entries.delete(mat as THREE.MeshStandardMaterial);
+  }
+
+  unregisterObject(root: THREE.Object3D | null | undefined): void {
+    if (!root) return;
+    root.traverse((obj) => {
+      if (!(obj as THREE.Mesh).isMesh) return;
+      const m = (obj as THREE.Mesh).material;
+      if (Array.isArray(m)) m.forEach((x) => this.entries.delete(x as THREE.MeshStandardMaterial));
+      else if (m) this.entries.delete(m as THREE.MeshStandardMaterial);
+    });
+  }
+
   isEnabled(): boolean {
     return this.enabled;
   }

@@ -230,6 +230,19 @@ const CROWD_ZONES: CrowdZone[] = [
   { x: DECK.ISLAND.cx, z: DECK.ISLAND.cz - 40, r: 75, beach: true, cap: 10 },
   // Golden Dunes Oasis Motel
   { x: -2200, z: 1200, r: 45, beach: false, cap: 6 },
+  // Expanded Suburban Neighborhoods (North Palms, Palmetto Heights, Bayview Heights)
+  { x: -220, z: -980, r: 58, beach: false, cap: 7 },
+  { x: 220, z: -980, r: 58, beach: false, cap: 7 },
+  { x: -980, z: -220, r: 58, beach: false, cap: 7 },
+  { x: -980, z: 220, r: 58, beach: false, cap: 7 },
+  { x: 960, z: 260, r: 55, beach: false, cap: 7 },
+  // Rural Highway Gas Stations / Truck Stops
+  { x: 76, z: -1850, r: 30, beach: false, cap: 5 },
+  { x: -1750, z: -76, r: 30, beach: false, cap: 5 },
+  { x: 2450, z: 76, r: 30, beach: false, cap: 5 },
+  { x: -1650, z: -2924, r: 30, beach: false, cap: 5 },
+  { x: -2924, z: -1450, r: 30, beach: false, cap: 5 },
+  { x: 2924, z: -1550, r: 30, beach: false, cap: 5 },
 ];
 
 export function streamCrowds(g: Game, dt: number) {

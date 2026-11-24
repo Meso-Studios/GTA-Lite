@@ -441,28 +441,48 @@ export function buildVehicle(type: VehicleType, paint: number, allowHeroSite = f
     body.push(box(W - 0.1, 0.55, 0.09, 0, 1.06, zs(2.38), white));
     trim.push(box(W - 0.3, 0.04, 2.2, 0, 1.0, zs(1.2), 0x1b1b1b));
   }
-  // mirrors
+  // sculpted side mirrors on stalks
   const mz = isVan ? 4.0 : pf.cabin[3][0] - 0.25;
   const my = isVan ? 1.7 : pf.cabin[3][1] + 0.12;
-  body.push(box(0.1, 0.1, 0.16, W / 2 + 0.07, my, zs(mz), white));
-  body.push(box(0.1, 0.1, 0.16, -W / 2 - 0.07, my, zs(mz), white));
+  for (const s of [-1, 1]) {
+    body.push(box(0.14, 0.085, 0.14, s * (W / 2 + 0.09), my + 0.02, zs(mz), white));
+    trim.push(box(0.08, 0.04, 0.06, s * (W / 2 + 0.02), my, zs(mz), 0x16181c));
+  }
 
-  // trim: bumpers, grille, plates, arches, door seams
-  const trimC = 0x131416;
-  trim.push(box(W - 0.05, 0.2, 0.2, 0, 0.36, L / 2 - 0.05, trimC));
-  trim.push(box(W - 0.05, 0.2, 0.2, 0, 0.36, -L / 2 + 0.05, trimC));
-  trim.push(box(W * 0.55, 0.16, 0.05, 0, isVan ? 0.7 : 0.62, L / 2 + 0.03, 0x0a0a0a));
-  trim.push(box(0.5, 0.12, 0.03, 0, 0.5, L / 2 + 0.1, 0xeeeeee));
-  trim.push(box(0.5, 0.12, 0.03, 0, 0.62, -L / 2 - 0.02, 0xeeeeee));
-  trim.push(box(W + 0.01, 0.06, L * 0.55, 0, 0.36, 0, 0x1a1a1c)); // side skirts
+  // trim: recessed grille + chrome slat, chin splitter, rear diffuser, twin exhausts, plates, arches, door seams
+  const trimC = 0x15171b;
+  trim.push(box(W - 0.04, 0.2, 0.22, 0, 0.36, L / 2 - 0.04, trimC));
+  trim.push(box(W + 0.04, 0.05, 0.26, 0, 0.28, L / 2 + 0.03, 0x0e1014)); // front chin splitter
+  trim.push(box(W - 0.04, 0.22, 0.22, 0, 0.36, -L / 2 + 0.04, trimC));
+  // radiator grille + horizontal chrome accent bars
+  const grilleY = isVan ? 0.72 : 0.62;
+  trim.push(box(W * 0.58, 0.22, 0.06, 0, grilleY, L / 2 + 0.025, 0x090a0d));
+  trim.push(box(W * 0.56, 0.024, 0.08, 0, grilleY + 0.05, L / 2 + 0.035, 0xcfd4dc));
+  trim.push(box(W * 0.52, 0.02, 0.08, 0, grilleY - 0.04, L / 2 + 0.035, 0xb8bfc8));
+  // rear diffuser & twin chrome exhaust tips
+  trim.push(box(W * 0.74, 0.12, 0.14, 0, 0.3, -L / 2 - 0.01, 0x0d0e12));
+  for (const s of [-1, 1]) {
+    const ex = cyl(0.048, 0.048, 0.18, 0, 0, 0, 0xd4dae2, 10);
+    ex.rotateX(Math.PI / 2);
+    ex.translate(s * (W * 0.28), 0.3, -L / 2 - 0.05);
+    trim.push(ex);
+  }
+  // license plates
+  trim.push(box(0.5, 0.12, 0.03, 0, 0.48, L / 2 + 0.11, 0xeeeeee));
+  trim.push(box(0.5, 0.12, 0.03, 0, 0.62, -L / 2 - 0.03, 0xeeeeee));
+  trim.push(box(W + 0.03, 0.07, L * 0.56, 0, 0.34, 0, 0x16181c)); // sculpted side skirts
+  // subtle hood accent crease & chrome window beltline
+  if (!isVan) {
+    trim.push(box(W * 0.03, 0.015, 1.1, 0, pf.cabin[3][1] - 0.02, zs(pf.cabin[3][0] + 0.55), 0x202226));
+  }
   const seamY = 0.5, seamH = isVan ? 1.3 : 0.5;
   const seamZ = type === 'pickup' ? [2.5, 3.2] : isVan ? [2.0, 4.0] : [1.2, 2.3, 3.5];
   for (const s of [-1, 1]) for (const z of seamZ) trim.push(box(0.012, seamH, 0.012, s * (W / 2 + 0.004), seamY + (isVan ? 0.4 : 0.38), zs(z), 0x101010));
   const hz = type === 'pickup' ? 2.7 : isVan ? 3.7 : 2.0;
   for (const s of [-1, 1]) {
-    trim.push(box(0.025, 0.02, 0.13, s * (W / 2 + 0.01), isVan ? 1.35 : 0.96, zs(hz), 0xc8c8c8));
+    trim.push(box(0.028, 0.022, 0.14, s * (W / 2 + 0.01), isVan ? 1.35 : 0.96, zs(hz), 0xd8dde4));
     for (const wz of [-sp.wheelBase / 2, sp.wheelBase / 2]) {
-      const d = cyl(sp.wheelR * 1.22, sp.wheelR * 1.22, 0.02, 0, 0, 0, 0x070707, 14);
+      const d = cyl(sp.wheelR * 1.24, sp.wheelR * 1.24, 0.025, 0, 0, 0, 0x08090c, 16);
       d.rotateZ(Math.PI / 2);
       d.translate(s * (W / 2 + 0.005), sp.wheelR, wz + (type === 'pickup' ? 0.1 : 0));
       trim.push(d);
@@ -474,6 +494,8 @@ export function buildVehicle(type: VehicleType, paint: number, allowHeroSite = f
       trim.push(box(0.02, 0.28, 0.75, s * (W / 2 + 0.014), 0.52, zs(0.75), 0xf4f4f4));
     }
     trim.push(box(W * 0.8, 0.02, 1.3, 0, 0.995, zs(3.8), 0xf4f4f4));
+    // police push-bumper bullbar
+    trim.push(box(W * 0.52, 0.36, 0.08, 0, 0.56, L / 2 + 0.14, 0x14161a));
   }
   if (type === 'taxi') {
     trim.push(box(0.02, 0.1, 1.8, W / 2 + 0.014, 0.65, zs(2.35), 0x111111));
@@ -658,6 +680,24 @@ export function upgradeVehicleToGlb(
 export function repaintVehicleGlb(m: VehicleModel, paintHex: number): void {
   m.paint = paintHex;
   if (m.glbShell) repaintGlbRoot(m.glbShell, paintHex);
+}
+
+/** Releases GLB shell & wheel attachments cleanly on vehicle despawn (shared geometries/materials stay cached). */
+export function disposeVehicleModel(m: VehicleModel): void {
+  if (m.glbShell) {
+    m.tiltGroup.remove(m.glbShell);
+    m.glbShell = null;
+  }
+  for (const w of m.wheels) {
+    if (w.glbWheel) {
+      w.spin.remove(w.glbWheel);
+      w.glbWheel = null;
+    }
+  }
+  if (m.dented) {
+    m.body.geometry.dispose();
+    m.dented = false;
+  }
 }
 
 /** Push vertices of the body inward near a local impact point (fender dents). */

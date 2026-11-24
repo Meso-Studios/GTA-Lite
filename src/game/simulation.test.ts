@@ -5,6 +5,8 @@ import {
   WORLD_HALF,
   DECK,
   OUTER_HIGHWAYS,
+  SUBURBAN_ZONES,
+  RURAL_GAS_STATIONS,
   deckHeight,
   isOceanAt,
   isOnOuterHighway,
@@ -23,6 +25,15 @@ import {
   WEAPON_SHOP_ORDER,
   isMeleeWeapon,
 } from './terrain';
+import {
+  BARE_HAND_MOVES,
+  BARE_HAND_SEQUENCE,
+  createMotionAnimState,
+  evaluateBareHandPose,
+  shouldNpcFightBack,
+  stepMotionSubAnim,
+} from './subAnimations';
+import { ROOM_SPECS } from './interiors';
 import { STORES, STORE_COUNT, getStoreByIndex, getStoreIndexByName } from './stores';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -834,6 +845,121 @@ test('all 18 local .glb, 5 site .glb packs, and 3 Draco decoder assets exist on 
     assert.ok(fs.existsSync(path.join(dracoDir, df)), `Missing Draco file: ${df}`);
   }
 });
+
+test('stepMotionSubAnim triggers sudden-stop balance catch, landing knee absorption, and sharp turn pivot', () => {
+  // 1. Sudden stop from full sprint -> triggers sudden_stop_catch with forward stumble lean & bracing arms
+  const st = createMotionAnimState();
+  for (let i = 0; i < 12; i++) {
+    stepMotionSubAnim(st, { speed: 8.4, airborne: false, turnRate: 0, flinch: 0, crouch: false, slide: false, stridePhase: i * 0.6 }, 0.03);
+  }
+  const catchOut = stepMotionSubAnim(st, { speed: 0.1, airborne: false, turnRate: 0, flinch: 0, crouch: false, slide: false, stridePhase: 7.2 }, 0.03);
+  assert.equal(catchOut.activeSub, 'sudden_stop_catch');
+  // Advance into peak balance catch frame (~0.16s)
+  let peakLean = 0;
+  let peakArmFlare = 0;
+  for (let i = 0; i < 8; i++) {
+    const o = stepMotionSubAnim(st, { speed: 0, airborne: false, turnRate: 0, flinch: 0, crouch: false, slide: false, stridePhase: 7.2 }, 0.03);
+    peakLean = Math.max(peakLean, o.lean);
+    peakArmFlare = Math.max(peakArmFlare, Math.abs(o.aLz) + Math.abs(o.aRz));
+  }
+  assert.ok(peakLean > 0.12, `Expected forward balance-catch lean > 0.12, got ${peakLean}`);
+  assert.ok(peakArmFlare > 0.18, `Expected arms flaring for balance > 0.18, got ${peakArmFlare}`);
+  // Settles cleanly back to 'none' after recovery
+  let settled = st.activeSub;
+  for (let i = 0; i < 35; i++) {
+    settled = stepMotionSubAnim(st, { speed: 0, airborne: false, turnRate: 0, flinch: 0, crouch: false, slide: false, stridePhase: 7.2 }, 0.03).activeSub;
+  }
+  assert.equal(settled, 'none');
+
+  // 2. Airborne landing -> triggers land_absorb with knee compression
+  const landSt = createMotionAnimState();
+  for (let i = 0; i < 12; i++) {
+    stepMotionSubAnim(landSt, { speed: 3.5, airborne: true, turnRate: 0, flinch: 0, crouch: false, slide: false, stridePhase: 0 }, 0.03);
+  }
+  const landOut = stepMotionSubAnim(landSt, { speed: 3.5, airborne: false, turnRate: 0, flinch: 0, crouch: false, slide: false, stridePhase: 0 }, 0.03);
+  assert.equal(landOut.activeSub, 'land_absorb');
+  const peakLand = stepMotionSubAnim(landSt, { speed: 3.0, airborne: false, turnRate: 0, flinch: 0, crouch: false, slide: false, stridePhase: 0 }, 0.08);
+  assert.ok(peakLand.hipsY < -0.05 && peakLand.knL > 0.15, 'Expected downward hip drop & knee bend on landing');
+
+  // 3. Sudden start triggers quick_start_lean, then steady run + sharp turn triggers sharp_turn_pivot
+  const turnSt = createMotionAnimState();
+  const startOut = stepMotionSubAnim(turnSt, { speed: 6.8, airborne: false, turnRate: 0, flinch: 0, crouch: false, slide: false, stridePhase: 0 }, 0.03);
+  assert.equal(startOut.activeSub, 'quick_start_lean');
+  for (let i = 0; i < 18; i++) {
+    stepMotionSubAnim(turnSt, { speed: 6.8, airborne: false, turnRate: 0, flinch: 0, crouch: false, slide: false, stridePhase: i * 0.4 }, 0.03);
+  }
+  let turnOut = stepMotionSubAnim(turnSt, { speed: 6.8, airborne: false, turnRate: 3.8, flinch: 0, crouch: false, slide: false, stridePhase: 7.5 }, 0.03);
+  for (let i = 0; i < 4; i++) {
+    turnOut = stepMotionSubAnim(turnSt, { speed: 6.8, airborne: false, turnRate: 3.8, flinch: 0, crouch: false, slide: false, stridePhase: 7.8 + i * 0.3 }, 0.03);
+  }
+  assert.equal(turnOut.activeSub, 'sharp_turn_pivot');
+  assert.ok(Math.abs(turnOut.bank) > 0.05 && Math.abs(turnOut.twist) > 0.05);
+});
+
+test('bare-hand fighting system evaluates 6 distinct smooth moves, boxing guard stance, and realistic NPC retaliation', () => {
+  assert.equal(BARE_HAND_SEQUENCE.length, 6);
+  const signatures = new Set<string>();
+  for (const move of BARE_HAND_SEQUENCE) {
+    const spec = BARE_HAND_MOVES[move];
+    assert.ok(spec.damage > 10 && spec.reach >= 2.2 && spec.duration >= 0.25);
+    const peak = evaluateBareHandPose(move, 0.46, 1.0, 1.2);
+    for (const [k, v] of Object.entries(peak)) {
+      assert.ok(Number.isFinite(v), `Bare-hand pose ${move}.${k} must be finite`);
+    }
+    signatures.add(`${peak.aLx.toFixed(2)}:${peak.aRx.toFixed(2)}:${peak.twist.toFixed(2)}:${peak.aLz.toFixed(2)}`);
+  }
+  assert.equal(signatures.size, 6, 'All 6 bare-hand moves must produce distinct strike poses');
+
+  // Boxing guard stance between punches raises both hands & bends both elbows
+  const guard = evaluateBareHandPose('jab_left', 0, 1.0, 0.5);
+  assert.ok(guard.aLx < -0.8 && guard.aRx < -0.8 && guard.elL < -1.0 && guard.elR < -1.0);
+
+  // NPC fight-back retaliation: ~35% of civilians fight back bare-handed, 0% against firearms/explosions
+  let brawlers = 0;
+  for (let id = 1; id <= 200; id++) {
+    if (shouldNpcFightBack(id, 'civ', null, 'fists')) brawlers++;
+    assert.equal(shouldNpcFightBack(id, 'civ', null, 'gun'), false);
+    assert.equal(shouldNpcFightBack(id, 'civ', null, 'explosion'), false);
+  }
+  assert.ok(brawlers >= 50 && brawlers <= 95, `Expected ~36% civilian brawler ratio (50..95/200), got ${brawlers}`);
+});
+
+test('all 9 interior kinds define unique handcrafted ROOM_SPECS footprints and architectural parameters', () => {
+  const kinds = Object.keys(ROOM_SPECS) as (keyof typeof ROOM_SPECS)[];
+  assert.equal(kinds.length, 9);
+  const shapes = new Set<string>();
+  for (const k of kinds) {
+    const s = ROOM_SPECS[k];
+    assert.ok(s.w >= 18 && s.d >= 16 && s.h >= 5.0, `Invalid dimensions for ${k}`);
+    assert.ok(s.mezzY > 2.4 && s.mezzY < s.h - 2.0, `Invalid mezzanine height for ${k}`);
+    shapes.add(`${s.w}x${s.d}x${s.h}:${s.floorMat}:${s.stairSide}`);
+  }
+  assert.ok(shapes.size >= 8, `Expected distinct architectural layouts across interiors, got ${shapes.size}/9`);
+});
+
+test('expanded suburban districts and 6 rural highway gas stations sit on flat terrain with proper district names', () => {
+  assert.equal(SUBURBAN_ZONES.length, 3);
+  for (const sub of SUBURBAN_ZONES) {
+    // Sample off-highway lot inside each suburban zone
+    const sx = sub.id === 'north_palms' ? -220 : (sub.x0 + sub.x1) / 2;
+    const sz = sub.id === 'palmetto_heights' ? -220 : (sub.z0 + sub.z1) / 2;
+    assert.equal(terrainHeightAt(sx, sz), 0, `Suburb ${sub.id} terrain must be flat (0)`);
+    assert.equal(districtNameAt(sx, sz), sub.name);
+    const surf = surfaceAt(sx, sz);
+    assert.ok(surf === 'road' || surf === 'sidewalk', `Suburb ${sub.id} surface must be paved/sidewalk, got ${surf}`);
+  }
+
+  assert.equal(RURAL_GAS_STATIONS.length, 6);
+  for (const st of RURAL_GAS_STATIONS) {
+    assert.equal(terrainHeightAt(st.x, st.z), 0, `Rural gas station ${st.id} pad must be flat (0)`);
+    assert.equal(districtNameAt(st.x, st.z), st.name);
+    assert.equal(surfaceAt(st.x, st.z), 'road');
+  }
+
+  // North Observatory is also flattened cleanly so it never floats
+  assert.equal(terrainHeightAt(0, -3400), 0);
+});
+
 
 
 

@@ -2,7 +2,16 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { Batcher, Collector, box, cone, cyl, finish, flat, gable, place, sign, sph, walls } from './geo';
-import { DECK, INNER_HALF, Rng } from './config';
+import {
+  DECK,
+  INNER_HALF,
+  Rng,
+  RuralGasStationDef,
+  SuburbanZone,
+  groundHeight,
+  isOnOuterHighway,
+  terrainHeightAt,
+} from './config';
 import { BAY, FLOOR_H, FacadeStyle, signUV } from './textures';
 import { STORES, StoreDef } from './stores';
 import { World } from './world';
@@ -168,17 +177,19 @@ function shrubTpl(): THREE.BufferGeometry {
 let shrubGeo: THREE.BufferGeometry | null = null;
 export function addShrub(c: BCtx, x: number, z: number, s = 1) {
   if (!shrubGeo) shrubGeo = shrubTpl();
-  c.b.add('leaf', place(shrubGeo, x, 0.16, z, c.rng.range(0, 6), s), c.chunk(x, z));
-  if (s > 0.8) c.world.addCircle(x, z, 0.45 * s, 1.4, 'shrub');
+  const gy = Math.max(0, groundHeight(x, z)) - 0.04;
+  c.b.add('leaf', place(shrubGeo, x, gy, z, c.rng.range(0, 6), s), c.chunk(x, z));
+  if (s > 0.8) c.world.addCircle(x, z, 0.45 * s, gy + 1.4, 'shrub');
 }
 export function addTree(c: BCtx, x: number, z: number, kind = -1, s = 1, collide = true) {
   const t = trees();
   const k = kind >= 0 ? kind : c.rng.pick([0, 0, 1, 2]);
   const sc = s * c.rng.range(0.82, 1.22);
   const yaw = c.rng.range(0, 6.28);
-  c.b.add('prop', place(t[k].wood, x, 0, z, yaw, sc), c.chunk(x, z));
-  c.b.add('leaf', place(t[k].leaf, x, 0, z, yaw, sc), c.chunk(x, z));
-  if (collide) c.world.addCircle(x, z, 0.4 * sc, 7, 'tree');
+  const gy = Math.max(0, groundHeight(x, z)) - 0.12;
+  c.b.add('prop', place(t[k].wood, x, gy, z, yaw, sc), c.chunk(x, z));
+  c.b.add('leaf', place(t[k].leaf, x, gy, z, yaw, sc), c.chunk(x, z));
+  if (collide) c.world.addCircle(x, z, 0.4 * sc, gy + 7, 'tree');
   if (c.rng.chance(0.35)) addShrub(c, x + c.rng.range(-2, 2), z + c.rng.range(-2, 2), 0.7);
 }
 let lampTpl: THREE.BufferGeometry | null = null;
@@ -195,9 +206,10 @@ export function addLamp(c: BCtx, x: number, z: number, dx: number, dz: number) {
     ], false)!;
   }
   const yaw = Math.atan2(dx, dz);
-  c.b.add('prop', place(lampTpl, x, 0, z, yaw), c.chunk(x, z));
-  c.world.addCircle(x, z, 0.26, 8.3, 'lamp');
-  c.lampBulbs.push({ x: x + dx * 2.2, y: 8.12, z: z + dz * 2.2 });
+  const gy = Math.max(0, terrainHeightAt(x, z));
+  c.b.add('prop', place(lampTpl, x, gy, z, yaw), c.chunk(x, z));
+  c.world.addCircle(x, z, 0.26, gy + 8.3, 'lamp');
+  c.lampBulbs.push({ x: x + dx * 2.2, y: gy + 8.12, z: z + dz * 2.2 });
 }
 
 // ------------------------------------------------------------ small helpers
@@ -458,18 +470,21 @@ export function addTower(c: BCtx, lot: Lot, floors: number) {
 }
 
 // ------------------------------------------------------------ houses
-export function addHouse(c: BCtx, lotCx: number, lotZFront: number, dirZ: number, lotX0: number, lotX1: number) {
+export function addHouse(c: BCtx, lotCx: number, lotZFront: number, dirZ: number, lotX0: number, lotX1: number, yBase?: number) {
   const r = c.rng;
   const w = r.pick([10.5, 12, 14]), d = r.pick([9, 10.5, 12]);
   const floors = r.chance(0.55) ? 2 : 1;
   const style: FacadeStyle = r.pick(['brick', 'apartment', 'stone', 'apartment']);
   const tint = r.pick(TINTS[style]);
   const hz = lotZFront - dirZ * (6 + d / 2);
+  const y0 = yBase ?? Math.max(0, terrainHeightAt(lotCx, hz));
   const yaw = dirZ > 0 ? 0 : Math.PI;
   const s = dirZ > 0 ? 1 : -1; // local->world sign
   const col = new Collector();
   const H = floors * FLOOR_H;
   const uOff = [r.int(0, 7) / 8, r.int(0, 7) / 8, r.int(0, 7) / 8, r.int(0, 7) / 8];
+  // Grounded concrete foundation plinth so no house ever floats on sloped terrain edges
+  col.add('prop', box(w + 0.4, 0.5, d + 0.4, 0, -0.35, 0, 0x8a8780));
   col.add('f_' + style, walls(w, H, d, 0, 0, 0, tint, uOff));
   // roof
   const roofCol = r.pick(HOUSE_ROOFS);
@@ -490,6 +505,7 @@ export function addHouse(c: BCtx, lotCx: number, lotZFront: number, dirZ: number
   for (const sx of [-1.6, 1.6]) col.add('prop', box(0.14, 2.7, 0.14, doorX + sx, 0.2, d / 2 + 1.7, 0xeeeeee));
   // garage
   const gx = w / 2 + 2.6;
+  col.add('prop', box(5.4, 0.45, d * 0.8 + 0.3, gx, -0.3, -d * 0.1, 0x8a8780));
   col.add('f_industrial', walls(5.2, 3.2, d * 0.8, gx, 0, -d * 0.1 + 0.0, 0xe8e0d0, [0, 0, 0, 0], 28, 28.8));
   col.add('prop', box(4.6, 0.3, d * 0.8 + 0.6, gx, 3.2, -d * 0.1, roofCol));
   col.add('prop', box(3.9, 2.4, 0.1, gx, 0.16, d * 0.3 + 0.05, 0x8f9498));
@@ -511,11 +527,14 @@ export function addHouse(c: BCtx, lotCx: number, lotZFront: number, dirZ: number
   col.add('prop', box(0.08, 1.0, 0.08, doorX + 3, 0.16, fz + 0.5, 0x555555));
   // pool in some backyards
   if (r.chance(0.18)) col.add('pool', flat(-w / 2 + 1, -d / 2 - 12, w / 2 - 1, -d / 2 - 4, 0.19, () => [0, 0]));
+  if (y0 !== 0) {
+    for (const it of col.items) it[1].translate(0, y0, 0);
+  }
   col.flush(c.b, lotCx, hz, yaw, c.chunk(lotCx, hz));
-  c.doors.push({ x: lotCx + s * doorX, z: hz + s * (d / 2 + 0.7), yaw: s * 0, name: 'APARTMENT', kind: 'apartment' });
+  c.doors.push({ x: lotCx + s * doorX, z: hz + s * (d / 2 + 0.7), yaw, name: 'APARTMENT', kind: 'apartment' });
   // collider (world space)
   const x0 = lotCx + s * (-w / 2), x1 = lotCx + s * (w / 2 + 5.2);
-  c.world.addBox(Math.min(x0, x1), Math.max(x0, x1), hz - d / 2 - 0.2, hz + d / 2 + 0.2, H + rh);
+  c.world.addBox(Math.min(x0, x1), Math.max(x0, x1), hz - d / 2 - 0.2, hz + d / 2 + 0.2, y0 + H + rh);
   pushRect(c, lotCx + s * (gx / 2 - 0.1 * 0), hz, w + 5.2, d, '#8a7a70');
   // trees
   if (r.chance(0.7)) addTree(c, lotCx + r.range(-6, 6), hz - dirZ * (d / 2 + 10), -1, 1);
@@ -1043,3 +1062,228 @@ export function beachProps(c: BCtx, pierX: number) {
   c.b.add('prop', box(12, 0.3, 10, pierX, 3.8, z1 - 8, 0xc0392b), ch(pierX, 650));
   c.collect.push({ x: pierX, z: z1 - 3 }, { x: -60, z: 590 }, { x: 250, z: 560 });
 }
+
+/**
+ * Hand-built paved suburban neighborhood district (100m residential blocks with avenues,
+ * curbs, sidewalks, grassy yards, rows of houses, streetlamps, shade trees, and corner markets).
+ */
+export function addSuburbanDistrict(c: BCtx, zone: SuburbanZone) {
+  const step = 100;
+  const roadHalf = 7;
+  const cols = Math.max(1, Math.floor((zone.x1 - zone.x0) / step));
+  const rows = Math.max(1, Math.floor((zone.z1 - zone.z0) / step));
+  const ox = (zone.x0 + zone.x1) / 2 - (cols * step) / 2;
+  const oz = (zone.z0 + zone.z1) / 2 - (rows * step) / 2;
+
+  // Paved suburban avenues & cross-streets
+  for (let i = 0; i <= cols; i++) {
+    const sx = ox + i * step;
+    if (Math.abs(sx) < 28 && zone.z1 < -650) continue; // keep North Expressway clear
+    const ch = c.chunk(sx, (zone.z0 + zone.z1) / 2);
+    c.b.add('g_asph', flat(sx - roadHalf, oz - roadHalf, sx + roadHalf, oz + rows * step + roadHalf, 0.03, (px, pz) => [px / 6, pz / 6]), ch);
+    c.mapRects.push({ x0: sx - roadHalf, z0: oz - roadHalf, x1: sx + roadHalf, z1: oz + rows * step + roadHalf, c: '#32363e' });
+  }
+  for (let j = 0; j <= rows; j++) {
+    const sz = oz + j * step;
+    if (Math.abs(sz) < 28 && zone.x1 < -650) continue; // keep West Expressway clear
+    const ch = c.chunk((zone.x0 + zone.x1) / 2, sz);
+    c.b.add('g_asph', flat(ox - roadHalf, sz - roadHalf, ox + cols * step + roadHalf, sz + roadHalf, 0.035, (px, pz) => [px / 6, pz / 6]), ch);
+    c.mapRects.push({ x0: ox - roadHalf, z0: sz - roadHalf, x1: ox + cols * step + roadHalf, z1: sz + roadHalf, c: '#32363e' });
+  }
+
+  let blockIdx = 0;
+  for (let j = 0; j < rows; j++) {
+    for (let i = 0; i < cols; i++) {
+      const bx = ox + (i + 0.5) * step;
+      const bz = oz + (j + 0.5) * step;
+      // Never place houses over the cardinal expressways or their shoulders
+      if (isOnOuterHighway(bx, bz, 44)) continue;
+      const ch = c.chunk(bx, bz);
+      const halfPad = step / 2 - roadHalf; // 43m
+      const innerPad = halfPad - 4.2;      // 38.8m lawn inside concrete sidewalk
+
+      // Curb slab + concrete sidewalk apron + suburban green grass yard
+      c.b.add('prop', box(halfPad * 2, 0.16, halfPad * 2, bx, 0, bz, 0x9b9b96), ch);
+      c.b.add('g_sidewalk', flat(bx - halfPad, bz - halfPad, bx + halfPad, bz + halfPad, 0.16, (px, pz) => [px / 4, pz / 4]), ch);
+      c.b.add('g_grass', flat(bx - innerPad, bz - innerPad, bx + innerPad, bz + innerPad, 0.175, (px, pz) => [px / 6, pz / 6]), ch);
+      c.mapRects.push({ x0: bx - halfPad, z0: bz - halfPad, x1: bx + halfPad, z1: bz + halfPad, c: '#5c784c' });
+
+      // Corner neighborhood market / diner on every 5th suburban block so suburbs feel lived-in
+      if (blockIdx % 5 === 2) {
+        const sDef = allocateStore(c, 'strip');
+        addBuilding(c, {
+          cx: bx - 16, cz: bz - 16, w: 24.5, d: 17.5, floors: 1, style: 'brick',
+          store: true, faces: 1 | 2, sign: sDef.name, roof: 'small', district: 'strip',
+        });
+        c.b.add('g_asph', flat(bx - 34, bz + 2, bx + 34, bz + 34, 0.19, (px, pz) => [px / 6, pz / 6]), ch);
+        for (let sx = -20; sx <= 20; sx += 5) {
+          c.b.add('prop', box(0.14, 0.03, 4.8, bx + sx, 0.21, bz + 24, 0xeaecef), ch);
+        }
+        // Small neighborhood mini-park + shade trees on the east half
+        addTree(c, bx + 18, bz - 18, 0, 1.1);
+        addTree(c, bx + 26, bz - 10, 3, 1.0);
+        c.b.add('prop', box(2.0, 0.48, 0.55, bx + 18, 0.18, bz - 6, 0x6b4a2a), ch);
+      } else {
+        // Two neat rows of suburban homes facing North (-1) and South (+1) streets
+        for (const row of [-1, 1]) {
+          for (let h = 0; h < 3; h++) {
+            const lx = bx - 24 + h * 24;
+            addHouse(c, lx, bz + row * 37, row, lx - 11.5, lx + 11.5, 0);
+          }
+        }
+      }
+
+      // Streetlamps along north and south curbs
+      addLamp(c, bx - 22, bz + halfPad - 1.2, 0, 1);
+      addLamp(c, bx + 22, bz - halfPad + 1.2, 0, -1);
+      blockIdx++;
+    }
+  }
+  c.places[zone.id] = { x: (zone.x0 + zone.x1) / 2, z: (zone.z0 + zone.z1) / 2 };
+}
+
+/**
+ * Hand-built rural highway gas station & roadside truck stop:
+ * Grounded asphalt forecourt, illuminated steel canopy + 4 pump islands, glowing highway price pylon,
+ * enterable convenience store ('shop') + roadside repair bay ('garage'), explosive barrels, and rural barn/water tower.
+ */
+export function addRuralGasStation(c: BCtx, st: RuralGasStationDef) {
+  const ch = c.chunk(st.x, st.z);
+  const col = new Collector();
+  const y0 = Math.max(0, terrainHeightAt(st.x, st.z));
+  const cos = Math.cos(st.yaw);
+  const sin = Math.sin(st.yaw);
+  const toWorld = (lx: number, lz: number): [number, number] => [
+    st.x + lx * cos + lz * sin,
+    st.z - lx * sin + lz * cos,
+  ];
+
+  // Grounded asphalt forecourt slab + concrete skirt so edges never float on rural hills
+  col.add('prop', box(78, 0.55, 62, 0, -0.45, 0, 0x5c6066));
+  col.add('g_asph', flat(-38, -30, 38, 30, 0.12, (px, pz) => [px / 6, pz / 6]));
+  // Driveway apron linking directly toward the adjacent highway (+Z local)
+  col.add('g_asph', flat(-16, 28, 16, 52, 0.12, (px, pz) => [px / 6, pz / 6]));
+  // Parking lines
+  for (let px = -28; px <= -14; px += 3.5) {
+    col.add('prop', box(0.14, 0.03, 5.2, px, 0.135, -8, 0xebedf0));
+  }
+
+  // Convenience Store & Roadside Diner building (back-left at z = -18)
+  const shopX = -8, shopZ = -18, shopW = 24, shopD = 12, shopH = 4.6;
+  col.add('prop', box(shopW + 0.6, 0.45, shopD + 0.6, shopX, -0.25, shopZ, 0x7b7870));
+  col.add('f_brick', walls(shopW, shopH, shopD, shopX, 0.12, shopZ, 0xd9c2a8, [0, 0.25, 0.5, 0.75]));
+  col.add('store', walls(shopW + 0.25, 4.1, shopD + 0.25, shopX, 0.12, shopZ, 0xfff2dc, [0.1, 0.3, 0.5, 0.7], 7, 4.2));
+  col.add('prop', box(shopW + 1.4, 0.55, shopD + 1.4, shopX, shopH + 0.12, shopZ, 0x3b4048));
+  col.add('emit', box(shopW + 1.5, 0.22, 0.26, shopX, shopH + 0.32, shopZ + shopD / 2 + 0.72, 0xff7b29));
+  col.add('sign', sign(10.5, 1.65, shopX, shopH + 1.15, shopZ + shopD / 2 + 0.45, 0, signUV('GAS')));
+
+  // Attached Rural Auto Repair / Tire Bay (back-right at x = +15, z = -18)
+  const bayX = 16, bayZ = -18, bayW = 16, bayD = 12, bayH = 5.4;
+  col.add('prop', box(bayW + 0.5, 0.45, bayD + 0.5, bayX, -0.25, bayZ, 0x7b7870));
+  col.add('f_industrial', walls(bayW, bayH, bayD, bayX, 0.12, bayZ, 0xcfd6dc, [0, 0.2, 0.4, 0.6]));
+  col.add('propMetal', box(bayW + 0.8, 0.5, bayD + 0.8, bayX, bayH + 0.12, bayZ, 0x4b535d));
+  // Twin roll-up service bay doors
+  for (const ox of [-3.8, 3.8]) {
+    col.add('prop', box(5.4, 3.8, 0.24, bayX + ox, 0.12, bayZ + bayD / 2 + 0.1, 0x2c323a));
+    col.add('prop', box(4.9, 3.45, 0.26, bayX + ox, 0.22, bayZ + bayD / 2 + 0.14, 0xd8a832));
+    for (let k = 0; k < 6; k++) {
+      col.add('prop', box(4.9, 0.05, 0.28, bayX + ox, 0.55 + k * 0.52, bayZ + bayD / 2 + 0.16, 0x8a6912));
+    }
+  }
+  col.add('sign', sign(9.0, 1.5, bayX, bayH - 0.55, bayZ + bayD / 2 + 0.32, 0, signUV('PAY N SPRAY')));
+
+  // Illuminated Fuel Canopy (centered at x = -2, z = +8)
+  const canX = -2, canZ = 8;
+  col.add('prop', box(28, 0.85, 16, canX, 5.65, canZ, 0xf2f4f7));
+  col.add('prop', box(28.3, 0.55, 16.3, canX, 5.3, canZ, 0xc82d2d));
+  col.add('emit', box(28.45, 0.2, 16.45, canX, 5.88, canZ, 0xffaa2b));
+  // Overhead canopy LED downlights
+  for (const lx of [-9, -3, 3, 9]) {
+    for (const lz of [-4, 4]) {
+      col.add('emit', box(1.5, 0.08, 0.8, canX + lx, 5.24, canZ + lz, 0xfff5dc));
+    }
+  }
+  // 4 steel support columns grounded on concrete curbs
+  for (const [px, pz] of [[-11, -5], [11, -5], [-11, 5], [11, 5]]) {
+    col.add('propMetal', box(0.68, 5.55, 0.68, canX + px, 0.12, canZ + pz, 0xe5e8ec));
+    col.add('prop', box(1.25, 0.35, 1.25, canX + px, 0.12, canZ + pz, 0xc82d2d));
+    const [wx, wz] = toWorld(canX + px, canZ + pz);
+    c.world.addCircle(wx, wz, 0.55, y0 + 6, 'pillar');
+  }
+  // 4 Fuel Pump Islands with digital displays, nozzles & protective yellow bollards
+  for (const px of [-5.5, 5.5]) {
+    for (const pz of [-3.2, 3.2]) {
+      const ix = canX + px, iz = canZ + pz;
+      col.add('prop', box(3.4, 0.22, 1.65, ix, 0.12, iz, 0x94989e));
+      col.add('prop', box(1.05, 1.85, 0.65, ix, 0.34, iz, 0xc82d2d));
+      col.add('prop', box(0.84, 0.52, 0.69, ix, 1.38, iz, 0x1e2b38));
+      col.add('emit', box(0.68, 0.22, 0.71, ix, 1.5, iz, 0x7ef7b2));
+      col.add('prop', cyl(0.11, 0.11, 0.92, ix - 1.45, 0.12, iz, 0xf2c92b, 8));
+      col.add('prop', cyl(0.11, 0.11, 0.92, ix + 1.45, 0.12, iz, 0xf2c92b, 8));
+      const [wx, wz] = toWorld(ix, iz);
+      c.world.addCircle(wx, wz, 1.05, y0 + 2.2, 'pump');
+    }
+  }
+
+  // Tall Highway Price Pylon Sign facing highway (+Z local)
+  const pyX = -26, pyZ = 22;
+  col.add('propMetal', cyl(0.42, 0.52, 14.5, pyX, 0.12, pyZ, 0x3b414a, 10));
+  col.add('prop', box(5.4, 6.2, 0.75, pyX, 9.2, pyZ, 0x1c222b));
+  col.add('emit', box(5.6, 0.22, 0.85, pyX, 15.35, pyZ, 0xffaa2b));
+  col.add('sign', sign(4.9, 2.2, pyX, 13.6, pyZ + 0.42, 0, signUV('GAS')));
+  // Digital fuel price bars
+  for (let row = 0; row < 3; row++) {
+    col.add('emit', box(3.6, 0.42, 0.12, pyX, 10.2 + row * 0.95, pyZ + 0.42, row === 2 ? 0x62ff9b : 0xff6b35));
+  }
+  const [pwx, pwz] = toWorld(pyX, pyZ);
+  c.world.addCircle(pwx, pwz, 0.75, y0 + 15, 'pole');
+
+  // Rural roadside detail: timber water tower & perimeter ranch fence behind the station
+  const wtX = 28, wtZ = -20;
+  for (const [lx, lz] of [[-1.6, -1.6], [1.6, -1.6], [-1.6, 1.6], [1.6, 1.6]]) {
+    col.add('wood', box(0.26, 7.2, 0.26, wtX + lx, 0.12, wtZ + lz, 0x6d5034));
+  }
+  col.add('wood', cyl(2.4, 2.5, 3.8, wtX, 7.2, wtZ, 0x856342, 12));
+  col.add('propMetal', cone(2.75, 1.5, wtX, 11.0, wtZ, 0x5c646d, 12));
+  const [wtwx, wtwz] = toWorld(wtX, wtZ);
+  c.world.addCircle(wtwx, wtwz, 2.6, y0 + 12.5, 'watertower');
+
+  // Rural split-rail timber fence along the back edge
+  for (let fx = -34; fx <= 34; fx += 4) {
+    col.add('wood', box(0.18, 1.25, 0.18, fx, 0.12, -28.5, 0x7a5938));
+  }
+  col.add('wood', box(68, 0.12, 0.08, 0, 0.62, -28.5, 0x8a6642));
+  col.add('wood', box(68, 0.12, 0.08, 0, 1.12, -28.5, 0x8a6642));
+
+  if (y0 !== 0) {
+    for (const it of col.items) it[1].translate(0, y0, 0);
+  }
+  col.flush(c.b, st.x, st.z, st.yaw, ch);
+
+  // World colliders for shop & repair bay (axis-aligned bounding footprint around rotated centers)
+  const [sWx, sWz] = toWorld(shopX, shopZ);
+  const [bWx, bWz] = toWorld(bayX, bayZ);
+  const sRadX = Math.abs(shopW * cos) / 2 + Math.abs(shopD * sin) / 2;
+  const sRadZ = Math.abs(shopW * sin) / 2 + Math.abs(shopD * cos) / 2;
+  c.world.addBox(sWx - sRadX, sWx + sRadX, sWz - sRadZ, sWz + sRadZ, y0 + shopH + 0.6, 'rural_gas_shop');
+  const bRadX = Math.abs(bayW * cos) / 2 + Math.abs(bayD * sin) / 2;
+  const bRadZ = Math.abs(bayW * sin) / 2 + Math.abs(bayD * cos) / 2;
+  c.world.addBox(bWx - bRadX, bWx + bRadX, bWz - bRadZ, bWz + bRadZ, y0 + bayH + 0.6, 'rural_gas_bay');
+
+  // Enterable doors for both the rural convenience store and the repair garage
+  const [sdx, sdz] = toWorld(shopX, shopZ + shopD / 2 + 1.0);
+  c.doors.push({ x: sdx, z: sdz, yaw: st.yaw, name: st.name, kind: 'shop' });
+  const [bdx, bdz] = toWorld(bayX, bayZ + bayD / 2 + 1.1);
+  c.doors.push({ x: bdx, z: bdz, yaw: st.yaw, name: `${st.name} GARAGE`, kind: 'garage' });
+
+  // Explosive fuel barrels beside the repair bay + roadside lamp
+  const [ex1, ez1] = toWorld(25.5, -14);
+  const [ex2, ez2] = toWorld(26.8, -13.2);
+  c.props.push({ kind: 'xbarrel', x: ex1, z: ez1 }, { kind: 'xbarrel', x: ex2, z: ez2 });
+  const [lx, lz] = toWorld(22, 22);
+  addLamp(c, lx, lz, -sin, -cos);
+
+  c.mapRects.push({ x0: st.x - 42, z0: st.z - 34, x1: st.x + 42, z1: st.z + 34, c: '#c87d28' });
+  c.places[st.id] = { x: st.x, z: st.z };
+}
+

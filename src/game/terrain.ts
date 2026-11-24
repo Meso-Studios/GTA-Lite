@@ -70,6 +70,59 @@ export const OUTER_HIGHWAYS: HighwayCorridor[] = [
   { id: 'coast-w', axis: 'x', fixed: 560, a0: -3000, a1: -652, halfW: 12, elevated: false, height: 0.14 },
 ];
 
+export interface SuburbanZone {
+  id: string;
+  name: string;
+  x0: number;
+  x1: number;
+  z0: number;
+  z1: number;
+}
+
+export const SUBURBAN_ZONES: SuburbanZone[] = [
+  { id: 'north_palms', name: 'NORTH PALMS SUBURBS', x0: -520, x1: 520, z0: -1240, z1: -760 },
+  { id: 'palmetto_heights', name: 'PALMETTO HEIGHTS SUBURBS', x0: -1240, x1: -760, z0: -520, z1: 420 },
+  { id: 'bayview_suburbs', name: 'BAYVIEW HEIGHTS SUBURBS', x0: 760, x1: 1180, z0: 60, z1: 480 },
+];
+
+export interface RuralGasStationDef {
+  id: string;
+  name: string;
+  x: number;
+  z: number;
+  yaw: number;
+}
+
+export const RURAL_GAS_STATIONS: RuralGasStationDef[] = [
+  { id: 'gas_north_exp', name: 'NORTH RIDGE FUEL & DINER', x: 76, z: -1850, yaw: -Math.PI / 2 },
+  { id: 'gas_west_dunes', name: 'GOLDEN DUNES GAS & MART', x: -1750, z: -76, yaw: 0 },
+  { id: 'gas_east_coast', name: 'BAYSIDE TRUCK STOP', x: 2450, z: 76, yaw: Math.PI },
+  { id: 'gas_nw_belt', name: 'PINECREST HIGHWAY GAS', x: -1650, z: -2924, yaw: Math.PI },
+  { id: 'gas_west_belt', name: 'CANYON ROUTE 66 FUEL', x: -2924, z: -1450, yaw: -Math.PI / 2 },
+  { id: 'gas_east_belt', name: 'HARBOR BELTWAY GAS', x: 2924, z: -1550, yaw: Math.PI / 2 },
+];
+
+export function isInSuburbanZone(x: number, z: number, pad = 0): SuburbanZone | null {
+  for (const s of SUBURBAN_ZONES) {
+    if (x >= s.x0 - pad && x <= s.x1 + pad && z >= s.z0 - pad && z <= s.z1 + pad) return s;
+  }
+  return null;
+}
+
+export function nearestRuralGasStation(x: number, z: number): { station: RuralGasStationDef; dist: number } {
+  let best = RURAL_GAS_STATIONS[0];
+  let bestD = Infinity;
+  for (const st of RURAL_GAS_STATIONS) {
+    const d = Math.hypot(x - st.x, z - st.z);
+    if (d < bestD) {
+      bestD = d;
+      best = st;
+    }
+  }
+  return { station: best, dist: bestD };
+}
+
+
 /** Returns true if (x, z) lies on one of the outer ground-level expressways. */
 export function isOnOuterHighway(x: number, z: number, pad = 0): boolean {
   for (const h of OUTER_HIGHWAYS) {
@@ -203,9 +256,26 @@ export function terrainHeightAt(x: number, z: number): number {
   if (apDist <= 0.1) return 0;
   const apFlatten = smoothVal(0, 140, apDist);
 
-  // Flatten around outer satellite landmarks (Desert Oasis Motel, North Observatory, East Port)
+  // Flatten cleanly under all 3 suburban neighborhoods (zero floating houses/roads)
+  let subDist = 1e9;
+  for (const s of SUBURBAN_ZONES) {
+    const sx = x < s.x0 - 20 ? s.x0 - 20 - x : x > s.x1 + 20 ? x - (s.x1 + 20) : 0;
+    const sz = z < s.z0 - 20 ? s.z0 - 20 - z : z > s.z1 + 20 ? z - (s.z1 + 20) : 0;
+    const d = Math.hypot(sx, sz);
+    if (d < subDist) subDist = d;
+  }
+  if (subDist <= 0.1) return 0;
+  const subFlatten = smoothVal(0, 95, subDist);
+
+  // Flatten cleanly under all 6 rural highway gas stations / truck stops
+  const gasNear = nearestRuralGasStation(x, z);
+  if (gasNear.dist <= 64) return 0;
+  const gasFlatten = smoothVal(64, 145, gasNear.dist);
+
+  // Flatten around outer satellite landmarks (Desert Oasis Motel, North Observatory, Outer Hubs)
   const landmarkDist = Math.min(
     Math.hypot(x - -2200, z - 1200), // Golden Dunes Oasis
+    Math.hypot(x - 0, z - -3400),    // North Ridge Observatory
     Math.hypot(x - 0, z - -3000),    // North Ridge Interchange
     Math.hypot(x - -3000, z - 0),    // West Dunes Hub
     Math.hypot(x - 3000, z - 0),     // East Harbor Hub
@@ -237,7 +307,7 @@ export function terrainHeightAt(x: number, z: number): number {
     h *= 1 - smoothVal(420, 610, z);
   }
 
-  return h * coreFade * hwFlatten * lmFlatten * apFlatten;
+  return h * coreFade * hwFlatten * lmFlatten * apFlatten * subFlatten * gasFlatten;
 }
 
 /** Surface normal approximation from terrainHeightAt (for vehicle pitch/roll on dunes/hills). */
@@ -275,6 +345,17 @@ export function surfaceAt(x: number, z: number, curY = 0): SurfaceType {
       if (Math.abs(x - cx) < CORE_BLOCK_HALF && Math.abs(z - cz) < CORE_BLOCK_HALF) return 'sidewalk';
       return 'road';
     }
+    return 'sidewalk';
+  }
+  // Rural highway gas station paved aprons
+  const gasNear = nearestRuralGasStation(x, z);
+  if (gasNear.dist <= 46) return 'road';
+  // Suburban neighborhoods (paved avenues + residential lawns/sidewalks)
+  const sub = isInSuburbanZone(x, z);
+  if (sub) {
+    const lx = ((x - sub.x0) % 100 + 100) % 100;
+    const lz = ((z - sub.z0) % 100 + 100) % 100;
+    if (lx < 12 || lx > 88 || lz < 12 || lz > 88) return 'road';
     return 'sidewalk';
   }
   // Nova Keys Resort Island beach rim
@@ -316,6 +397,11 @@ export function districtNameAt(x: number, z: number, curY = 0): string {
     if (Math.abs(x - DECK.BRIDGE.x) <= 24 && z > DECK.BRIDGE.z0) return 'OCEAN CAUSEWAY BRIDGE';
     return 'INNER RING EXPRESSWAY';
   }
+  // Check rural gas stations & suburbs before broad regional fallbacks
+  const gasNear = nearestRuralGasStation(x, z);
+  if (gasNear.dist <= 65) return gasNear.station.name;
+  const sub = isInSuburbanZone(x, z, 10);
+  if (sub && !isOnOuterHighway(x, z, 2)) return sub.name;
   if (isOnOuterHighway(x, z, 2)) {
     if (Math.abs(x) > 2900 || Math.abs(z) > 2900) return 'SAN NOVA OUTER BELTWAY';
     if (x < -700) return 'GOLDEN DUNES EXPRESSWAY';
