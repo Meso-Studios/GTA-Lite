@@ -73,6 +73,19 @@ export function flat(x0: number, z0: number, x1: number, z1: number, y: number, 
   }
   return finish(g, color);
 }
+/** Horizontal quad facing down (ceilings, overhangs). uv in world meters / scale */
+export function flatDown(x0: number, z0: number, x1: number, z1: number, y: number, uvFn: (x: number, z: number) => [number, number], color: THREE.ColorRepresentation = 0xffffff) {
+  const g = new THREE.PlaneGeometry(1, 1);
+  g.rotateX(Math.PI / 2);
+  g.scale(x1 - x0, 1, z1 - z0);
+  g.translate((x0 + x1) / 2, y, (z0 + z1) / 2);
+  const pos = g.attributes.position, uv = g.attributes.uv;
+  for (let i = 0; i < pos.count; i++) {
+    const [u, v] = uvFn(pos.getX(i), pos.getZ(i));
+    uv.setXY(i, u, v);
+  }
+  return finish(g, color);
+}
 /** Vertical plane with atlas UVs. yaw: normal direction yaw (0 = +z). */
 export function sign(w: number, h: number, x: number, y: number, z: number, yaw: number, uv: [number, number, number, number], color: THREE.ColorRepresentation = 0xffffff) {
   const g = new THREE.PlaneGeometry(w, h);

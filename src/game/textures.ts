@@ -685,25 +685,207 @@ export const makeGravel = () => surface('#58585a', 44, 16, 128);
 export const makeDirt = () => surface('#6d5a45', 34, 17, 256);
 
 export const makeWood = () =>
-  surface('#825d3e', 18, 18, 256, (d, rng, s) => {
-    for (let y = 0; y < s; y += 32) {
-      d.fillStyle = hsl(28, rng.range(30, 42), rng.range(30, 40));
-      d.fillRect(0, y, s, 30);
-      // wood grain streaks
-      d.strokeStyle = 'rgba(40,22,10,0.18)';
-      d.lineWidth = 1;
-      for (let g = 0; g < 6; g++) {
+  surface('#8b6240', 16, 18, 512, (d, rng, s) => {
+    const rows = 8;
+    const rh = s / rows;
+    for (let row = 0; row < rows; row++) {
+      const y = row * rh;
+      const tone = rng.range(32, 42);
+      d.fillStyle = hsl(27 + rng.range(-3, 3), rng.range(34, 46), tone);
+      d.fillRect(0, y, s, rh - 1.5);
+      // Warm cathedral wood grain lines
+      for (let g = 0; g < 10; g++) {
+        d.strokeStyle = g % 3 === 0 ? 'rgba(255,228,192,0.08)' : 'rgba(38,20,8,0.2)';
+        d.lineWidth = g % 4 === 0 ? 1.6 : 0.9;
         d.beginPath();
-        const yy = y + rng.range(2, 28);
+        const yy = y + rng.range(3, rh - 4);
         d.moveTo(0, yy);
-        d.bezierCurveTo(s * 0.33, yy + rng.range(-3, 3), s * 0.66, yy + rng.range(-3, 3), s, yy);
+        d.bezierCurveTo(s * 0.3, yy + rng.range(-4, 4), s * 0.7, yy + rng.range(-4, 4), s, yy);
         d.stroke();
       }
-      d.strokeStyle = 'rgba(0,0,0,0.5)';
-      d.lineWidth = 2;
-      d.beginPath(); d.moveTo(0, y); d.lineTo(s, y); d.stroke();
+      // Subtle bevel edge
+      d.fillStyle = 'rgba(255,235,205,0.12)';
+      d.fillRect(0, y + 1, s, 1.5);
+      d.fillStyle = 'rgba(24,12,4,0.52)';
+      d.fillRect(0, y + rh - 2, s, 2);
     }
   });
+
+/** Seamless 512x512 oak/walnut hardwood floorboards with staggered butt joints, plank bevels & knots. */
+export const makeFloorboards = () =>
+  surface('#916843', 14, 182, 512, (d, rng, s) => {
+    const planks = 8;
+    const ph = s / planks;
+    for (let row = 0; row < planks; row++) {
+      const y = row * ph;
+      const jointX = ((row * 167 + 90) % (s - 80)) + 40;
+      const segs: [number, number][] = [[0, jointX], [jointX, s]];
+      for (const [x0, x1] of segs) {
+        const hue = 26 + rng.range(-4, 4);
+        const sat = rng.range(32, 46);
+        const lit = rng.range(33, 45);
+        d.fillStyle = hsl(hue, sat, lit);
+        d.fillRect(x0, y, x1 - x0, ph);
+        // Longitudinal wood grain streaks & subtle sheen variation
+        for (let g = 0; g < 14; g++) {
+          d.strokeStyle = g % 4 === 0 ? 'rgba(255,236,205,0.09)' : 'rgba(42,24,10,0.19)';
+          d.lineWidth = rng.range(0.7, 1.8);
+          d.beginPath();
+          const gy = y + rng.range(3, ph - 4);
+          d.moveTo(x0, gy);
+          d.bezierCurveTo(x0 + (x1 - x0) * 0.33, gy + rng.range(-3, 3), x0 + (x1 - x0) * 0.66, gy + rng.range(-3, 3), x1, gy);
+          d.stroke();
+        }
+        // Occasional wood knot
+        if (rng.chance(0.32) && x1 - x0 > 90) {
+          const kx = rng.range(x0 + 26, x1 - 26);
+          const ky = y + rng.range(12, ph - 12);
+          d.fillStyle = 'rgba(42,24,12,0.42)';
+          d.beginPath();
+          d.ellipse(kx, ky, rng.range(6, 12), rng.range(3, 5.5), 0, 0, Math.PI * 2);
+          d.fill();
+        }
+        // Subtle light bevel on top edge of plank
+        d.fillStyle = 'rgba(255,240,214,0.12)';
+        d.fillRect(x0 + 1, y + 1, x1 - x0 - 2, 1.5);
+      }
+      // Crisp dark plank groove seams (horizontal + staggered vertical butt joint)
+      d.fillStyle = 'rgba(22,12,5,0.68)';
+      d.fillRect(0, y, s, 2.2);
+      d.fillRect(jointX - 1, y, 2.2, ph);
+    }
+  });
+
+export const makeFloorboardsBump = () => {
+  const c = surfaceCanvas('#8a8a8a', 18, 183, 512, (d, rng, s) => {
+    const planks = 8;
+    const ph = s / planks;
+    for (let row = 0; row < planks; row++) {
+      const y = row * ph;
+      const jointX = ((row * 167 + 90) % (s - 80)) + 40;
+      for (let g = 0; g < 10; g++) {
+        d.strokeStyle = g % 2 === 0 ? 'rgba(220,220,220,0.16)' : 'rgba(60,60,60,0.22)';
+        d.lineWidth = 1;
+        const gy = y + rng.range(3, ph - 3);
+        d.beginPath(); d.moveTo(0, gy); d.lineTo(s, gy); d.stroke();
+      }
+      d.fillStyle = '#181818';
+      d.fillRect(0, y, s, 3);
+      d.fillRect(jointX - 1.5, y, 3, ph);
+    }
+  });
+  return toTex(c, { srgb: false, aniso: 8 });
+};
+
+/** Woven upholstery & leatherette furniture texture + matching tactile bump map. */
+export const makeUpholstery = () =>
+  surface('#d8d2c8', 12, 191, 256, (d, rng, s) => {
+    // Cross-hatched woven textile fibers
+    for (let y = 0; y < s; y += 4) {
+      d.fillStyle = y % 8 === 0 ? 'rgba(255,255,255,0.09)' : 'rgba(0,0,0,0.07)';
+      d.fillRect(0, y, s, 2);
+    }
+    for (let x = 0; x < s; x += 4) {
+      d.fillStyle = x % 8 === 0 ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.07)';
+      d.fillRect(x, 0, 2, s);
+    }
+    // Subtle tufted seam lines
+    d.strokeStyle = 'rgba(0,0,0,0.16)';
+    d.lineWidth = 1.5;
+    for (let k = 64; k < s; k += 64) {
+      d.beginPath(); d.moveTo(0, k); d.lineTo(s, k); d.stroke();
+      d.beginPath(); d.moveTo(k, 0); d.lineTo(k, s); d.stroke();
+    }
+    for (let i = 0; i < 40; i++) {
+      d.fillStyle = rng.chance(0.5) ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.05)';
+      d.fillRect(rng.range(0, s), rng.range(0, s), rng.range(8, 22), 2);
+    }
+  });
+
+export const makeUpholsteryBump = () => {
+  const c = surfaceCanvas('#848484', 24, 192, 256, (d, _rng, s) => {
+    for (let y = 0; y < s; y += 4) {
+      d.fillStyle = y % 8 === 0 ? '#a8a8a8' : '#646464';
+      d.fillRect(0, y, s, 2);
+    }
+    for (let x = 0; x < s; x += 4) {
+      d.fillStyle = 'rgba(180,180,180,0.35)';
+      d.fillRect(x, 0, 2, s);
+    }
+    d.strokeStyle = '#303030';
+    d.lineWidth = 2;
+    for (let k = 64; k < s; k += 64) {
+      d.beginPath(); d.moveTo(0, k); d.lineTo(s, k); d.stroke();
+    }
+  });
+  return toTex(c, { srgb: false, aniso: 4 });
+};
+
+/** Subtle warm architectural wall plaster & painted paneling texture. */
+export const makeWallPlaster = () =>
+  surface('#ece8df', 12, 196, 256, (d, rng, s) => {
+    for (let k = 0; k < 28; k++) {
+      const rx = rng.range(0, s), ry = rng.range(0, s), rad = rng.range(16, 48);
+      const g = d.createRadialGradient(rx, ry, 2, rx, ry, rad);
+      g.addColorStop(0, rng.chance(0.5) ? 'rgba(255,255,255,0.08)' : 'rgba(120,110,95,0.07)');
+      g.addColorStop(1, 'rgba(0,0,0,0)');
+      d.fillStyle = g;
+      d.fillRect(rx - rad, ry - rad, rad * 2, rad * 2);
+    }
+    // Fine vertical wallpaper/panel seams
+    d.strokeStyle = 'rgba(110,104,94,0.14)';
+    d.lineWidth = 1;
+    for (let x = 0; x < s; x += 64) {
+      d.beginPath(); d.moveTo(x, 0); d.lineTo(x, s); d.stroke();
+    }
+  });
+
+/** Coffered architectural ceiling tile grid texture + bump map. */
+export const makeCeilingTile = () =>
+  surface('#f1eee6', 10, 199, 256, (d, rng, s) => {
+    const step = s / 2;
+    for (let i = 0; i < 2; i++) for (let j = 0; j < 2; j++) {
+      const x = i * step, y = j * step;
+      d.fillStyle = '#f3f0e8';
+      d.fillRect(x + 4, y + 4, step - 8, step - 8);
+      d.strokeStyle = 'rgba(120,115,105,0.34)';
+      d.lineWidth = 3;
+      d.strokeRect(x + 2, y + 2, step - 4, step - 4);
+      d.strokeStyle = 'rgba(255,255,255,0.45)';
+      d.lineWidth = 1.5;
+      d.strokeRect(x + 6, y + 6, step - 12, step - 12);
+      // Subtle acoustic micro-stipple
+      for (let p = 0; p < 55; p++) {
+        d.fillStyle = 'rgba(105,100,90,0.12)';
+        d.fillRect(x + rng.range(10, step - 10), y + rng.range(10, step - 10), 2, 2);
+      }
+    }
+  });
+
+/** Crisp backlit illuminated architectural EXIT sign texture. */
+export function makeExitSign() {
+  const [c, d] = mk(256, 96);
+  d.fillStyle = '#0e1714';
+  d.fillRect(0, 0, 256, 96);
+  d.strokeStyle = '#36f59a';
+  d.lineWidth = 6;
+  d.strokeRect(6, 6, 244, 84);
+  d.fillStyle = '#143326';
+  d.fillRect(12, 12, 232, 72);
+  d.fillStyle = '#52ffb0';
+  d.font = 'bold 52px Impact, "Arial Black", sans-serif';
+  d.textAlign = 'center';
+  d.textBaseline = 'middle';
+  d.fillText('EXIT', 112, 50);
+  // Running-man / directional arrow glyph
+  d.beginPath();
+  d.moveTo(188, 32);
+  d.lineTo(222, 48);
+  d.lineTo(188, 64);
+  d.closePath();
+  d.fill();
+  return toTex(c, { repeat: false, aniso: 4 });
+}
 
 export const makeInteriorTile = () =>
   surface('#d8d4ca', 12, 31, 256, (d, rng, s) => {

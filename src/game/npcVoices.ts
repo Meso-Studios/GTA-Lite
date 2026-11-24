@@ -1,5 +1,7 @@
 // Real NPC Voice Engine using live public CORS-enabled neural TTS site API (ottsy.weilbyte.dev)
-// Completely non-blocking (runs off rAF tick, zero synchronous speechSynthesis stalls, fault-isolated).
+// Completely non-blocking (runs off rAF tick, zero synchronous speechSynthesis stalls, fault-isolated)
+// and mixed at natural conversational volume with smooth physical distance attenuation.
+import { computeNaturalVoiceVolume } from './soundMix';
 
 export type VoiceKind = 'civ' | 'tourist' | 'cop' | 'gang' | 'guard' | 'target' | 'ally' | 'story';
 
@@ -15,46 +17,46 @@ export const TTS_API_ENDPOINT = 'https://ottsy.weilbyte.dev/api/generation';
 
 const VOICE_POOLS: Record<VoiceKind, VoiceProfile[]> = {
   civ: [
-    { voice: 'en_us_006', label: 'Marcus', pitch: 1.0, rate: 1.02, gender: 'm' },
-    { voice: 'en_us_001', label: 'Aria', pitch: 1.04, rate: 1.02, gender: 'f' },
-    { voice: 'en_us_007', label: 'Devon', pitch: 0.96, rate: 1.05, gender: 'm' },
-    { voice: 'en_us_002', label: 'Elena', pitch: 1.06, rate: 1.0, gender: 'f' },
-    { voice: 'en_us_009', label: 'Mateo', pitch: 0.98, rate: 1.03, gender: 'm' },
-    { voice: 'en_us_010', label: 'Jack', pitch: 0.95, rate: 1.02, gender: 'm' },
+    { voice: 'en_us_006', label: 'Marcus', pitch: 0.99, rate: 1.0, gender: 'm' },
+    { voice: 'en_us_001', label: 'Aria', pitch: 1.02, rate: 1.0, gender: 'f' },
+    { voice: 'en_us_007', label: 'Devon', pitch: 0.97, rate: 1.01, gender: 'm' },
+    { voice: 'en_us_002', label: 'Elena', pitch: 1.03, rate: 0.99, gender: 'f' },
+    { voice: 'en_us_009', label: 'Mateo', pitch: 0.98, rate: 1.0, gender: 'm' },
+    { voice: 'en_us_010', label: 'Jack', pitch: 0.96, rate: 0.99, gender: 'm' },
   ],
   tourist: [
-    { voice: 'en_au_001', label: 'Chloe', pitch: 1.06, rate: 1.04, gender: 'f' },
-    { voice: 'en_uk_001', label: 'Liam', pitch: 1.0, rate: 1.02, gender: 'm' },
-    { voice: 'en_au_002', label: 'Lachlan', pitch: 0.98, rate: 1.02, gender: 'm' },
-    { voice: 'en_us_002', label: 'Elena', pitch: 1.08, rate: 1.04, gender: 'f' },
-    { voice: 'en_uk_003', label: 'Arthur', pitch: 0.96, rate: 1.0, gender: 'm' },
+    { voice: 'en_au_001', label: 'Chloe', pitch: 1.02, rate: 1.01, gender: 'f' },
+    { voice: 'en_uk_001', label: 'Liam', pitch: 1.0, rate: 1.0, gender: 'm' },
+    { voice: 'en_au_002', label: 'Lachlan', pitch: 0.98, rate: 1.0, gender: 'm' },
+    { voice: 'en_us_002', label: 'Elena', pitch: 1.03, rate: 1.01, gender: 'f' },
+    { voice: 'en_uk_003', label: 'Arthur', pitch: 0.97, rate: 0.98, gender: 'm' },
   ],
   cop: [
-    { voice: 'en_us_010', label: 'Ofc. Jack', pitch: 0.92, rate: 1.04, gender: 'm' },
-    { voice: 'en_us_006', label: 'Ofc. Marcus', pitch: 0.9, rate: 1.05, gender: 'm' },
-    { voice: 'en_us_001', label: 'Ofc. Aria', pitch: 0.98, rate: 1.06, gender: 'f' },
+    { voice: 'en_us_010', label: 'Ofc. Jack', pitch: 0.95, rate: 1.01, gender: 'm' },
+    { voice: 'en_us_006', label: 'Ofc. Marcus', pitch: 0.95, rate: 1.01, gender: 'm' },
+    { voice: 'en_us_001', label: 'Ofc. Aria', pitch: 0.99, rate: 1.02, gender: 'f' },
   ],
   gang: [
-    { voice: 'en_us_009', label: 'Mateo', pitch: 0.88, rate: 1.08, gender: 'm' },
-    { voice: 'en_us_007', label: 'Devon', pitch: 0.86, rate: 1.06, gender: 'm' },
-    { voice: 'en_us_010', label: 'Rico', pitch: 0.85, rate: 1.05, gender: 'm' },
+    { voice: 'en_us_009', label: 'Mateo', pitch: 0.94, rate: 1.02, gender: 'm' },
+    { voice: 'en_us_007', label: 'Devon', pitch: 0.94, rate: 1.01, gender: 'm' },
+    { voice: 'en_us_010', label: 'Rico', pitch: 0.94, rate: 1.0, gender: 'm' },
   ],
   guard: [
-    { voice: 'en_us_010', label: 'Sec. Jack', pitch: 0.9, rate: 1.0, gender: 'm' },
-    { voice: 'en_uk_003', label: 'Sec. Arthur', pitch: 0.88, rate: 0.98, gender: 'm' },
+    { voice: 'en_us_010', label: 'Sec. Jack', pitch: 0.95, rate: 0.99, gender: 'm' },
+    { voice: 'en_uk_003', label: 'Sec. Arthur', pitch: 0.94, rate: 0.98, gender: 'm' },
   ],
   target: [
-    { voice: 'en_uk_003', label: 'Boss Arthur', pitch: 0.88, rate: 1.02, gender: 'm' },
-    { voice: 'en_us_009', label: 'Boss Mateo', pitch: 0.84, rate: 1.04, gender: 'm' },
+    { voice: 'en_uk_003', label: 'Boss Arthur', pitch: 0.94, rate: 0.99, gender: 'm' },
+    { voice: 'en_us_009', label: 'Boss Mateo', pitch: 0.94, rate: 1.0, gender: 'm' },
   ],
   ally: [
-    { voice: 'en_us_007', label: 'Devon', pitch: 0.95, rate: 1.04, gender: 'm' },
-    { voice: 'en_us_001', label: 'Aria', pitch: 1.02, rate: 1.04, gender: 'f' },
-    { voice: 'en_us_006', label: 'Marcus', pitch: 0.96, rate: 1.03, gender: 'm' },
+    { voice: 'en_us_007', label: 'Devon', pitch: 0.97, rate: 1.01, gender: 'm' },
+    { voice: 'en_us_001', label: 'Aria', pitch: 1.01, rate: 1.01, gender: 'f' },
+    { voice: 'en_us_006', label: 'Marcus', pitch: 0.98, rate: 1.0, gender: 'm' },
   ],
   story: [
-    { voice: 'en_us_010', label: 'Sal', pitch: 0.92, rate: 1.0, gender: 'm' },
-    { voice: 'en_us_006', label: 'Sal', pitch: 0.94, rate: 1.0, gender: 'm' },
+    { voice: 'en_us_010', label: 'Sal', pitch: 0.95, rate: 0.99, gender: 'm' },
+    { voice: 'en_us_006', label: 'Sal', pitch: 0.96, rate: 0.99, gender: 'm' },
   ],
 };
 
@@ -80,18 +82,19 @@ export function buildTtsApiUrl(voice: string, text: string): string {
   return `${TTS_API_ENDPOINT}?voice=${encodeURIComponent(voice)}&text=${encodeURIComponent(cleaned)}`;
 }
 
-/** Computes realistic 3D spatial voice attenuation (0 beyond 28m). */
-export function computeVoiceVolume(distanceMeters: number, masterVolume = 0.8): number {
-  const mv = Math.max(0, Math.min(1, masterVolume));
-  if (mv <= 0 || distanceMeters >= 28) return 0;
-  const d = Math.max(0, distanceMeters);
-  const atten = 1 / (1 + Math.pow(d / 7.5, 1.45));
-  return Math.max(0.08, Math.min(1, atten)) * mv;
+/** Computes realistic conversational 3D spatial voice attenuation (tapers smoothly to 0). */
+export function computeVoiceVolume(
+  distanceMeters: number,
+  masterVolume = 0.7,
+  isIndoor = false,
+  priority = false,
+): number {
+  return computeNaturalVoiceVolume(distanceMeters, masterVolume, isIndoor, priority);
 }
 
 export class NpcVoiceEngine {
   enabled = true;
-  masterVolume = 0.78;
+  masterVolume = 0.7;
   unlocked = false;
   speakingPedId: number | null = null;
   speakingVoiceName: string | null = null;
@@ -103,6 +106,11 @@ export class NpcVoiceEngine {
   private epoch = 0;
   private usedWebSpeech = false;
   private pendingTimer: number | null = null;
+  private activeVolScale = 0.42;
+
+  get isSpeaking(): boolean {
+    return this.speakingPedId !== null;
+  }
 
   unlock() {
     this.unlocked = true;
@@ -117,7 +125,8 @@ export class NpcVoiceEngine {
     this.masterVolume = Math.max(0, Math.min(1, vol));
     if (this.audioEl) {
       try {
-        this.audioEl.volume = Math.max(0, Math.min(1, this.masterVolume));
+        // Keep active voice within natural conversational ceiling instead of blasting to raw 1.0
+        this.audioEl.volume = Math.max(0, Math.min(0.56, this.masterVolume * this.activeVolScale));
       } catch { /* ignore */ }
     }
   }
@@ -143,8 +152,6 @@ export class NpcVoiceEngine {
         old.load();
       } catch { /* ignore */ }
     }
-    // Only invoke speechSynthesis.cancel() if we actually started a Web Speech utterance
-    // (unconditional cancel() inside rAF is a known Chromium/Safari main-thread freeze bug!)
     if (this.usedWebSpeech && typeof window !== 'undefined' && 'speechSynthesis' in window) {
       this.usedWebSpeech = false;
       window.setTimeout(() => {
@@ -156,14 +163,14 @@ export class NpcVoiceEngine {
   }
 
   /** Schedules an NPC line asynchronously off the animation frame so gameplay can NEVER stall or freeze. */
-  speak(pedId: number, kind: VoiceKind, text: string, distanceMeters = 4, priority = false) {
+  speak(pedId: number, kind: VoiceKind, text: string, distanceMeters = 4, priority = false, isIndoor = false) {
     try {
       if (!this.enabled || !text || !text.trim() || typeof window === 'undefined') return;
-      const vol = computeVoiceVolume(distanceMeters, this.masterVolume);
-      if (vol <= 0.02) return;
+      const vol = computeVoiceVolume(distanceMeters, this.masterVolume, isIndoor, priority);
+      if (vol <= 0.015) return;
 
       const now = Date.now();
-      if (!priority && now - this.lastSpeakMs < 1800) return;
+      if (!priority && now - this.lastSpeakMs < 2400) return;
       this.lastSpeakMs = now;
 
       this.stop();
@@ -171,6 +178,7 @@ export class NpcVoiceEngine {
       const profile = selectVoiceProfile(pedId, kind);
       this.speakingPedId = pedId;
       this.speakingVoiceName = profile.label;
+      this.activeVolScale = this.masterVolume > 0.01 ? vol / this.masterVolume : 0.42;
 
       // Defer actual network/audio work off the current requestAnimationFrame tick
       this.pendingTimer = window.setTimeout(() => {
@@ -253,12 +261,11 @@ export class NpcVoiceEngine {
   ) {
     if (myEpoch !== this.epoch || !this.enabled) return;
     try {
-      // Fresh detached Audio instance avoids InvalidStateError / media decode stalls
       const audio = new Audio();
       this.audioEl = audio;
       audio.preload = 'auto';
-      audio.volume = Math.max(0.05, Math.min(1, vol));
-      audio.playbackRate = profile.rate;
+      audio.volume = Math.max(0.015, Math.min(0.56, vol));
+      audio.playbackRate = Math.max(0.96, Math.min(1.03, profile.rate));
       audio.onended = () => {
         if (myEpoch === this.epoch && this.speakingPedId === pedId) {
           this.speakingPedId = null;
@@ -276,7 +283,6 @@ export class NpcVoiceEngine {
       const p = audio.play();
       if (p && typeof p.catch === 'function') {
         p.catch(() => {
-          // Autoplay blocked before user gesture -> silently clear without hammering speechSynthesis
           if (this.audioEl === audio) this.audioEl = null;
           if (!this.unlocked) {
             if (myEpoch === this.epoch && this.speakingPedId === pedId) {
@@ -313,9 +319,9 @@ export class NpcVoiceEngine {
     try {
       this.usedWebSpeech = true;
       const u = new SpeechSynthesisUtterance(text);
-      u.volume = Math.max(0.05, Math.min(1, vol));
-      u.pitch = profile.pitch;
-      u.rate = profile.rate;
+      u.volume = Math.max(0.015, Math.min(0.56, vol));
+      u.pitch = Math.max(0.94, Math.min(1.04, profile.pitch));
+      u.rate = Math.max(0.96, Math.min(1.03, profile.rate));
       const voices = window.speechSynthesis.getVoices();
       const en = voices.filter((v) => v.lang && v.lang.toLowerCase().startsWith('en'));
       if (en.length > 0) {

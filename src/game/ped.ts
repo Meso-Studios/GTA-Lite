@@ -56,6 +56,10 @@ export class Ped {
   wasKilledByPlayer = false;
   rag: Ragdoll | null = null;
   indoor = false;
+  indoorRole: 'clerk' | 'customer' | 'guard' | 'queue' | 'seated' | 'server' | null = null;
+  indoorHomeX = 0;
+  indoorHomeZ = 0;
+  indoorBaseYaw = 0;
   recruited = false;
   formation = 0;
   followT = 0;
@@ -340,6 +344,38 @@ export class Ped {
       return;
     }
 
+    // Specialized indoor customer / wait-line / seated diner / clerk behavior
+    if (this.indoor && !this.hostile) {
+      this.vx *= 0.75;
+      this.vz *= 0.75;
+      if (this.indoorRole === 'seated') {
+        this.x = this.indoorHomeX;
+        this.z = this.indoorHomeZ;
+        const lookYaw = this.indoorBaseYaw + Math.sin(g.time * 0.45 + this.id * 1.9) * 0.14;
+        this.yaw = dampAngle(this.yaw, lookYaw, 4, dt);
+        this.animate(dt, 0, false, 0, false);
+        this.finish(g);
+        return;
+      }
+      if (this.indoorRole === 'queue') {
+        // Patient wait-line stance: subtle organic glance toward menu/counter without breaking line
+        const swayYaw = this.indoorBaseYaw + Math.sin(g.time * 0.55 + this.id * 2.3) * 0.16;
+        this.yaw = dampAngle(this.yaw, swayYaw, 3.5, dt);
+        this.animate(dt, 0, false, 0, false);
+        this.finish(g);
+        return;
+      }
+      if (this.indoorRole === 'clerk' || this.indoorRole === 'server') {
+        const lookTarget = dp < 4.5 && Math.abs(g.player.y - this.y) < 1.5
+          ? Math.atan2(dxp, dzp)
+          : this.indoorBaseYaw + Math.sin(g.time * 0.4 + this.id) * 0.18;
+        this.yaw = dampAngle(this.yaw, lookTarget, 4.5, dt);
+        this.animate(dt, 0, false, 0, false);
+        this.finish(g);
+        return;
+      }
+    }
+
     switch (this.state) {
       case 'flee': {
         this.panicT -= dt;
@@ -445,7 +481,7 @@ export class Ped {
 
   animate(dt: number, speed: number, panic: boolean, aim = 0, photo = false) {
     const a: AnimIn = {
-      mode: 'stand',
+      mode: this.indoor && this.indoorRole === 'seated' && !panic && this.handsUp <= 0 ? 'sit' : 'stand',
       speed,
       aim,
       aimPitch: 0,
@@ -473,9 +509,11 @@ export class Ped {
         g.fx.sandSpray(this.x, this.y, this.z, -this.vx * 0.15, -this.vz * 0.15, 0.32);
       }
     }
-    g.world.resolve(this.x, this.z, 0.32, this.y, _po);
-    if (_po.hit) { this.x = _po.x; this.z = _po.z; }
-    const gh = g.groundAt(this.x, this.z);
+    if (!(this.indoor && this.indoorRole === 'seated')) {
+      g.world.resolve(this.x, this.z, 0.32, this.y, _po);
+      if (_po.hit) { this.x = _po.x; this.z = _po.z; }
+    }
+    const gh = g.groundAt(this.x, this.z, this.y);
     this.y += (gh - sand.sinkY - this.y) * Math.min(1, g.dt * 14);
     const r = this.rig.root;
     r.position.set(this.x, this.y, this.z);

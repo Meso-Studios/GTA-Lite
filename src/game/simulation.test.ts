@@ -50,6 +50,8 @@ import {
   selectContextAnimation,
 } from './animations';
 import { buildTtsApiUrl, computeVoiceVolume, selectVoiceProfile } from './npcVoices';
+import { computeAmbienceTargets, computeNaturalVoiceVolume } from './soundMix';
+import { computeWaitLineSlots, interiorFloorHeight } from './interiorMath';
 
 test('10km x 10km world bounds span -5000..+5000 on both axes', () => {
   assert.equal(WORLD_HALF, 5000);
@@ -556,3 +558,72 @@ test('all 9 real binary .glb 3D model files exist in public/models/ with valid g
     assert.equal(buf.readUInt32LE(8), buf.length, `${file} header byteLength must match file size`);
   }
 });
+
+test('natural voice mixing & ambience crossfade targets stay balanced and duck cleanly during speech', () => {
+  const closeOut = computeNaturalVoiceVolume(1.5, 0.8, false, false);
+  const midOut = computeNaturalVoiceVolume(10, 0.8, false, false);
+  const farOut = computeNaturalVoiceVolume(24, 0.8, false, false);
+  const closeIn = computeNaturalVoiceVolume(1.5, 0.8, true, false);
+  assert.ok(closeOut <= 0.46, `Voice must sit at natural conversational level (<=0.46), got ${closeOut}`);
+  assert.ok(closeOut > midOut && midOut > 0);
+  assert.equal(farOut, 0, 'Voice must taper cleanly to 0 at max range');
+  assert.ok(closeIn < closeOut, 'Indoor conversational voice should be slightly softer than outdoor projection');
+
+  // Diner interior ambience: warm room tone + restaurant crowd murmur, zero wind/ocean, ducks during speech
+  const dinerQuiet = computeAmbienceTargets({
+    indoor: true, indoorKind: 'diner', distToOcean: 500, inDunes: false,
+    speedMps: 0, altitudeM: 0, night01: 0, voiceActive: false, inVehicle: false,
+  });
+  const dinerSpeaking = computeAmbienceTargets({
+    indoor: true, indoorKind: 'diner', distToOcean: 500, inDunes: false,
+    speedMps: 0, altitudeM: 0, night01: 0, voiceActive: true, inVehicle: false,
+  });
+  assert.ok(dinerQuiet.crowdMurmur > 0.05 && dinerQuiet.roomTone > 0.03);
+  assert.equal(dinerQuiet.ocean, 0);
+  assert.equal(dinerQuiet.wind, 0);
+  assert.ok(dinerSpeaking.crowdMurmur < dinerQuiet.crowdMurmur, 'Ambience must duck smoothly when an NPC speaks');
+
+  // Beachfront night outdoor ambience: surf + night air, zero indoor room tone
+  const beachNight = computeAmbienceTargets({
+    indoor: false, indoorKind: null, distToOcean: 15, inDunes: false,
+    speedMps: 0, altitudeM: 0, night01: 1, voiceActive: false, inVehicle: false,
+  });
+  assert.ok(beachNight.ocean > 0.06, 'Ocean surf should fade in near the beach');
+  assert.ok(beachNight.night > 0.02, 'Subtropical night air should fade in after dark');
+  assert.equal(beachNight.roomTone, 0);
+});
+
+test('interiorFloorHeight supports walkable stairs & mezzanine balconies while keeping under-mezzanine on ground floor', () => {
+  const layout = {
+    baseY: 0.26,
+    stairs: [{ x0: 8.4, x1: 11.4, z0: -4.2, z1: 0.6, y0: 0.26, y1: 2.72, axis: 'z' as const, dir: -1 as const }],
+    mezzanines: [{ x0: -11.8, x1: 11.8, z0: -8.8, z1: -4.2, y: 2.72 }],
+  };
+
+  // Ground floor main hall
+  assert.equal(interiorFloorHeight(layout, 0, 3.0, 0.26), 0.26);
+
+  // Mid-staircase climbs smoothly halfway between 0.26 and 2.72
+  const midStair = interiorFloorHeight(layout, 9.9, -1.8, 1.4);
+  assert.ok(Math.abs(midStair - 1.49) < 0.05, `Expected mid-stair height ~1.49, got ${midStair}`);
+
+  // Top of stairs onto mezzanine deck
+  assert.equal(interiorFloorHeight(layout, 2.0, -6.5, 2.6), 2.72);
+
+  // Walking underneath the mezzanine on the ground floor stays at 0.26 (does NOT snap upward!)
+  assert.equal(interiorFloorHeight(layout, -4.0, -6.5, 0.26), 0.26);
+});
+
+test('computeWaitLineSlots generates properly spaced queued restaurant customers facing the counter', () => {
+  const slots = computeWaitLineSlots(-4.6, 2.1, 0.36, 0.93, 5, 1.08);
+  assert.equal(slots.length, 5);
+  for (let i = 1; i < slots.length; i++) {
+    const dist = Math.hypot(slots[i].x - slots[i - 1].x, slots[i].z - slots[i - 1].z);
+    assert.ok(dist > 0.85 && dist < 1.35, `Expected realistic queue spacing (~1.08m), got ${dist}`);
+  }
+  // Every queued customer generally faces back toward the counter (-z / -x)
+  for (const s of slots) {
+    assert.ok(Math.cos(s.yaw) < -0.5, `Expected customer ${s.index} to face counter, got yaw=${s.yaw}`);
+  }
+});
+

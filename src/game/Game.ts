@@ -12,6 +12,7 @@ import {
 } from './config';
 import { buildCity, CityData } from './city';
 import { Room, roomForDoor } from './interiors';
+import { interiorFloorHeight } from './interiorMath';
 import type { Door } from './buildings';
 import { Vehicle } from './vehicle';
 import { Ped, PedKind } from './ped';
@@ -19,7 +20,7 @@ import { Prop, Pickup, PickKind, Grenade, Rocket } from './props';
 import { FX } from './fx';
 import { GameAudio } from './audio';
 import { World, PushOut } from './world';
-import { PLAYER_LOOK, TARGET_LOOK, GunKind, animateHuman, createHuman, gangLook, guardLook, HumanRig, setWeapon, civilianLook, upgradeHumanToGlb } from './humans';
+import { PLAYER_LOOK, TARGET_LOOK, GunKind, animateHuman, createHuman, gangLook, guardLook, HumanRig, setWeapon, civilianLook, touristLook, upgradeHumanToGlb } from './humans';
 import { VehicleType, beamMaterial, headMat, tailDim, sirenRed, sirenBlue, paintMat, setVehicleRtx, upgradeVehicleToGlb } from './vehicles';
 import { castRay, explode as doExplode, npcShoot as doNpcShoot, playerFire, playerMelee } from './combat';
 import { MapRenderer, buildRoute } from './minimap';
@@ -330,8 +331,8 @@ export class Game {
     this.fx = new FX(this.scene);
     this.mapR = new MapRenderer(this.city);
     this.glbUnsub = onGlbAssetReady(() => this.syncGlbAssets());
-    for (let i = 0; i < 4; i++) {
-      const l = new THREE.PointLight(0xffe8c4, 0, 34, 1.8);
+    for (let i = 0; i < 6; i++) {
+      const l = new THREE.PointLight(0xffe8c4, 0, 26, 1.65);
       this.scene.add(l);
       this.intLights.push(l);
     }
@@ -695,7 +696,9 @@ export class Game {
   inView(x: number, z: number, r: number) {
     return this.frustum.intersectsSphere(new THREE.Sphere(new THREE.Vector3(x, 1, z), r));
   }
-  groundAt(x: number, z: number, curY = 0) { return this.interior ? 0.26 : groundHeight(x, z, curY); }
+  groundAt(x: number, z: number, curY = 0) {
+    return this.interior ? interiorFloorHeight(this.interior.room.elevation, x, z, curY) : groundHeight(x, z, curY);
+  }
   panOf(x: number, z: number) {
     const dx = x - this.camX, dz = z - this.camZ;
     const rx = -Math.cos(this.camYaw), rz = Math.sin(this.camYaw);
@@ -1225,15 +1228,16 @@ export class Game {
     }, dt);
     p.vx = p.move.vx; p.vy = p.move.vy; p.vz = p.move.vz; p.y = p.move.y; p.onGround = p.move.onGround;
 
+    const stepSurface: 'wood' | 'sand' | 'pavement' = this.interior ? 'wood' : sandF > 0.1 ? 'sand' : 'pavement';
     if (!wasSliding && mRes.sliding) this.audio.slide();
-    if (mRes.landed) this.audio.footstep(sandF > 0.1);
+    if (mRes.landed) this.audio.footstep(stepSurface);
 
     const horizSp = Math.hypot(p.vx, p.vz);
     if (p.onGround && horizSp > 0.9 && !mRes.sliding) {
       p.stepT -= dt * (horizSp / 4.2);
       if (p.stepT <= 0) {
         p.stepT = 0.42;
-        this.audio.footstep(sandF > 0.1);
+        this.audio.footstep(stepSurface);
       }
     }
     const sandFoot = applySandFootPhysics(horizSp, sandF);
@@ -1358,12 +1362,22 @@ export class Game {
     if (p.vehicle) { this.exitVehicle(); return; }
     if (this.interior) {
       const room = this.interior.room;
-      if (room.kind === 'gun' && Math.hypot(p.x - room.cx, p.z - (room.cz + 4)) < 6) { this.shop(); return; }
-      if (this.insideT > 1.2 && Math.hypot(p.x - room.cx, p.z - (room.cz + room.d / 2 - 1.4)) < 1.7) { this.exitInterior(); return; }
+      if (room.kind === 'gun' && Math.hypot(p.x - (room.cx - 4.8), p.z - (room.cz + 1.0)) < 5.5 && p.y < 1.6) { this.shop(); return; }
+      if (this.insideT > 0.8) {
+        for (const ex of room.exits) {
+          if (Math.hypot(p.x - ex.x, p.z - ex.z) < 2.4 && Math.abs(p.y - ex.y) < 1.6) {
+            this.exitInterior();
+            return;
+          }
+        }
+      }
       for (const pp of this.peds) {
-        if (pp.indoor && pp.kind === 'civ' && Math.hypot(pp.x - p.x, pp.z - p.z) < 2.4) {
-          pp.flee(this, p.x, p.z, 6);
-          this.ev.onToast('Behind the counter — press F at the door to leave', 'info');
+        if (pp.indoor && pp.kind === 'civ' && Math.hypot(pp.x - p.x, pp.z - p.z) < 2.2 && Math.abs(pp.y - p.y) < 1.2) {
+          if (pp.indoorRole === 'clerk' || pp.indoorRole === 'server') {
+            this.ev.onToast('Welcome in! Walk to any EXIT sign and press F to leave', 'info');
+          } else {
+            this.ev.onToast('Excusing yourself past a customer — press F at any EXIT sign to leave', 'info');
+          }
           return;
         }
       }
@@ -1808,7 +1822,7 @@ export class Game {
         }
         if (this.voicesEnabled) {
           try {
-            this.voices.speak(nextAmbient.pedId, nextAmbient.kind as VoiceKind, nextAmbient.text, dist, false);
+            this.voices.speak(nextAmbient.pedId, nextAmbient.kind as VoiceKind, nextAmbient.text, dist, false, Boolean(this.interior));
           } catch {
             // Fault-isolated: never disrupt gameplay if voice engine errors
           }
@@ -1897,6 +1911,21 @@ export class Game {
     let sirenVol = 0;
     for (const v of this.vehicles) if (v.siren && v.mode === 'police') sirenVol = Math.max(sirenVol, 1 - Math.hypot(v.x - this.camX, v.z - this.camZ) / 160);
     this.audio.setSiren(sirenVol);
+
+    // Smooth environmental background noise crossfading (ocean surf, wind, urban hum, night, indoor room tone & crowd murmur)
+    const distToOcean = this.interior ? 9999 : Math.max(0, 610 - this.player.z);
+    const inDunes = !this.interior && this.player.x < -900 && this.player.z > -400;
+    this.audio.updateAmbience({
+      indoor: Boolean(this.interior),
+      indoorKind: this.interior ? this.interior.room.kind : null,
+      distToOcean,
+      inDunes,
+      speedMps: this.playerSpeed,
+      altitudeM: pv?.spec.isAircraft ? pv.y : 0,
+      night01: this.night,
+      voiceActive: this.voices.isSpeaking,
+      inVehicle: Boolean(pv),
+    });
   }
 
   // =============================================================== camera
@@ -1932,7 +1961,8 @@ export class Game {
       }
     }
     let cx = tx - fx * cosP * d, cy = ty + sinP * d, cz = tz - fz * cosP * d;
-    cy = Math.max(cy, 0.4 + groundHeight(cx, cz));
+    cy = Math.max(cy, 0.4 + this.groundAt(cx, cz, p.y));
+    if (this.interior) cy = Math.min(cy, this.interior.room.h - 0.35);
     if (this.shakeAmt > 0.001) {
       cx += (Math.random() - 0.5) * this.shakeAmt * 0.6;
       cy += (Math.random() - 0.5) * this.shakeAmt * 0.6;
@@ -1979,40 +2009,57 @@ export class Game {
     const back = { x: door.x, z: door.z, yaw: door.yaw };
     this.interior = { room, back, name: door.name };
     this.insideT = 0;
-    this.player.x = room.cx;
-    this.player.z = room.cz + room.d / 2 - 1.7;
+    this.player.x = room.spawn.x;
+    this.player.z = room.spawn.z;
     this.player.y = 0.26; this.player.vx = 0; this.player.vz = 0; this.player.vy = 0;
     this.player.move.y = 0.26; this.player.move.vx = 0; this.player.move.vy = 0; this.player.move.vz = 0;
     this.player.yaw = Math.PI;
-    this.camYaw = Math.PI; this.camPitch = 0.16;
+    this.camYaw = Math.PI; this.camPitch = 0.14;
     this.world.boundsOff = true;
     this.scope = false;
     this.player.rig.root.visible = true;
     const tint = room.warmTint ?? 0xffe4bc;
     this.intLights.forEach((l, i) => {
-      l.color.setHex(i === 3 ? 0xdbeeff : tint);
-      l.intensity = i === 3 ? 7 : 14;
-      if (i < 3) l.position.set(room.cx - 6.8 + i * 6.8, 3.85, room.cz - 1.2);
-      else l.position.set(room.cx, 3.6, room.cz + 3.2);
+      const pos = room.pendantLights[i];
+      if (pos) {
+        l.position.set(pos[0], pos[1], pos[2]);
+        l.color.setHex(tint);
+        l.intensity = i < 4 ? 12.5 : 10.0;
+      } else {
+        l.intensity = 0;
+      }
     });
-    if (this.bloom) this.bloom.strength = 0.16;
-    this.renderer.toneMappingExposure = 0.92;
+    if (this.bloom) this.bloom.strength = 0.14;
+    this.renderer.toneMappingExposure = 0.96;
     this.spawnRoomNpcs(room);
     this.audio.door();
     this.ev.onToast(`Entering ${door.name}`, 'info');
   }
   spawnRoomNpcs(room: Room) {
     const rng = new Rng(room.id * 97 + 13);
-    for (const spot of room.npcSpots) {
-      const look = spot.role === 'guard' ? guardLook(rng) : civilianLook(rng);
-      const p = new Ped('civ', look);
-      p.indoor = true; p.mission = true;
-      p.state = 'idle'; p.idleT = 9999;
-      p.x = spot.x; p.z = spot.z; p.y = 0.26;
+    for (let i = 0; i < room.npcSpots.length; i++) {
+      const spot = room.npcSpots[i];
+      const useTourist = (spot.role === 'customer' || spot.role === 'queue' || spot.role === 'seated') && rng.chance(0.35);
+      const look = spot.role === 'guard' ? guardLook(rng) : useTourist ? touristLook(rng) : civilianLook(rng);
+      const p = new Ped(useTourist ? 'tourist' : 'civ', look);
+      p.indoor = true;
+      p.indoorRole = spot.role;
+      p.indoorHomeX = spot.x;
+      p.indoorHomeZ = spot.z;
+      p.indoorBaseYaw = spot.yaw;
+      p.mission = true;
+      p.state = 'idle';
+      p.idleT = 9999;
+      p.x = spot.x;
+      p.z = spot.z;
+      p.y = spot.y ?? 0.26;
       p.yaw = spot.yaw;
       p.place(spot.x, spot.z);
-      if (spot.role === 'clerk') p.arm(null);
-      else if (spot.role === 'guard') p.arm('pistol');
+      p.rig.root.position.set(p.x, p.y, p.z);
+      p.rig.root.rotation.set(0, p.yaw, 0);
+      if (spot.role === 'guard') p.arm('pistol');
+      else p.arm(null);
+      upgradeHumanToGlb(p.rig);
       this.addPed(p);
     }
   }
@@ -2152,8 +2199,15 @@ export class Game {
     if (!p.alive) return null;
     if (this.interior) {
       const room = this.interior.room;
-      if (room.kind === 'gun' && Math.hypot(p.x - room.cx, p.z - (room.cz + 4)) < 6) return 'Press F — Buy weapons / ammo';
-      return this.insideT > 1.2 && Math.hypot(p.x - room.cx, p.z - (room.cz + room.d / 2 - 1.4)) < 2.2 ? 'Press F — Exit to the street' : null;
+      if (room.kind === 'gun' && Math.hypot(p.x - (room.cx - 4.8), p.z - (room.cz + 1.0)) < 5.5 && p.y < 1.6) return 'Press F — Buy weapons / ammo';
+      if (this.insideT > 0.8) {
+        for (const ex of room.exits) {
+          if (Math.hypot(p.x - ex.x, p.z - ex.z) < 2.5 && Math.abs(p.y - ex.y) < 1.6) {
+            return `Press F — ${ex.label} to the street`;
+          }
+        }
+      }
+      return null;
     }
     if (p.vehicle) return null;
     for (const a of this.allies) if (!a.recruited && !a.dead && Math.hypot(a.x - p.x, a.z - p.z) < 2.8) return 'Press F — Recruit ally to your crew';

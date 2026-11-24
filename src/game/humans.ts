@@ -802,7 +802,7 @@ export function setWeapon(r: HumanRig, kind: GunKind | null) {
 }
 
 export interface AnimIn {
-  mode: 'stand' | 'drive' | 'dead' | 'sprawl';
+  mode: 'stand' | 'sit' | 'drive' | 'dead' | 'sprawl';
   speed: number;
   aim: number; // 0..1 weapon raised
   aimPitch: number;
@@ -835,7 +835,20 @@ export function animateHuman(r: HumanRig, dt: number, a: AnimIn) {
   r.shadow.visible = a.mode === 'stand' && !a.airborne;
   let rate = 16;
 
-  if (a.mode === 'drive') {
+  if (a.mode === 'sit') {
+    const t = performance.now() * 0.001 + r.entitySeed * 1.1;
+    const talk = a.speaking ? Math.sin(t * 6.5) * 0.14 : 0;
+    T.hipL = -1.36; T.hipR = -1.36; T.knL = 1.38; T.knR = 1.38;
+    T.hipsY = 0.56;
+    T.aLx = -0.52 + talk * 0.6; T.aRx = -0.58 - talk * 0.5;
+    T.elL = -0.82; T.elR = -0.86;
+    T.aLz = 0.14; T.aRz = -0.14;
+    T.lean = 0.06 + Math.sin(t * 1.3) * 0.015;
+    T.headY = Math.sin(t * 0.65) * 0.14;
+    T.headX = -0.04 + Math.sin(t * 1.1) * 0.03;
+    r.animClipName = 'social_cafe_seated_relax';
+    rate = 10;
+  } else if (a.mode === 'drive') {
     const st = a.steer ?? 0;
     T.hipL = -1.32; T.hipR = -1.32; T.knL = 1.32; T.knR = 1.32;
     T.aLx = -0.96 + st * 0.22; T.aRx = -0.96 - st * 0.22; T.elL = -0.68; T.elR = -0.68;

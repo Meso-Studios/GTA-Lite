@@ -89,19 +89,64 @@ export function buildCity(): CityData {
   mats.leaf.userData.cast = false;
   mats.emit = new THREE.MeshBasicMaterial({ vertexColors: true, toneMapped: false });
   mats.glass = new THREE.MeshPhysicalMaterial({ vertexColors: true, color: 0x9fb8c4, roughness: 0.06, metalness: 0.35, clearcoat: 1.0, clearcoatRoughness: 0.05, transparent: true, opacity: 0.44, envMapIntensity: 1.7 });
-  mats.intWall = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.84 });
-  mats.intCeil = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9 });
-  mats.intTrim = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.52 });
-  mats.intWood = new THREE.MeshStandardMaterial({ map: T.makeWood(), vertexColors: true, roughness: 0.46 });
+  const floorWoodBump = T.makeFloorboardsBump();
+  const upholsteryTex = T.makeUpholstery();
+  const upholsteryBump = T.makeUpholsteryBump();
+  const exitSignTex = T.makeExitSign();
+  mats.intWall = new THREE.MeshStandardMaterial({ map: T.makeWallPlaster(), vertexColors: true, roughness: 0.84 });
+  mats.intCeil = new THREE.MeshStandardMaterial({ map: T.makeCeilingTile(), vertexColors: true, roughness: 0.88 });
+  mats.intTrim = new THREE.MeshStandardMaterial({ map: T.makeWood(), vertexColors: true, roughness: 0.5 });
+  mats.intFloorWood = new THREE.MeshPhysicalMaterial({
+    map: T.makeFloorboards(),
+    bumpMap: floorWoodBump,
+    bumpScale: 0.08,
+    vertexColors: true,
+    roughness: 0.34,
+    metalness: 0.04,
+    clearcoat: 0.38,
+    clearcoatRoughness: 0.18,
+    envMapIntensity: 1.0,
+  });
+  mats.intFloorWood.userData.cast = false;
+  mats.intWood = new THREE.MeshStandardMaterial({
+    map: T.makeWood(),
+    bumpMap: floorWoodBump,
+    bumpScale: 0.04,
+    vertexColors: true,
+    roughness: 0.42,
+  });
   mats.intAccent = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.32, metalness: 0.3 });
-  mats.carpet = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.98 });
-  mats.carpet2 = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.94 });
+  mats.carpet = new THREE.MeshStandardMaterial({
+    map: upholsteryTex,
+    bumpMap: upholsteryBump,
+    bumpScale: 0.06,
+    vertexColors: true,
+    roughness: 0.92,
+  });
+  mats.carpet2 = new THREE.MeshStandardMaterial({
+    map: upholsteryTex,
+    bumpMap: upholsteryBump,
+    bumpScale: 0.06,
+    vertexColors: true,
+    roughness: 0.88,
+  });
+  mats.intExitSign = new THREE.MeshStandardMaterial({
+    map: exitSignTex,
+    emissiveMap: exitSignTex,
+    emissive: 0xffffff,
+    emissiveIntensity: 1.55,
+    vertexColors: true,
+    roughness: 0.25,
+  });
+  mats.intExitSign.userData.cast = false;
   const intTileTex = T.makeInteriorTile();
-  intTileTex.repeat.set(6, 5);
-  mats.intTile = new THREE.MeshPhysicalMaterial({ map: intTileTex, vertexColors: true, roughness: 0.22, metalness: 0.08, clearcoat: 0.45, clearcoatRoughness: 0.2, envMapIntensity: 1.05 });
+  intTileTex.repeat.set(1, 1);
+  mats.intTile = new THREE.MeshPhysicalMaterial({ map: intTileTex, vertexColors: true, roughness: 0.24, metalness: 0.08, clearcoat: 0.42, clearcoatRoughness: 0.2, envMapIntensity: 1.05 });
+  mats.intTile.userData.cast = false;
   const marbleTex = T.makeInteriorMarble();
-  marbleTex.repeat.set(4, 3);
-  mats.intMarble = new THREE.MeshPhysicalMaterial({ map: marbleTex, color: 0xf0eae0, vertexColors: true, roughness: 0.1, metalness: 0.18, clearcoat: 0.85, clearcoatRoughness: 0.08, envMapIntensity: 1.55 });
+  marbleTex.repeat.set(1, 1);
+  mats.intMarble = new THREE.MeshPhysicalMaterial({ map: marbleTex, color: 0xf0eae0, vertexColors: true, roughness: 0.12, metalness: 0.16, clearcoat: 0.82, clearcoatRoughness: 0.09, envMapIntensity: 1.45 });
+  mats.intMarble.userData.cast = false;
   const gravel = T.makeGravel();
   mats.roof = new THREE.MeshStandardMaterial({ map: gravel, vertexColors: true, roughness: 0.98 });
   mats.prop = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.8, metalness: 0.05 });
