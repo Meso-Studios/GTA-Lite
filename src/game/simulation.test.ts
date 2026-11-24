@@ -24,17 +24,32 @@ import {
   isMeleeWeapon,
 } from './terrain';
 import { STORES, STORE_COUNT, getStoreByIndex, getStoreIndexByName } from './stores';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import {
   createFlightState,
   stepFlightPhysics,
   createSuspensionState,
   stepSuspensionPhysics,
   computeBloodBurst,
+  computeArterialJet,
+  computeBloodSplatterStreak,
+  computeCoagulationColor,
   computePuddleRadius,
   computeRagdollImpulse,
   type AircraftSpec,
 } from './physics';
 import { AmbientDialogueController, speakerLabelFor } from './ambientDialogue';
+import {
+  ANIMATION_CATEGORIES,
+  ANIMATION_CLIPS,
+  ANIMATION_COUNT,
+  evaluateAnimationPose,
+  getAnimationById,
+  getAnimationByName,
+  selectContextAnimation,
+} from './animations';
+import { buildTtsApiUrl, computeVoiceVolume, selectVoiceProfile } from './npcVoices';
 
 test('10km x 10km world bounds span -5000..+5000 on both axes', () => {
   assert.equal(WORLD_HALF, 5000);
@@ -440,4 +455,104 @@ test('AmbientDialogueController triggers randomized overheard subtitles near wal
     candidates: [{ id: 22, kind: 'civ', x: 6, y: 0, z: 1, dead: false, panicking: true }],
   }, 0.1, rng);
   assert.equal(duringMission, null);
+});
+
+test('animation catalog provides >3,000 unique clips across 12 categories with finite pose evaluation', () => {
+  assert.ok(ANIMATION_COUNT >= 3000, `Expected >= 3000 animations, got ${ANIMATION_COUNT}`);
+  assert.equal(ANIMATION_CLIPS.length, ANIMATION_COUNT);
+  assert.equal(ANIMATION_CATEGORIES.length, 12);
+
+  const uniqueNames = new Set(ANIMATION_CLIPS.map((c) => c.name));
+  assert.equal(uniqueNames.size, ANIMATION_COUNT, 'Every animation clip must have a unique name');
+
+  const sample = getAnimationById(1420);
+  assert.equal(getAnimationByName(sample.name)?.id, sample.id);
+
+  // Context selection picks appropriate domain categories
+  const speakClip = selectContextAnimation({ entitySeed: 7, speed: 0, speaking: true });
+  assert.equal(speakClip.category, 'speaking');
+  const combatClip = selectContextAnimation({ entitySeed: 3, speed: 0, aim: 1, weaponKind: 'rifle' });
+  assert.equal(combatClip.category, 'combat_stance');
+  const slideClip = selectContextAnimation({ entitySeed: 1, speed: 7, slide: true });
+  assert.equal(slideClip.category, 'parkour_stunts');
+  const flightClip = selectContextAnimation({ entitySeed: 2, speed: 40, inAircraft: true });
+  assert.equal(flightClip.category, 'vehicle_flight');
+
+  // Player standing idle always stays calm on stand_breathe regardless of idleEpoch
+  for (let epoch = 0; epoch < 15; epoch++) {
+    const playerIdle = selectContextAnimation({ entitySeed: 7, speed: 0, idleEpoch: epoch, isPlayer: true });
+    assert.equal(playerIdle.category, 'urban_idle');
+    assert.ok(playerIdle.name.includes('stand_breathe'), `Expected calm stand_breathe idle, got ${playerIdle.name}`);
+  }
+
+  // Standing NPC idle never randomly jumps into street_emotes or overhead arm stretching
+  for (let epoch = 0; epoch < 25; epoch++) {
+    const npcIdle = selectContextAnimation({ entitySeed: 14, speed: 0, idleEpoch: epoch, isPlayer: false });
+    assert.equal(npcIdle.category, 'urban_idle');
+    assert.ok(!npcIdle.name.includes('stretch_arms'), `NPC idle should not randomly stretch arms: ${npcIdle.name}`);
+  }
+
+  const pose = evaluateAnimationPose(speakClip, 1.25, 1.0, 1.0);
+  for (const [k, v] of Object.entries(pose)) {
+    assert.ok(Number.isFinite(v), `Pose joint ${k} must be finite, got ${v}`);
+  }
+});
+
+test('NPC site-API voice engine assigns distinct voices, valid URLs, and spatial attenuation', () => {
+  const copVoice = selectVoiceProfile(101, 'cop');
+  const touristVoice = selectVoiceProfile(202, 'tourist');
+  assert.ok(copVoice.voice.length > 0);
+  assert.ok(touristVoice.voice.length > 0);
+
+  const url = buildTtsApiUrl(copVoice.voice, 'Hold it right there, San Nova PD!');
+  assert.ok(url.startsWith('https://ottsy.weilbyte.dev/api/generation?'));
+  assert.ok(url.includes(`voice=${encodeURIComponent(copVoice.voice)}`));
+  assert.ok(url.includes('San%20Nova%20PD'));
+
+  const nearVol = computeVoiceVolume(2, 0.8);
+  const midVol = computeVoiceVolume(12, 0.8);
+  const farVol = computeVoiceVolume(30, 0.8);
+  assert.ok(nearVol > midVol && midVol > 0);
+  assert.equal(farVol, 0);
+});
+
+test('10x gore physics models arterial jet pulses, directional splatter streaks, and time coagulation', () => {
+  const headJet = computeArterialJet(80, true, false);
+  const lightJet = computeArterialJet(18, false, false);
+  assert.ok(headJet.pulses > lightJet.pulses);
+  assert.ok(headJet.jetSpeed > lightJet.jetSpeed);
+
+  const fastStreak = computeBloodSplatterStreak(9, -1.5, 4);
+  const dropStreak = computeBloodSplatterStreak(0.2, -5, 0.1);
+  assert.ok(fastStreak.length > fastStreak.width * 1.5, 'Oblique impact should produce elongated splatter streak');
+  assert.ok(fastStreak.length > dropStreak.length);
+
+  const fresh = computeCoagulationColor(0);
+  const aging = computeCoagulationColor(8);
+  const dried = computeCoagulationColor(30);
+  assert.ok(fresh.r > aging.r && aging.r > dried.r, 'Arterial crimson must darken monotonically into coagulated maroon');
+});
+
+test('all 9 real binary .glb 3D model files exist in public/models/ with valid glTF 2.0 headers', () => {
+  const expected = [
+    'car_sports.glb',
+    'car_sedan.glb',
+    'car_suv.glb',
+    'car_police.glb',
+    'building_artdeco.glb',
+    'building_tower.glb',
+    'building_havana.glb',
+    'building_wynwood.glb',
+    'human_base.glb',
+  ];
+  const modelsDir = path.resolve(process.cwd(), 'public/models');
+  for (const file of expected) {
+    const full = path.join(modelsDir, file);
+    assert.ok(fs.existsSync(full), `Missing .glb file: ${file}`);
+    const buf = fs.readFileSync(full);
+    assert.ok(buf.length > 1024, `${file} is unexpectedly small (${buf.length} bytes)`);
+    assert.equal(buf.subarray(0, 4).toString('ascii'), 'glTF', `${file} missing glTF magic header`);
+    assert.equal(buf.readUInt32LE(4), 2, `${file} must be glTF version 2`);
+    assert.equal(buf.readUInt32LE(8), buf.length, `${file} header byteLength must match file size`);
+  }
 });

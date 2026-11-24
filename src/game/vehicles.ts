@@ -4,6 +4,7 @@ import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js
 import { box, cyl, finish, sph } from './geo';
 import type { AircraftSpec } from './physics';
 import { makeGlow } from './textures';
+import { cloneCarGlb } from './glbAssets';
 
 export type VehicleType =
   | 'sedan' | 'sports' | 'suv' | 'pickup' | 'taxi' | 'police' | 'van'
@@ -120,12 +121,12 @@ export function paintMat(color: number) {
     m = new THREE.MeshPhysicalMaterial({
       color,
       vertexColors: true,
-      metalness: 0.62,
-      roughness: 0.22,
+      metalness: vehicleRtxOn ? 0.66 : 0.36,
+      roughness: vehicleRtxOn ? 0.15 : 0.32,
       clearcoat: vehicleRtxOn ? 1.0 : 0.0,
-      clearcoatRoughness: 0.07,
-      reflectivity: 0.92,
-      envMapIntensity: vehicleRtxOn ? 1.7 : 0.95,
+      clearcoatRoughness: 0.04,
+      reflectivity: 0.98,
+      envMapIntensity: vehicleRtxOn ? 2.15 : 0.85,
     });
     paintCache.set(color, m);
   }
@@ -133,11 +134,11 @@ export function paintMat(color: number) {
 }
 export const glassMat = new THREE.MeshPhysicalMaterial({
   color: 0x0b1620,
-  metalness: 0.92,
-  roughness: 0.05,
+  metalness: 0.94,
+  roughness: 0.04,
   clearcoat: 1.0,
-  clearcoatRoughness: 0.04,
-  envMapIntensity: 1.85,
+  clearcoatRoughness: 0.03,
+  envMapIntensity: 2.35,
 });
 export const trimMat = new THREE.MeshStandardMaterial({ vertexColors: true, metalness: 0.38, roughness: 0.46 });
 export const wheelMat = new THREE.MeshStandardMaterial({ vertexColors: true, metalness: 0.35, roughness: 0.55 });
@@ -160,13 +161,16 @@ export const afterburnerMat = new THREE.MeshBasicMaterial({
 export function setVehicleRtx(enabled: boolean) {
   vehicleRtxOn = enabled;
   for (const m of paintCache.values()) {
+    m.metalness = enabled ? 0.66 : 0.36;
     m.clearcoat = enabled ? 1.0 : 0.0;
-    m.envMapIntensity = enabled ? 1.7 : 0.95;
-    m.roughness = enabled ? 0.2 : 0.32;
+    m.clearcoatRoughness = enabled ? 0.04 : 0.28;
+    m.envMapIntensity = enabled ? 2.15 : 0.85;
+    m.roughness = enabled ? 0.15 : 0.32;
     m.needsUpdate = true;
   }
   glassMat.clearcoat = enabled ? 1.0 : 0.0;
-  glassMat.envMapIntensity = enabled ? 1.85 : 1.0;
+  glassMat.roughness = enabled ? 0.04 : 0.18;
+  glassMat.envMapIntensity = enabled ? 2.35 : 0.9;
   glassMat.needsUpdate = true;
 }
 
@@ -214,6 +218,8 @@ export interface VehicleModel {
   tiltGroup: THREE.Group;
   propeller?: THREE.Group;
   afterburner?: THREE.Mesh;
+  glbShell?: THREE.Group | null;
+  vehicleType?: VehicleType;
 }
 
 function buildAircraft(type: 'prop_plane' | 'jet' | 'seaplane', paint: number): VehicleModel {
@@ -525,7 +531,25 @@ export function buildVehicle(type: VehicleType, paint: number): VehicleModel {
   }
 
   let driver: THREE.Mesh | null = null;
-  return { group: g, body: bodyMesh, glass, wheels, tail, beam, bar, driver, parts: [bodyMesh, trimMesh, glass], dented: false, paint: paintColor, tiltGroup: tilt };
+  const model: VehicleModel = {
+    group: g, body: bodyMesh, glass, wheels, tail, beam, bar, driver,
+    parts: [bodyMesh, trimMesh, glass], dented: false, paint: paintColor, tiltGroup: tilt,
+    glbShell: null, vehicleType: type,
+  };
+  upgradeVehicleToGlb(model, type);
+  return model;
+}
+
+/** Upgrades a vehicle's chassis in-place to the sculpted .glb model once loaded via GLTFLoader. */
+export function upgradeVehicleToGlb(m: VehicleModel, type: VehicleType): boolean {
+  if (m.glbShell) return true;
+  const glb = cloneCarGlb(type, m.paint);
+  if (!glb) return false;
+  m.glbShell = glb;
+  m.tiltGroup.add(glb);
+  // Hide fallback procedural shell so the sculpted .glb body takes over cleanly (keep wheels, beams, sirens, taxi sign)
+  for (const part of m.parts) part.visible = false;
+  return true;
 }
 
 /** Push vertices of the body inward near a local impact point (fender dents). */

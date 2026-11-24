@@ -360,24 +360,75 @@ export interface BloodBurstSpec {
   spreadAngle: number;
   puddleTargetRadius: number;
   gibCount: number;
+  splatterCount: number;
+  arterialPulses: number;
 }
 
-/** Computes realistic ballistic blood spray, pooling radius, and gib count from impact energy & hit type. */
+/** Computes realistic ballistic blood spray, splatter count, arterial pulses, pooling radius, and gib count from impact energy. */
 export function computeBloodBurst(
   damage: number,
   headshot: boolean,
   explosive: boolean,
   shotgun: boolean,
 ): BloodBurstSpec {
-  const power = clampVal(damage / 25, 0.4, 5.0);
+  const power = clampVal(damage / 22, 0.45, 5.5);
   const dropletCount = Math.round(
-    clampVal(10 + power * 10 + (headshot ? 16 : 0) + (shotgun ? 12 : 0) + (explosive ? 22 : 0), 10, 64),
+    clampVal(18 + power * 14 + (headshot ? 24 : 0) + (shotgun ? 18 : 0) + (explosive ? 32 : 0), 16, 96),
   );
-  const spraySpeed = clampVal(3.2 + power * 1.6 + (headshot ? 2.4 : 0) + (explosive ? 4.5 : 0), 3.0, 14.0);
-  const spreadAngle = explosive ? Math.PI : shotgun ? 0.85 : headshot ? 0.65 : 0.42;
-  const puddleTargetRadius = clampVal(0.45 + power * 0.24 + (headshot ? 0.35 : 0) + (explosive ? 0.55 : 0), 0.45, 1.85);
-  const gibCount = explosive ? 9 : shotgun && damage >= 30 ? 4 : headshot && damage >= 60 ? 3 : 0;
-  return { dropletCount, spraySpeed, spreadAngle, puddleTargetRadius, gibCount };
+  const spraySpeed = clampVal(3.8 + power * 1.9 + (headshot ? 2.8 : 0) + (explosive ? 5.2 : 0), 3.4, 16.5);
+  const spreadAngle = explosive ? Math.PI : shotgun ? 0.92 : headshot ? 0.72 : 0.46;
+  const puddleTargetRadius = clampVal(0.55 + power * 0.28 + (headshot ? 0.45 : 0) + (explosive ? 0.65 : 0), 0.55, 2.25);
+  const gibCount = explosive ? 14 : shotgun && damage >= 26 ? 7 : headshot && damage >= 48 ? 5 : damage >= 42 ? 3 : 0;
+  const splatterCount = Math.round(clampVal(5 + power * 4 + (headshot ? 6 : 0) + (shotgun ? 5 : 0) + (explosive ? 10 : 0), 4, 28));
+  const arterialPulses = headshot ? 7 : shotgun || explosive ? 5 : damage >= 30 ? 4 : 2;
+  return { dropletCount, spraySpeed, spreadAngle, puddleTargetRadius, gibCount, splatterCount, arterialPulses };
+}
+
+export interface ArterialJetSpec {
+  pulses: number;
+  pulseInterval: number;
+  dropletsPerPulse: number;
+  jetSpeed: number;
+  arcUp: number;
+}
+
+/** Computes pressurized heart-beat pulsing arterial jet parameters for heavy/fatal trauma. */
+export function computeArterialJet(damage: number, headshot: boolean, katana: boolean): ArterialJetSpec {
+  const severity = clampVal(damage / 35, 0.5, 3.0);
+  const pulses = headshot ? 7 : katana ? 6 : Math.round(clampVal(2 + severity * 2, 2, 7));
+  const pulseInterval = headshot ? 0.24 : 0.28;
+  const dropletsPerPulse = Math.round(clampVal(5 + severity * 3 + (headshot ? 4 : 0) + (katana ? 3 : 0), 5, 16));
+  const jetSpeed = clampVal(4.5 + severity * 1.6 + (headshot ? 2.2 : 0), 4.2, 11.5);
+  const arcUp = headshot ? 3.4 : katana ? 2.8 : 2.1;
+  return { pulses, pulseInterval, dropletsPerPulse, jetSpeed, arcUp };
+}
+
+export interface BloodSplatterStreak {
+  length: number;
+  width: number;
+  yaw: number;
+}
+
+/** Computes elongated directional blood splatter dimensions & orientation from droplet impact velocity. */
+export function computeBloodSplatterStreak(vx: number, vy: number, vz: number): BloodSplatterStreak {
+  const horiz = Math.hypot(vx, vz);
+  const vert = Math.max(0.5, Math.abs(vy));
+  const impactRatio = clampVal(horiz / vert, 0.15, 4.5);
+  const width = clampVal(0.1 + Math.min(0.18, horiz * 0.012), 0.08, 0.3);
+  const length = clampVal(width * (1 + impactRatio * 1.35), width, 1.35);
+  const yaw = horiz > 0.05 ? Math.atan2(vx, vz) : 0;
+  return { length, width, yaw };
+}
+
+/** Shifts arterial blood color monotonically from bright oxygenated crimson to dark coagulated maroon over time. */
+export function computeCoagulationColor(ageSec: number): { r: number; g: number; b: number } {
+  const t = clampVal(1 - Math.exp(-Math.max(0, ageSec) / 14), 0, 1);
+  // Fresh arterial red (#a6080e -> 0.65, 0.031, 0.055) -> dark coagulated maroon (#240204 -> 0.14, 0.008, 0.016)
+  return {
+    r: 0.65 + (0.14 - 0.65) * t,
+    g: 0.031 + (0.008 - 0.031) * t,
+    b: 0.055 + (0.016 - 0.055) * t,
+  };
 }
 
 /** Smoothly expands a ground blood puddle over time (saturates cleanly at maxRadius). */

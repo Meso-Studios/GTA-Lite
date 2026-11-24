@@ -4,7 +4,7 @@ import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
-import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
+import { buildRtxEnvironments, RtxEnvPack } from './rtxEnv';
 import {
   BOUNDS, DECK, HALF, MovementState, NB, Rng, WEAPONS, WEAPON_ORDER, WEAPON_SHOP_ORDER, WeaponId,
   applySandFootPhysics, blockCenter, clamp, createMovementState, dampAngle, districtNameAt, groundHeight,
@@ -19,8 +19,8 @@ import { Prop, Pickup, PickKind, Grenade, Rocket } from './props';
 import { FX } from './fx';
 import { GameAudio } from './audio';
 import { World, PushOut } from './world';
-import { PLAYER_LOOK, TARGET_LOOK, GunKind, animateHuman, createHuman, gangLook, guardLook, HumanRig, setWeapon, civilianLook } from './humans';
-import { VehicleType, beamMaterial, headMat, tailDim, sirenRed, sirenBlue, paintMat, setVehicleRtx } from './vehicles';
+import { PLAYER_LOOK, TARGET_LOOK, GunKind, animateHuman, createHuman, gangLook, guardLook, HumanRig, setWeapon, civilianLook, upgradeHumanToGlb } from './humans';
+import { VehicleType, beamMaterial, headMat, tailDim, sirenRed, sirenBlue, paintMat, setVehicleRtx, upgradeVehicleToGlb } from './vehicles';
 import { castRay, explode as doExplode, npcShoot as doNpcShoot, playerFire, playerMelee } from './combat';
 import { MapRenderer, buildRoute } from './minimap';
 import { SpawnOpts, deployCops as doDeploy, removeVehicle, spawnVehicle as doSpawnVehicle, streamCrowds, streamParked, streamPeds, streamTraffic, updatePolice } from './spawn';
@@ -28,6 +28,9 @@ import { MISSIONS, MissionDef } from './missions';
 import { Look } from './humans';
 import { Collider } from './world';
 import { AmbientCandidate, AmbientDialogueController, AmbientSubtitle } from './ambientDialogue';
+import { GLB_CITY_LANDMARKS, cloneBuildingGlb, getGlbStatus, onGlbAssetReady, preloadGlbAssets, setGlbRtx } from './glbAssets';
+import { NpcVoiceEngine, VoiceKind } from './npcVoices';
+import { ANIMATION_COUNT } from './animations';
 
 export interface Quality { traffic: number; parked: number; peds: number; shadows: boolean; bloom: boolean; pr: number; msaa: number; shadowSize: number }
 export const QUALITY: Record<string, Quality> = {
@@ -54,6 +57,12 @@ export interface HudState {
   mobileMode: boolean;
   rtxEnabled: boolean;
   goreEnabled: boolean;
+  voicesEnabled: boolean;
+  speakingVoice: string | null;
+  animCount: number;
+  playerAnim: string;
+  glbLoaded: number;
+  glbTotal: number;
   storeCount: number;
 }
 export interface GameEvents {
@@ -110,7 +119,11 @@ export class Game {
   bloom: UnrealBloomPass | null = null;
   sun: THREE.DirectionalLight;
   bounceLight: THREE.DirectionalLight;
+  rimLight: THREE.DirectionalLight;
   neonLight: THREE.PointLight;
+  neonLight2: THREE.PointLight;
+  rtxEnvs: RtxEnvPack;
+  private rtxShadowTight = true;
   hemi: THREE.HemisphereLight;
   sky: THREE.Mesh;
   skyMat: THREE.ShaderMaterial;
@@ -122,6 +135,13 @@ export class Game {
   mobileMode = false;
   rtxEnabled = true;
   goreEnabled = true;
+  voicesEnabled = true;
+  voices = new NpcVoiceEngine();
+  private glbUnsub: (() => void) | null = null;
+  private glbLandmarksPlaced = new Set<string>();
+  private glbLandmarkGroup = new THREE.Group();
+  private lastSpokenAmbientKey = '';
+  private storyVoiceSeq = 1;
   recoilT = 0;
   prevPlayerYaw = Math.PI / 2;
   touch = {
@@ -244,66 +264,72 @@ export class Game {
     this.camera = new THREE.PerspectiveCamera(62, w / h, 0.35, 5800);
     this.scene.add(this.camera);
 
-    // postprocessing (bypass composer on software WebGL for responsive frame pacing)
+    // postprocessing: crisp filmic bloom with high threshold & tight radius (zero hazy glow)
     if (!this.isSoftwareGl) {
       const rt = new THREE.WebGLRenderTarget(w * pr, h * pr, { type: THREE.HalfFloatType, samples: Q.msaa });
       this.composer = new EffectComposer(this.renderer, rt);
       this.composer.setPixelRatio(pr);
       this.composer.setSize(w, h);
       this.composer.addPass(new RenderPass(this.scene, this.camera));
-      this.bloom = new UnrealBloomPass(new THREE.Vector2(w, h), 0.42, 0.62, 0.92);
+      this.bloom = new UnrealBloomPass(new THREE.Vector2(w, h), 0.18, 0.24, 0.94);
       this.bloom.enabled = bloomOn;
       this.composer.addPass(this.bloom);
       this.composer.addPass(new OutputPass());
     }
 
-    // upgraded 3-tone atmospheric + Simulated RTX multi-bounce GI lighting rig
-    this.hemi = new THREE.HemisphereLight(0xbcd8ff, 0x7a6852, 0.95);
+    // Ultra-realistic 4-light physically balanced outdoor GI + rim rig
+    this.hemi = new THREE.HemisphereLight(0xc2dcff, 0x6f614f, 0.88);
     this.scene.add(this.hemi);
-    this.sun = new THREE.DirectionalLight(0xfff4e0, 3.2);
+    this.sun = new THREE.DirectionalLight(0xfff5e4, 3.15);
     this.sun.castShadow = shadowsOn;
     this.sun.shadow.mapSize.set(Q.shadowSize, Q.shadowSize);
     const sc = this.sun.shadow.camera;
-    sc.left = -85; sc.right = 85; sc.top = 85; sc.bottom = -85; sc.near = 1; sc.far = 650;
-    this.sun.shadow.bias = -0.00035;
-    this.sun.shadow.normalBias = 0.3;
+    sc.left = -68; sc.right = 68; sc.top = 68; sc.bottom = -68; sc.near = 1; sc.far = 650;
+    this.sun.shadow.bias = -0.00025;
+    this.sun.shadow.normalBias = 0.03;
+    this.sun.shadow.radius = 2.2;
     this.scene.add(this.sun, this.sun.target);
-    // Simulated RTX bounce/rim directional fill light (cool sky/ocean rim + warm ground bounce)
-    this.bounceLight = new THREE.DirectionalLight(0x7cc8ff, 0.72);
+    // Cool sky / warm ground bounce fill light
+    this.bounceLight = new THREE.DirectionalLight(0x7cc4ff, 0.56);
     this.scene.add(this.bounceLight, this.bounceLight.target);
-    // Player-local neon bounce PointLight for vibrant Vice/Leonida wet-street reflections at dusk/night
-    this.neonLight = new THREE.PointLight(0xff4db8, 0, 52, 1.5);
-    this.scene.add(this.neonLight);
+    // Subtle high-angle rim light to sculpt GLB car creases, silhouettes & wet clearcoat
+    this.rimLight = new THREE.DirectionalLight(0xffe6cc, 0.32);
+    this.scene.add(this.rimLight, this.rimLight.target);
+    // Dual opposite-side elevated neon street bounce GI at dusk/night (soft wide wash, zero hotspot burn)
+    this.neonLight = new THREE.PointLight(0xff4da2, 0, 74, 1.35);
+    this.neonLight2 = new THREE.PointLight(0x28d8f8, 0, 74, 1.35);
+    this.scene.add(this.neonLight, this.neonLight2);
     for (let i = 0; i < 2; i++) {
       const s = new THREE.SpotLight(0xfff0cf, 0, 75, 0.5, 0.6, 1.4);
       this.scene.add(s, s.target);
       this.spots.push(s);
     }
 
-    // sky + PMREM RoomEnvironment for crisp PBR metallic/glass/car paint reflections
+    // sky + dynamic Day/Sunset/Night/Flat HDR PMREM environments (active on all devices!)
     this.skyMat = skyMaterial();
     this.sky = new THREE.Mesh(new THREE.SphereGeometry(4400, 32, 16), this.skyMat);
     this.sky.renderOrder = -10;
     this.sky.frustumCulled = false;
     this.scene.add(this.sky);
-    this.scene.fog = new THREE.Fog(0x9cc3e6, 220, 2900);
-    if (!this.isSoftwareGl) {
-      const pm = new THREE.PMREMGenerator(this.renderer);
-      const envScene = new RoomEnvironment();
-      this.scene.environment = pm.fromScene(envScene, 0.04).texture;
-      envScene.dispose();
-      pm.dispose();
-    } else {
-      this.hemi.intensity = 1.25;
+    this.scene.fog = new THREE.Fog(0x9cc3e6, 260, 3100);
+    this.rtxEnvs = buildRtxEnvironments(this.renderer);
+    this.scene.environment = this.rtxEnvs.day;
+    if (this.isSoftwareGl) {
+      this.hemi.intensity = 1.15;
     }
+
+    // Begin preloading real binary .glb models for cars, hero buildings, player & NPCs
+    preloadGlbAssets();
 
     // world
     this.city = buildCity();
     this.world = this.city.world;
     this.rooms = this.city.rooms ?? [];
     this.scene.add(this.city.group);
+    this.scene.add(this.glbLandmarkGroup);
     this.fx = new FX(this.scene);
     this.mapR = new MapRenderer(this.city);
+    this.glbUnsub = onGlbAssetReady(() => this.syncGlbAssets());
     for (let i = 0; i < 4; i++) {
       const l = new THREE.PointLight(0xffe8c4, 0, 34, 1.8);
       this.scene.add(l);
@@ -475,8 +501,11 @@ export class Game {
     this.rtxEnabled = enabled;
     this.city.setRtx(enabled);
     setVehicleRtx(enabled);
+    setGlbRtx(enabled);
     if (this.bloom) {
-      this.bloom.strength = this.interior ? 0.16 : enabled ? 0.54 : 0.28;
+      this.bloom.strength = this.interior ? 0.1 : enabled ? 0.21 : 0.1;
+      this.bloom.radius = 0.26;
+      this.bloom.threshold = 0.92;
     }
     this.applyTime(0);
     this.emitHud(true);
@@ -485,6 +514,35 @@ export class Game {
     this.goreEnabled = enabled;
     this.fx.setGoreEnabled(enabled);
     this.emitHud(true);
+  }
+  setVoicesEnabled(enabled: boolean) {
+    this.voicesEnabled = enabled;
+    this.voices.setEnabled(enabled);
+    this.emitHud(true);
+  }
+  setVoiceVolume(vol01: number) {
+    this.voices.setMasterVolume(vol01);
+  }
+  /** Upgrades spawned vehicles, player, NPCs & curated landmarks to their real .glb 3D models as they finish loading. */
+  syncGlbAssets() {
+    if (this.player.rig) upgradeHumanToGlb(this.player.rig);
+    for (const p of this.peds) upgradeHumanToGlb(p.rig);
+    for (const v of this.vehicles) {
+      if (!v.spec.isAircraft) upgradeVehicleToGlb(v.model, v.type);
+    }
+    for (const lm of GLB_CITY_LANDMARKS) {
+      const key = `${lm.key}_${lm.x}_${lm.z}`;
+      if (this.glbLandmarksPlaced.has(key)) continue;
+      const mesh = cloneBuildingGlb(lm.key, lm.tint);
+      if (!mesh) continue;
+      const gy = groundHeight(lm.x, lm.z);
+      mesh.position.set(lm.x, gy, lm.z);
+      mesh.rotation.y = lm.yaw;
+      if (lm.scale) mesh.scale.setScalar(lm.scale);
+      this.glbLandmarkGroup.add(mesh);
+      this.world.addBox(lm.x - lm.halfW, lm.x + lm.halfW, lm.z - lm.halfD, lm.z + lm.halfD, gy + lm.height, lm.label);
+      this.glbLandmarksPlaced.add(key);
+    }
   }
   setTouchMove(x: number, y: number) {
     this.touch.moveX = clamp(x, -1, 1);
@@ -548,11 +606,13 @@ export class Game {
       this.state = 'paused';
       this.input.fire = false; this.input.aim = false;
       this.touch.fire = false; this.touch.aim = false;
+      this.voices.stop();
       if (document.pointerLockElement) document.exitPointerLock();
       this.ev.onLock(false);
     } else {
       this.state = 'playing';
       this.audio.init();
+      this.voices.unlock();
       this.requestLock();
     }
     this.audio.setEngine(false, 0, 0);
@@ -579,6 +639,8 @@ export class Game {
     this.running = true;
     this.last = performance.now();
     this.audio.init();
+    this.voices.unlock();
+    this.syncGlbAssets();
     this.requestLock();
     this.emitHud(true);
     if (!(window as any).__noAutoRun) this.raf = requestAnimationFrame(this.frame);
@@ -586,6 +648,9 @@ export class Game {
   destroy() {
     this.running = false;
     cancelAnimationFrame(this.raf);
+    this.glbUnsub?.();
+    this.glbUnsub = null;
+    this.voices.dispose();
     window.removeEventListener('keydown', this.onKeyDown);
     window.removeEventListener('keyup', this.onKeyUp);
     window.removeEventListener('mousemove', this.onMouseMove);
@@ -600,6 +665,7 @@ export class Game {
     this.audio.setEngine(false, 0, 0);
     this.audio.setSiren(0);
     this.audio.setStation(0);
+    this.rtxEnvs.dispose();
     this.renderer.dispose();
     this.renderer.domElement.remove();
   }
@@ -909,8 +975,16 @@ export class Game {
     this.dt = dt;
     this.time += dt;
     if (this.interior) this.insideT += dt;
-    this.update(dt);
-    this.render();
+    try {
+      this.update(dt);
+    } catch (err) {
+      console.error('[SanNova] update error recovered:', err);
+    }
+    try {
+      this.render();
+    } catch (err) {
+      console.error('[SanNova] render error recovered:', err);
+    }
     this.input.pressed.clear();
     this.afterDraw(() => this.frame(performance.now()));
   };
@@ -1013,35 +1087,78 @@ export class Game {
     U.night.value = this.night;
     U.time.value = this.time;
     (this.scene.fog as THREE.Fog).color.copy(hor).multiplyScalar(0.92);
-    this.hemi.color.set(0x30406a).lerp(new THREE.Color(0xbcd8ff), day);
-    this.hemi.groundColor.set(0x14161e).lerp(new THREE.Color(0x6a5f50), day);
-    this.hemi.intensity = 0.38 + day * 0.65;
+    this.hemi.color.set(0x2d3f68).lerp(new THREE.Color(0xc2dcff), day).lerp(new THREE.Color(0xffbfa0), dusk * 0.28);
+    this.hemi.groundColor.set(0x13161e).lerp(new THREE.Color(0x6e604f), day);
+    this.hemi.intensity = (this.isSoftwareGl ? 0.58 : 0.34) + day * (this.isSoftwareGl ? 0.72 : 0.6);
     const useSun = elev > 0.02;
     const dir = useSun ? sunDir : sunDir.clone().negate();
     const cx = this.camX, cz = this.camZ;
     this.sun.position.set(cx + dir.x * 220, dir.y * 220 + 20, cz + dir.z * 220);
     this.sun.target.position.set(cx, 0, cz);
-    this.sun.color.copy(useSun ? sunC : new THREE.Color(0x8fa8ff));
-    this.sun.intensity = useSun ? day * (this.rtxEnabled ? 3.35 : 3.0) * (0.35 + 0.65 * smooth(0, 0.35, elev)) : this.night * 0.45;
-    // Simulated RTX multi-bounce GI rim light + dynamic Vice/Leonida neon street glow
+    this.sun.color.copy(useSun ? sunC : new THREE.Color(0x96b2ff));
+    this.sun.intensity = useSun ? day * (this.rtxEnabled ? 3.45 : 2.85) * (0.38 + 0.62 * smooth(0, 0.35, elev)) : this.night * (this.rtxEnabled ? 0.68 : 0.45);
+    // Tighten sun shadow frustum when RTX is enabled for crisper contact shadows
+    if (this.rtxShadowTight !== this.rtxEnabled) {
+      this.rtxShadowTight = this.rtxEnabled;
+      const sc = this.sun.shadow.camera;
+      const span = this.rtxEnabled ? 68 : 96;
+      sc.left = -span; sc.right = span; sc.top = span; sc.bottom = -span;
+      sc.updateProjectionMatrix();
+      this.sun.shadow.bias = this.rtxEnabled ? -0.00025 : -0.0005;
+      this.sun.shadow.normalBias = this.rtxEnabled ? 0.03 : 0.055;
+      this.sun.shadow.radius = this.rtxEnabled ? 2.2 : 3.2;
+    }
+    // Dynamic HDR PMREM environment selection (Day / Golden-Hour Sunset / Vice Neon Night / Flat)
+    const targetEnv = !this.rtxEnabled
+      ? this.rtxEnvs.flat
+      : dusk > 0.34 && this.night < 0.72
+        ? this.rtxEnvs.sunset
+        : this.night > 0.45
+          ? this.rtxEnvs.night
+          : this.rtxEnvs.day;
+    if (this.scene.environment !== targetEnv) {
+      this.scene.environment = targetEnv;
+    }
+    // Multi-bounce sky/golden GI fill + crisp silhouette rim sculpting
     this.bounceLight.position.set(cx - dir.x * 160, 48, cz - dir.z * 160);
     this.bounceLight.target.position.set(cx, 0, cz);
-    this.bounceLight.color.set(0x38bdf8).lerp(new THREE.Color(0xffb580), dusk * 0.65 + (1 - this.night) * 0.25);
-    this.bounceLight.intensity = this.rtxEnabled ? (0.48 + day * 0.44 + dusk * 0.35) : 0.12;
+    this.bounceLight.color.set(0x45c4f8).lerp(new THREE.Color(0xff9c58), dusk * 0.72 + (1 - this.night) * 0.24);
+    this.bounceLight.intensity = this.rtxEnabled ? (0.44 + day * 0.42 + dusk * 0.42) : 0.12;
+    this.rimLight.position.set(cx - dir.z * 120, 92, cz + dir.x * 120);
+    this.rimLight.target.position.set(cx, 0, cz);
+    this.rimLight.color.set(0xffe0be).lerp(new THREE.Color(0x62b4ff), this.night * 0.8);
+    this.rimLight.intensity = this.rtxEnabled ? (0.28 + dusk * 0.36 + this.night * 0.2) : 0.07;
     if (this.rtxEnabled && !this.interior) {
-      const neonPhase = (Math.sin(this.time * 0.45 + this.player.x * 0.02) + 1) * 0.5;
-      this.neonLight.color.set(0xff3da0).lerp(new THREE.Color(0x22d3ee), neonPhase);
-      this.neonLight.position.set(this.player.x, this.player.y + 4.8, this.player.z);
-      this.neonLight.intensity = (this.night * 6.5 + dusk * 2.8);
+      const neonPhase = (Math.sin(this.time * 0.35 + this.player.x * 0.018) + 1) * 0.5;
+      const sx = Math.cos(this.camYaw), sz = -Math.sin(this.camYaw);
+      // Elevated soft warm coral/magenta storefront bounce (casts realistic tint without blowing out asphalt)
+      this.neonLight.color.set(0xff5298).lerp(new THREE.Color(0xff8e4a), dusk * 0.65 + neonPhase * 0.25);
+      this.neonLight.position.set(this.player.x + sx * 17, this.player.y + 9.5, this.player.z + sz * 17);
+      this.neonLight.intensity = this.night * 3.1 + dusk * 0.65;
+      // Elevated cool cyan/amber opposite storefront bounce
+      this.neonLight2.color.set(0x2cd8ff).lerp(new THREE.Color(0xffb868), dusk * 0.55 + (1 - neonPhase) * 0.25);
+      this.neonLight2.position.set(this.player.x - sx * 17, this.player.y + 9.5, this.player.z - sz * 17);
+      this.neonLight2.intensity = this.night * 2.7 + dusk * 0.55;
     } else {
       this.neonLight.intensity = 0;
+      this.neonLight2.intensity = 0;
     }
-    if (!this.interior) this.renderer.toneMappingExposure = lerp(this.rtxEnabled ? 1.28 : 1.18, this.rtxEnabled ? 0.98 : 0.92, day);
-    (this.scene as any).environmentIntensity = (this.rtxEnabled ? 0.22 : 0.1) + day * (this.rtxEnabled ? 1.15 : 0.8);
+    if (!this.interior) {
+      this.renderer.toneMappingExposure = lerp(this.rtxEnabled ? 1.12 : 1.05, this.rtxEnabled ? 1.0 : 0.95, day);
+      if (this.bloom) {
+        // Restrained filmic bloom: crisp headlight/neon sparkle without washing out textures
+        this.bloom.strength = this.rtxEnabled ? lerp(0.24, 0.16, day) : lerp(0.11, 0.07, day);
+        this.bloom.radius = 0.25;
+        this.bloom.threshold = 0.93;
+      }
+    }
+    (this.scene as any).environmentIntensity = this.rtxEnabled
+      ? (0.34 + day * 0.72 + dusk * 0.16 + this.night * 0.34)
+      : (0.14 + day * 0.42);
     this.city.setNight(this.night);
-    headMat.emissiveIntensity = 0.2 + this.night * 3.2;
-    tailDim.emissiveIntensity = 0.2 + this.night * 1.2;
-    beamMaterial.opacity = this.night * 0.32;
+    headMat.emissiveIntensity = 0.2 + this.night * 2.2;
+    tailDim.emissiveIntensity = 0.18 + this.night * 0.95;
+    beamMaterial.opacity = this.night * 0.28;
     this.sky.position.set(this.camera.position.x, 0, this.camera.position.z);
   }
   get clockString() {
@@ -1195,6 +1312,7 @@ export class Game {
       recoil: this.recoilT,
       turnRate,
       flinch: p.hurtT > 0.25 ? Math.min(1, p.hurtT) : 0,
+      isPlayer: true,
     });
   }
   fireHeld = false;
@@ -1631,6 +1749,13 @@ export class Game {
     if (!this.sub && this.subQ.length) {
       const q = this.subQ.shift()!;
       this.sub = { who: q.who, text: q.text, t: q.dur };
+      if (this.voicesEnabled) {
+        try {
+          this.voices.speak(99000 + (this.storyVoiceSeq++), 'story', q.text, 2.0, true);
+        } catch {
+          // Never allow voice playback issues to interrupt subtitle or game loop
+        }
+      }
       q.after?.();
     }
     // Proximity-based ambient NPC dialogue when walking on foot (yields to mission subtitles)
@@ -1654,7 +1779,7 @@ export class Game {
     const moving = Math.hypot(p.move.vx, p.move.vz) > 0.6;
     const armed = !isMeleeWeapon(p.weapon) && (p.ammo[p.weapon] ?? 0) > 0;
     const district = this.interior ? this.interior.name.toUpperCase() : districtNameAt(p.x, p.z, p.y);
-    this.ambientSub = this.ambientDialogue.step(
+    const nextAmbient = this.ambientDialogue.step(
       {
         playerX: p.x,
         playerY: p.y,
@@ -1670,6 +1795,28 @@ export class Game {
       },
       dt,
     );
+    this.ambientSub = nextAmbient;
+    if (nextAmbient) {
+      const key = `${nextAmbient.pedId}|${nextAmbient.text}`;
+      if (key !== this.lastSpokenAmbientKey) {
+        this.lastSpokenAmbientKey = key;
+        const speaker = this.peds.find((q) => q.id === nextAmbient.pedId);
+        let dist = 5;
+        if (speaker) {
+          dist = Math.hypot(speaker.x - p.x, speaker.z - p.z);
+          speaker.speakingT = Math.max(2.6, nextAmbient.text.length * 0.055);
+        }
+        if (this.voicesEnabled) {
+          try {
+            this.voices.speak(nextAmbient.pedId, nextAmbient.kind as VoiceKind, nextAmbient.text, dist, false);
+          } catch {
+            // Fault-isolated: never disrupt gameplay if voice engine errors
+          }
+        }
+      }
+    } else {
+      this.lastSpokenAmbientKey = '';
+    }
   }
   updateRoute(dt: number) {
     this.routeT -= dt;
@@ -1882,7 +2029,7 @@ export class Game {
     this.interior = null;
     this.world.boundsOff = false;
     this.intLights.forEach((l) => (l.intensity = 0));
-    if (this.bloom) this.bloom.strength = 0.42;
+    if (this.bloom) this.bloom.strength = this.rtxEnabled ? 0.18 : 0.1;
     for (let i = this.peds.length - 1; i >= 0; i--) if (this.peds[i].indoor) this.removePed(this.peds[i]);
     this.audio.door();
     this.ev.onToast('Back outside', 'info');
@@ -2107,6 +2254,12 @@ export class Game {
       mobileMode: this.mobileMode,
       rtxEnabled: this.rtxEnabled,
       goreEnabled: this.goreEnabled,
+      voicesEnabled: this.voicesEnabled,
+      speakingVoice: this.voices.speakingVoiceName,
+      animCount: ANIMATION_COUNT,
+      playerAnim: p.rig.animClipName,
+      glbLoaded: getGlbStatus().loaded,
+      glbTotal: getGlbStatus().total,
       storeCount: this.city.doors.length,
     });
   }

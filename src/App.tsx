@@ -98,6 +98,7 @@ export default function App() {
   });
   const [rtxEnabled, setRtxEnabled] = useState<boolean>(true);
   const [goreEnabled, setGoreEnabled] = useState<boolean>(true);
+  const [voicesEnabled, setVoicesEnabled] = useState<boolean>(true);
   const [hud, setHud] = useState<HudState | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [banner, setBanner] = useState<Banner>(null);
@@ -130,6 +131,8 @@ export default function App() {
         g.setMobileMode(mobileMode);
         g.setRtxEnabled(rtxEnabled);
         g.setGoreEnabled(goreEnabled);
+        g.setVoicesEnabled(voicesEnabled);
+        g.setVoiceVolume(volume / 100);
         gameRef.current = g;
         (window as any).__game = g;
         g.attachMinimap(miniRef.current);
@@ -142,7 +145,7 @@ export default function App() {
         setPhase('title');
       }
     }, 60);
-  }, [quality, mobileMode, rtxEnabled, goreEnabled]);
+  }, [quality, mobileMode, rtxEnabled, goreEnabled, voicesEnabled, volume]);
 
   // Support ?autostart=1 and Enter/Space to start on title screen
   useEffect(() => {
@@ -200,6 +203,11 @@ export default function App() {
     const next = !(hud?.goreEnabled ?? goreEnabled);
     setGoreEnabled(next);
     g?.setGoreEnabled(next);
+  };
+  const toggleVoices = () => {
+    const next = !(hud?.voicesEnabled ?? voicesEnabled);
+    setVoicesEnabled(next);
+    g?.setVoicesEnabled(next);
   };
   const onMapClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
     const c = e.currentTarget;
@@ -482,6 +490,11 @@ export default function App() {
                 {hud.ambientSubtitle.who}:
               </span>
               <span className="italic">“{hud.ambientSubtitle.text}”</span>
+              {hud.voicesEnabled && hud.speakingVoice && (
+                <span className="ml-2 inline-block rounded bg-emerald-500/25 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-emerald-200">
+                  ♪ {hud.speakingVoice}
+                </span>
+              )}
             </span>
           </div>
         )}
@@ -567,7 +580,7 @@ export default function App() {
             </div>
 
             {/* Quick Mode & Graphics Toggles */}
-            <div className="mt-5 grid grid-cols-1 gap-2.5 sm:grid-cols-3">
+            <div className="mt-5 grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-4">
               <button
                 type="button"
                 data-toggle-mobile="true"
@@ -599,7 +612,7 @@ export default function App() {
               >
                 <div>
                   <div className="text-xs font-extrabold tracking-widest">SIMULATED RTX</div>
-                  <div className="text-[11px] text-white/60">PBR reflections & GI bounce</div>
+                  <div className="text-[11px] text-white/60">PBR lighting & reflections</div>
                 </div>
                 <span className={`rounded px-2 py-0.5 text-xs font-black ${hud.rtxEnabled ? 'bg-fuchsia-400 text-black' : 'bg-white/15 text-white/70'}`}>
                   {hud.rtxEnabled ? 'ON' : 'OFF'}
@@ -618,10 +631,29 @@ export default function App() {
               >
                 <div>
                   <div className="text-xs font-extrabold tracking-widest">GORE & BLOOD</div>
-                  <div className="text-[11px] text-white/60">Ballistic spray, pools & gibs</div>
+                  <div className="text-[11px] text-white/60">Arterial spray, smears & gibs</div>
                 </div>
                 <span className={`rounded px-2 py-0.5 text-xs font-black ${hud.goreEnabled ? 'bg-red-500 text-white' : 'bg-white/15 text-white/70'}`}>
                   {hud.goreEnabled ? 'ON' : 'OFF'}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                data-toggle-voices="true"
+                onClick={toggleVoices}
+                className={`flex items-center justify-between rounded-lg border px-4 py-3 text-left transition ${
+                  hud.voicesEnabled
+                    ? 'border-emerald-400 bg-emerald-500/20 text-emerald-200'
+                    : 'border-white/15 bg-white/5 text-white/85 hover:bg-white/10'
+                }`}
+              >
+                <div>
+                  <div className="text-xs font-extrabold tracking-widest">NPC VOICES</div>
+                  <div className="text-[11px] text-white/60">Live API speech synthesis</div>
+                </div>
+                <span className={`rounded px-2 py-0.5 text-xs font-black ${hud.voicesEnabled ? 'bg-emerald-400 text-black' : 'bg-white/15 text-white/70'}`}>
+                  {hud.voicesEnabled ? 'ON' : 'OFF'}
                 </span>
               </button>
             </div>
@@ -649,7 +681,19 @@ export default function App() {
                 </div>
                 <div>
                   <div className="mb-1 text-xs font-bold tracking-[0.3em] text-white/50">VOLUME · {volume}%</div>
-                  <input type="range" min={0} max={100} value={volume} onChange={(e) => { setVolume(+e.target.value); if (g?.audio.master) g.audio.master.gain.value = (+e.target.value / 100) * 0.9; }} className="w-full accent-amber-400" />
+                  <input
+                    type="range"
+                    min={0}
+                    max={100}
+                    value={volume}
+                    onChange={(e) => {
+                      const v = +e.target.value;
+                      setVolume(v);
+                      if (g?.audio.master) g.audio.master.gain.value = (v / 100) * 0.9;
+                      g?.setVoiceVolume(v / 100);
+                    }}
+                    className="w-full accent-amber-400"
+                  />
                 </div>
                 <div className="rounded-lg bg-white/5 p-3 text-xs leading-relaxed text-white/75">
                   <b className="text-white">Tips:</b> Head east to <b>San Nova International Airport</b> (✈ on map) to pilot prop planes, private jets & seaplanes. Explore <b>328 Leonida stores</b> across Ocean Beach Art Deco, Little Havana, Wynwood Arts & Strip Plazas, test <b>4-wheel car suspension</b> over dunes, or toggle <b>Mobile Mode</b> & <b>Simulated RTX</b> anytime.
@@ -675,7 +719,7 @@ export default function App() {
             </div>
             <div className="mt-2 text-xs font-semibold tracking-[0.42em] text-cyan-200 sm:text-lg">10 KM × 10 KM LEONIDA OPEN WORLD SANDBOX</div>
             <div className="mt-3 flex flex-wrap justify-center gap-1.5 text-[10px] font-bold tracking-[0.18em] text-white/90">
-              {['328 UNIQUE STORES', 'FLYABLE JETS & PLANES', 'SIMULATED RTX & PBR', 'CAR · RAGDOLL · GORE PHYSICS', 'MOBILE MODE', '15 WEAPONS + RPG', '6 MISSIONS'].map((f) => (
+              {['328 UNIQUE STORES', 'REAL .GLB 3D MODELS', '3,240+ ANIMATIONS', 'LIVE NPC VOICES', 'FLYABLE JETS & PLANES', 'REALISTIC GORE & LIGHTING', 'MOBILE MODE'].map((f) => (
                 <span key={f} className="rounded border border-white/25 bg-black/55 px-2.5 py-1">{f}</span>
               ))}
             </div>

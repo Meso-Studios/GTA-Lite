@@ -449,45 +449,57 @@ export function makeRoadBump(seed = 55) {
   return toTex(c, { srgb: false, aniso: 8 });
 }
 
-/** Procedural wet-puddle & polished asphalt roughness map for Simulated RTX street reflections. */
+/** Procedural organic rain-slicked asphalt & multi-lobe puddle roughness map for Simulated RTX street reflections. */
 export function makeRoadRoughness(seed = 58) {
   const rng = new Rng(seed);
   const S = 512;
   const [c, d] = mk(S, S);
-  // Base dry asphalt roughness (~0.84 -> 214)
-  d.fillStyle = '#d4d4d4';
+  // Matte dry asphalt base (~0.88 -> #e0e0e0)
+  d.fillStyle = '#e0e0e0';
   d.fillRect(0, 0, S, S);
-  addNoise(d, S, S, 26, rng);
-  // Tire polish tracks slightly glossier (~0.58)
-  for (const x of [90, 180, 330, 420]) {
-    const g = d.createLinearGradient(x - 36, 0, x + 36, 0);
-    g.addColorStop(0, 'rgba(145,145,145,0)');
-    g.addColorStop(0.5, 'rgba(135,135,135,0.45)');
-    g.addColorStop(1, 'rgba(145,145,145,0)');
+  addNoise(d, S, S, 34, rng);
+
+  // Broad damp-asphalt longitudinal rain streaks along traffic lanes (natural wet sheen ~0.42–0.56)
+  for (const x of [76, 178, 334, 436]) {
+    const w = rng.range(54, 84);
+    const g = d.createLinearGradient(x - w, 0, x + w, 0);
+    g.addColorStop(0, 'rgba(130,130,130,0)');
+    g.addColorStop(0.35, 'rgba(116,116,116,0.42)');
+    g.addColorStop(0.5, 'rgba(92,92,92,0.58)');
+    g.addColorStop(0.65, 'rgba(116,116,116,0.42)');
+    g.addColorStop(1, 'rgba(130,130,130,0)');
     d.fillStyle = g;
-    d.fillRect(x - 36, 0, 72, S);
+    d.fillRect(x - w, 0, w * 2, S);
   }
-  // Organic glossy rain puddles / RTX wet reflection patches (roughness ~0.08 -> #161616)
-  for (let k = 0; k < 18; k++) {
-    const px = rng.range(35, S - 35);
-    const py = rng.range(35, S - 35);
-    const rx = rng.range(26, 78);
-    const ry = rng.range(18, 62);
-    const rot = rng.range(0, Math.PI);
-    d.save();
-    d.translate(px, py);
-    d.rotate(rot);
-    const g = d.createRadialGradient(0, 0, rx * 0.15, 0, 0, rx);
-    g.addColorStop(0, 'rgba(18,18,18,0.92)');
-    g.addColorStop(0.65, 'rgba(32,32,32,0.75)');
-    g.addColorStop(1, 'rgba(210,210,210,0)');
-    d.fillStyle = g;
-    d.scale(1, ry / rx);
-    d.beginPath();
-    d.arc(0, 0, rx, 0, Math.PI * 2);
-    d.fill();
-    d.restore();
+
+  // Irregular multi-lobe wet puddles (composited overlapping elongated blobs with soft damp halos — zero circular rings)
+  for (let k = 0; k < 14; k++) {
+    const cx = rng.range(48, S - 48);
+    const cy = rng.range(48, S - 48);
+    const lobes = 4 + Math.floor(rng.next() * 4);
+    for (let l = 0; l < lobes; l++) {
+      const ox = cx + rng.range(-34, 34);
+      const oy = cy + rng.range(-48, 48);
+      const rx = rng.range(22, 54);
+      const ry = rng.range(36, 92);
+      const rot = rng.range(-0.35, 0.35);
+      d.save();
+      d.translate(ox, oy);
+      d.rotate(rot);
+      d.scale(1, ry / rx);
+      const g = d.createRadialGradient(0, 0, rx * 0.1, 0, 0, rx);
+      g.addColorStop(0, 'rgba(28,28,28,0.68)');
+      g.addColorStop(0.55, 'rgba(54,54,54,0.42)');
+      g.addColorStop(1, 'rgba(220,220,220,0)');
+      d.fillStyle = g;
+      d.beginPath();
+      d.arc(0, 0, rx, 0, Math.PI * 2);
+      d.fill();
+      d.restore();
+    }
   }
+  // Subtle micro-grit variation so reflections break up realistically across asphalt aggregate
+  addNoise(d, S, S, 18, rng);
   return toTex(c, { srgb: false, aniso: 8 });
 }
 

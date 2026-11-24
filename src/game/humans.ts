@@ -4,6 +4,8 @@ import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js
 import { Rng, clamp } from './config';
 import { box, capsule, cyl, finish, sph } from './geo';
 import { makeContactShadow } from './textures';
+import { cloneHumanGlbPart } from './glbAssets';
+import { evaluateAnimationPose, selectContextAnimation } from './animations';
 
 export interface Look {
   gender: 'm' | 'f';
@@ -639,7 +641,14 @@ export interface HumanRig {
   pose: Record<string, number>;
   meshes: THREE.Mesh[];
   look: Look;
+  entitySeed: number;
+  animClipName: string;
+  idleEpoch: number;
+  idleTimer: number;
+  glbAttached: boolean;
 }
+
+let humanSeedSeq = 1;
 
 export function createHuman(L: Look): HumanRig {
   const key = JSON.stringify(L);
@@ -682,14 +691,101 @@ export function createHuman(L: Look): HumanRig {
   const knL = grp(legL, 0, -0.44, 0), knR = grp(legR, 0, -0.44, 0);
   mk(p.shin, knL); mk(p.shin, knR);
   root.scale.setScalar(L.height * 1.0);
-  return {
+  const rig: HumanRig = {
     root, hips, spine, head, armL, armR, elL, elR, legL, legR, knL, knR, handR, shadow,
     weapon: null, weaponKind: null, phase: Math.random() * 6, meshes, look: L,
+    entitySeed: humanSeedSeq++,
+    animClipName: 'urban_idle_stand_breathe_casual_morning',
+    idleEpoch: Math.floor(Math.random() * 24),
+    idleTimer: 3 + Math.random() * 5,
+    glbAttached: false,
     pose: {
       hipL: 0, hipR: 0, knL: 0, knR: 0, aLx: 0, aLz: 0, aRx: 0, aRz: 0, elL: 0, elR: 0,
       lean: 0, headX: 0, headY: 0, hipsY: 0.92, hipsX: 0, twist: 0, bank: 0,
     },
   };
+  upgradeHumanToGlb(rig);
+  return rig;
+}
+
+const glbHumanMatCache = new Map<string, THREE.MeshStandardMaterial>();
+function getHumanPartMat(hex: number, rough: number, metal = 0.04): THREE.MeshStandardMaterial {
+  const k = `${hex}_${rough}_${metal}`;
+  let m = glbHumanMatCache.get(k);
+  if (!m) {
+    m = new THREE.MeshStandardMaterial({ color: hex, roughness: rough, metalness: metal, envMapIntensity: 0.72 });
+    glbHumanMatCache.set(k, m);
+  }
+  return m;
+}
+
+/** Upgrades a character rig with sculpted anatomical .glb parts while cleanly hiding replaced procedural geometry (zero Z-fighting). */
+export function upgradeHumanToGlb(r: HumanRig): boolean {
+  if (r.glbAttached) return true;
+  const L = r.look;
+  const topMat = getHumanPartMat(L.top, L.topStyle === 'suit' ? 0.62 : 0.78);
+  const skinMat = getHumanPartMat(L.skin, 0.58, 0.02);
+  const botMat = getHumanPartMat(L.bottom, 0.84);
+  const shoeMat = getHumanPartMat(L.shoe, 0.48, 0.08);
+  const soleMat = getHumanPartMat(0xebeef2, 0.72, 0.02);
+  const beltMat = getHumanPartMat(0x181a1f, 0.34, 0.48);
+
+  const torsoGlb = cloneHumanGlbPart('TorsoMesh', topMat, beltMat);
+  if (!torsoGlb) return false;
+
+  // Hide replaced procedural body & limb meshes (keep r.meshes[1] = head with unique eyes/hair/hats/beards/shades)
+  for (let i = 0; i < r.meshes.length; i++) {
+    if (i !== 1) r.meshes[i].visible = false;
+  }
+
+  const b = L.build;
+  torsoGlb.position.set(0, 0.03, 0);
+  torsoGlb.scale.set(b, 1.0, b);
+  r.spine.add(torsoGlb);
+
+  const pelvisGlb = cloneHumanGlbPart('PelvisMesh', botMat);
+  if (pelvisGlb) {
+    pelvisGlb.position.set(0, 0.02, 0);
+    pelvisGlb.scale.set(b, 1.0, b);
+    r.hips.add(pelvisGlb);
+  }
+
+  if (L.bottomStyle === 'skirt') {
+    const skirtGeo = new THREE.CylinderGeometry(0.145 * b, 0.215 * b, 0.34, 14);
+    const skirtMesh = new THREE.Mesh(skirtGeo, botMat);
+    skirtMesh.position.set(0, -0.17, 0);
+    skirtMesh.castShadow = true;
+    skirtMesh.receiveShadow = true;
+    r.hips.add(skirtMesh);
+  }
+
+  const sleeveMat = L.topStyle === 'tank' ? skinMat : topMat;
+  const foreMat = L.topStyle === 'long' || L.topStyle === 'jacket' || L.topStyle === 'suit' || L.topStyle === 'uniform' ? topMat : skinMat;
+  for (const arm of [r.armL, r.armR]) {
+    const ua = cloneHumanGlbPart('UpperArmMesh', sleeveMat);
+    if (ua) { ua.scale.set(b, 1.04, b); arm.add(ua); }
+  }
+  for (const el of [r.elL, r.elR]) {
+    const fa = cloneHumanGlbPart('ForeArmMesh', foreMat);
+    if (fa) { fa.scale.set(b, 1.04, b); el.add(fa); }
+    const hd = cloneHumanGlbPart('HandMesh', skinMat);
+    if (hd) { hd.position.set(0, -0.25, 0); el.add(hd); }
+  }
+  const thighMat = L.bottomStyle === 'skirt' ? skinMat : botMat;
+  const shinMat = L.bottomStyle === 'shorts' || L.bottomStyle === 'skirt' ? skinMat : botMat;
+  for (const leg of [r.legL, r.legR]) {
+    const th = cloneHumanGlbPart('ThighMesh', thighMat);
+    if (th) { th.scale.set(b, 1.06, b); leg.add(th); }
+  }
+  for (const kn of [r.knL, r.knR]) {
+    const sh = cloneHumanGlbPart('ShinMesh', shinMat);
+    if (sh) { sh.scale.set(b, 1.04, b); kn.add(sh); }
+    const shoe = cloneHumanGlbPart('ShoeMesh', shoeMat, soleMat);
+    if (shoe) { shoe.position.set(0, -0.41, 0.01); kn.add(shoe); }
+  }
+
+  r.glbAttached = true;
+  return true;
 }
 
 export function setWeapon(r: HumanRig, kind: GunKind | null) {
@@ -711,15 +807,20 @@ export interface AnimIn {
   aim: number; // 0..1 weapon raised
   aimPitch: number;
   punch: number; // 0..1 progress, 0 = none
+  isPlayer?: boolean;
   panic?: boolean;
   steer?: number;
   crouch?: boolean;
   slide?: boolean;
   airborne?: boolean;
   photo?: boolean;
-  flinch?: number;   // 0..1 hit stagger reaction
-  recoil?: number;   // 0..1 firearm recoil kick
-  turnRate?: number; // rad/s yaw rate for natural turn banking
+  flinch?: number;     // 0..1 hit stagger reaction
+  recoil?: number;     // 0..1 firearm recoil kick
+  turnRate?: number;   // rad/s yaw rate for natural turn banking
+  speaking?: boolean;  // true while NPC is actively talking via TTS voice API
+  onSand?: boolean;    // soft beach/dune sand trudge gait
+  isTourist?: boolean; // tourist boardwalk/beach animation catalog preference
+  inAircraft?: boolean;
 }
 
 const TWO_HANDED_GUNS = new Set<GunKind>(['shotgun', 'autoshotgun', 'rifle', 'carbine', 'lmg', 'sniper']);
@@ -757,56 +858,117 @@ export function animateHuman(r: HumanRig, dt: number, a: AnimIn) {
     rate = 24;
   } else {
     const sp = a.speed;
+    // Keep player idle rock-steady; NPCs shift calm standing posture only after a long natural dwell (18-28s)
+    if (!a.isPlayer && sp <= 0.15 && !a.speaking) {
+      r.idleTimer -= dt;
+      if (r.idleTimer <= 0) {
+        r.idleTimer = 18.0 + (r.entitySeed % 6) * 2.2;
+        r.idleEpoch = (r.idleEpoch + 1) % 64;
+      }
+    }
+    const clip = selectContextAnimation({
+      entitySeed: r.entitySeed,
+      speed: sp,
+      isPlayer: a.isPlayer,
+      crouch: a.crouch,
+      slide: a.slide,
+      airborne: a.airborne,
+      aim: a.aim,
+      punch: a.punch,
+      recoil: a.recoil,
+      flinch: a.flinch,
+      panic: a.panic,
+      photo: a.photo,
+      speaking: a.speaking,
+      onSand: a.onSand,
+      isTourist: a.isTourist,
+      weaponKind: wk,
+      idleEpoch: a.isPlayer ? 0 : r.idleEpoch,
+    });
+    r.animClipName = clip.name;
+    const animClock = performance.now() * 0.001 + r.entitySeed * 0.73;
+
     if (a.airborne) {
-      T.hipL = -0.56; T.knL = 0.78;
-      T.hipR = 0.28; T.knR = 0.48;
-      T.aLx = -0.55; T.aLz = 0.38; T.aRx = -0.45; T.aRz = -0.38;
+      const ep = evaluateAnimationPose(clip, animClock, 1.0, 0);
+      T.hipL = -0.56 + ep.legLx * 0.25; T.knL = 0.78 + ep.shinLx * 0.15;
+      T.hipR = 0.28 + ep.legRx * 0.25; T.knR = 0.48 + ep.shinRx * 0.15;
+      T.aLx = -0.55 + ep.armLx * 0.2; T.aLz = 0.38; T.aRx = -0.45 + ep.armRx * 0.2; T.aRz = -0.38;
       T.elL = -0.52; T.elR = -0.52;
       T.lean = 0.12;
       rate = 14;
     } else if (sp > 0.15) {
-      // Realistic stride cycle: double-bounce hip lift, lateral weight shift, heel-strike shin extension, elbow-lag arm swing
+      // Realistic stride cycle enriched with personality & style harmonics from the 3,240+ clip library
       const sprintBlend = clamp((sp - 4.2) / 3.5, 0, 1);
-      r.phase += dt * (4.4 + sp * 1.12);
+      r.phase += dt * (4.2 + sp * 1.08) * clamp(clip.cycleHz / 2.0, 0.78, 1.24);
       const ph = r.phase;
       const sPh = Math.sin(ph);
       const cPh = Math.cos(ph);
+      const ep = evaluateAnimationPose(clip, animClock, clamp(sp / 3.5, 0.65, 1.45), a.speaking ? 0.5 : 0);
       const A = clamp(0.18 + sp * 0.125, 0, 1.08);
       const K = 0.38 + Math.min(sp, 8) * 0.135;
-      // Asymmetric hip/knee curve mimics push-off and heel-strike
       T.hipL = -sPh * A + (sPh > 0 ? 0.06 * sprintBlend : 0);
       T.hipR = sPh * A + (sPh < 0 ? 0.06 * sprintBlend : 0);
       T.knL = K * Math.max(0, cPh + 0.15) + 0.04 + sprintBlend * 0.18 * Math.max(0, sPh);
       T.knR = K * Math.max(0, -cPh + 0.15) + 0.04 + sprintBlend * 0.18 * Math.max(0, -sPh);
-      // Elbow-lagged arm swing (forearms bend more on forward swing)
-      const aa = A * (0.82 + sprintBlend * 0.22);
-      T.aLx = sPh * aa;
-      T.aRx = -sPh * aa;
+      const aa = A * (0.8 + sprintBlend * 0.22);
+      T.aLx = sPh * aa + ep.armLx * 0.12;
+      T.aRx = -sPh * aa + ep.armRx * 0.12;
       T.elL = -0.26 - sp * 0.075 - Math.max(0, -sPh) * (0.28 + sprintBlend * 0.35);
       T.elR = -0.26 - sp * 0.075 - Math.max(0, sPh) * (0.28 + sprintBlend * 0.35);
-      T.aLz = 0.07 + sprintBlend * 0.08;
-      T.aRz = -0.07 - sprintBlend * 0.08;
-      // Torso forward sprint lean + counter-twist + natural hip sway + double-bounce vertical bob
-      T.lean = Math.min(sp, 9) * 0.032 + sprintBlend * 0.06;
+      T.aLz = 0.07 + sprintBlend * 0.08 + clip.armOutL * 0.25;
+      T.aRz = -0.07 - sprintBlend * 0.08 + clip.armOutR * 0.25;
+      T.lean = Math.min(sp, 9) * 0.032 + sprintBlend * 0.06 + clip.spineLean * 0.2;
       const bounce = Math.abs(Math.sin(ph)) * (0.022 + sprintBlend * 0.024);
       T.hipsY = 0.92 - Math.min(sp, 7) * 0.008 + bounce - 0.014;
-      T.hipsX = cPh * 0.024 * clamp(sp / 2.2, 0, 1);
-      T.twist = sPh * (0.13 + sprintBlend * 0.08) * Math.min(1, sp / 2.6);
+      T.hipsX = cPh * 0.024 * clamp(sp / 2.2, 0, 1) + ep.hipRoll * 0.22;
+      T.twist = sPh * (0.13 + sprintBlend * 0.08) * Math.min(1, sp / 2.6) + ep.spineY * 0.2;
       T.bank = clamp(-(a.turnRate ?? 0) * 0.075 * Math.min(1, sp / 3.5), -0.22, 0.22) - cPh * 0.025;
-      T.headX = -T.lean * 0.45;
+      T.headX = -T.lean * 0.45 + ep.headX * 0.35;
+      T.headY = ep.headY * 0.45;
+    } else if (a.isPlayer) {
+      // Natural, grounded GTA-style player idle: subtle chest breathing, gentle weight shift & relaxed arms
+      const breath = Math.sin(animClock * 1.65);
+      const sway = Math.sin(animClock * 0.42);
+      T.hipsY = 0.92 + breath * 0.008;
+      T.hipsX = sway * 0.012;
+      T.lean = 0.025 + breath * 0.012;
+      T.twist = sway * 0.04;
+      T.bank = sway * 0.018;
+      T.headX = -0.01 + breath * 0.014;
+      T.headY = Math.sin(animClock * 0.34) * 0.14;
+      T.aLx = 0.04 + breath * 0.025;
+      T.aLz = 0.08 + breath * 0.015;
+      T.aRx = 0.04 - breath * 0.02;
+      T.aRz = -0.08 - breath * 0.015;
+      T.elL = -0.22;
+      T.elR = -0.22;
+      T.hipL = -0.03;
+      T.hipR = 0.03;
+      T.knL = 0.05;
+      T.knR = 0.04;
+      rate = 6.5;
     } else {
-      // Natural idle breathing, weight-shift sway & subtle ambient look-around
-      const bt = performance.now() * 0.0017 + r.look.build * 3.7;
-      T.lean = Math.sin(bt) * 0.015;
-      T.hipsY = 0.92 + Math.sin(bt) * 0.006;
-      T.hipsX = Math.sin(bt * 0.45) * 0.014;
-      T.bank = Math.sin(bt * 0.45) * 0.016;
-      T.aLx = Math.sin(bt) * 0.025;
-      T.aRx = -Math.sin(bt) * 0.025;
-      T.aLz = 0.06 + Math.sin(bt) * 0.01;
-      T.aRz = -0.06 - Math.sin(bt) * 0.01;
-      T.headX = Math.sin(bt * 0.55) * 0.03;
-      T.headY = Math.sin(bt * 0.32) * 0.12;
+      // Grounded NPC idle or lively speaking gesture from the 3,240+ catalog with smooth, non-snapping blend
+      const ep = evaluateAnimationPose(clip, animClock, 1.0, a.speaking ? 1.0 : 0);
+      const calm = a.speaking ? 1.0 : 0.72;
+      T.hipsY = 0.92 + ep.hipY * calm;
+      T.hipsX = ep.hipRoll * 0.22 * calm;
+      T.lean = ep.spineX * calm;
+      T.twist = ep.spineY * calm;
+      T.bank = ep.hipRoll * 0.32 * calm;
+      T.headX = ep.headX * calm;
+      T.headY = ep.headY * calm;
+      T.aLx = ep.armLx * calm;
+      T.aLz = ep.armLz;
+      T.aRx = ep.armRx * calm;
+      T.aRz = ep.armRz;
+      T.elL = ep.foreLx;
+      T.elR = ep.foreRx;
+      T.hipL = ep.legLx * 0.5;
+      T.hipR = ep.legRx * 0.5;
+      T.knL = 0.04 + Math.max(0, ep.shinLx * 0.5);
+      T.knR = 0.04 + Math.max(0, ep.shinRx * 0.5);
+      rate = a.speaking ? 11 : 5.5;
     }
 
     if (a.crouch && !a.airborne) {
@@ -998,9 +1160,17 @@ export class Ragdoll {
     this.update(0.001);
   }
 
-  update(dt: number, world?: RagdollWorld, onImpact?: (x: number, y: number, z: number, speed: number) => void) {
+  private smearT = 0;
+
+  update(
+    dt: number,
+    world?: RagdollWorld,
+    onImpact?: (x: number, y: number, z: number, speed: number, nx?: number, nz?: number) => void,
+    onSmear?: (x: number, y: number, z: number, vx: number, vz: number) => void,
+  ) {
     if (!this.active) return;
     this.t += dt;
+    this.smearT -= dt;
     const n = this.parts.length;
     const g = -17.5;
     for (let i = 0; i < n; i++) {
@@ -1034,9 +1204,9 @@ export class Ragdoll {
               const imp = -vn;
               a.v.x -= 1.38 * vn * _rpo.nx;
               a.v.z -= 1.38 * vn * _rpo.nz;
-              if (onImpact && imp > 3.2 && this.bloodImpactCount < 3) {
+              if (onImpact && imp > 2.6 && this.bloodImpactCount < 5) {
                 this.bloodImpactCount++;
-                onImpact(a.p.x, a.p.y, a.p.z, imp);
+                onImpact(a.p.x, a.p.y, a.p.z, imp, _rpo.nx, _rpo.nz);
               }
             }
           }
@@ -1044,9 +1214,17 @@ export class Ragdoll {
         const floor = this.gy + a.r;
         if (a.p.y < floor) {
           a.p.y = floor;
-          if (a.v.y < -2.6 && i <= 2 && onImpact && this.bloodImpactCount < 3) {
+          if (a.v.y < -2.2 && i <= 2 && onImpact && this.bloodImpactCount < 5) {
             this.bloodImpactCount++;
             onImpact(a.p.x, this.gy, a.p.z, -a.v.y);
+          }
+          // Continuous blood smear trail while chest/head skids across the ground
+          if (it === 0 && i === 1 && onSmear && this.smearT <= 0) {
+            const hSp = Math.hypot(a.v.x, a.v.z);
+            if (hSp > 1.35) {
+              this.smearT = 0.09;
+              onSmear(a.p.x, this.gy, a.p.z, a.v.x, a.v.z);
+            }
           }
           if (a.v.y < 0) a.v.y *= -0.25;
           a.v.x *= 0.64; a.v.z *= 0.64;

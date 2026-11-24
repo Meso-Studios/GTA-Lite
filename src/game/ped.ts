@@ -65,6 +65,7 @@ export class Ped {
   photoT = 0;
   sandPuffT = 0;
   flinchT = 0;
+  speakingT = 0;
 
   constructor(kind: PedKind, look: Look) {
     this.kind = kind;
@@ -191,9 +192,18 @@ export class Ped {
       if (this.hostile) { this.aggro = true; g.alertAround(this, 28); }
     }
     const groundY = g.groundAt(this.x, this.z);
+    const hitY = this.y + (headshot ? 1.62 : 1.18);
+    // Check for a nearby wall behind the victim along the exit vector for realistic vertical wall blood splatter
+    const dLen = Math.hypot(dx, dz) || 1;
+    const ux = dx / dLen, uz = dz / dLen;
+    let wallHit: { x: number; y: number; z: number; nx: number; nz: number } | null = null;
+    const wt = g.world.ray(this.x, hitY, this.z, ux, 0, uz, 4.5, 0.35);
+    if (wt > 0.15 && wt < 4.4) {
+      wallHit = { x: this.x + ux * (wt - 0.04), y: hitY, z: this.z + uz * (wt - 0.04), nx: -ux, nz: -uz };
+    }
     g.fx.bloodBurst(
       this.x,
-      this.y + (headshot ? 1.62 : 1.18),
+      hitY,
       this.z,
       dx,
       headshot ? 0.35 : 0.15,
@@ -203,6 +213,7 @@ export class Ped {
       !!opts?.explosive,
       !!opts?.shotgun || !!opts?.katana,
       groundY,
+      wallHit,
     );
     if (this.hp <= 0) {
       const imp = computeRagdollImpulse(dx, dz, effDmg, headshot, !!opts?.explosive);
@@ -266,6 +277,7 @@ export class Ped {
   update(dt: number, g: Game) {
     if (this.dead) { this.ragdoll(dt, g); return; }
     if (this.flinchT > 0) this.flinchT = Math.max(0, this.flinchT - dt);
+    if (this.speakingT > 0) this.speakingT = Math.max(0, this.speakingT - dt);
     if (this.kind === 'ally') { this.allyUpdate(dt, g); return; }
     const px = g.playerX, pz = g.playerZ;
     const dxp = px - this.x, dzp = pz - this.z;
@@ -441,6 +453,9 @@ export class Ped {
       panic: panic || this.handsUp > 0,
       photo,
       flinch: this.flinchT > 0 ? this.flinchT / 0.28 : 0,
+      speaking: this.speakingT > 0,
+      onSand: !this.indoor && sandFactorAt(this.x, this.z, this.y) > 0.15,
+      isTourist: this.kind === 'tourist',
     };
     animateHuman(this.rig, dt, a);
   }
@@ -473,10 +488,21 @@ export class Ped {
     if (this.rag) {
       this.rag.gy = gh;
       if (this.rag.active) {
-        this.rag.update(dt, g.world, (ix, iy, iz, impSp) => {
-          g.fx.blood(ix, iy + 0.15, iz, (Math.random() - 0.5) * 1.4, (Math.random() - 0.5) * 1.4);
-          g.fx.bloodPuddle(ix, g.groundAt(ix, iz), iz, clamp(0.45 + impSp * 0.08, 0.45, 1.3));
-        });
+        this.rag.update(
+          dt,
+          g.world,
+          (ix, iy, iz, impSp, nx, nz) => {
+            g.fx.blood(ix, iy + 0.15, iz, (Math.random() - 0.5) * 1.4, (Math.random() - 0.5) * 1.4);
+            if (nx !== undefined && nz !== undefined) {
+              g.fx.bloodSplatter(ix, iy, iz, -nx * impSp, -1.5, -nz * impSp, nx, 0, nz);
+            } else {
+              g.fx.bloodPuddle(ix, g.groundAt(ix, iz), iz, clamp(0.48 + impSp * 0.1, 0.48, 1.45));
+            }
+          },
+          (sx, sy, sz, vx, vz) => {
+            g.fx.bloodSmear(sx, sy, sz, vx, vz);
+          },
+        );
         // keep collision roughly in sync for world edges
         this.x = this.rag.parts[2].p.x;
         this.z = this.rag.parts[2].p.z;
