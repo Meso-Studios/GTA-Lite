@@ -58,14 +58,14 @@ export function buildCity(): CityData {
     const t = T.makeFacade(s, 100 + i * 17);
     const m = s === 'glass'
       ? new THREE.MeshPhysicalMaterial({
-        map: t.map, bumpMap: t.bump, bumpScale: 0.04,
+        map: t.map, bumpMap: t.bump, bumpScale: 0.05,
         emissiveMap: t.emissive, emissive: 0xffffff, emissiveIntensity: 0, vertexColors: true,
-        roughness: 0.1, metalness: 0.72, clearcoat: 1.0, clearcoatRoughness: 0.08, envMapIntensity: 1.85,
+        roughness: 0.07, metalness: 0.78, clearcoat: 1.0, clearcoatRoughness: 0.06, envMapIntensity: 2.15,
       })
       : new THREE.MeshStandardMaterial({
-        map: t.map, bumpMap: t.bump, bumpScale: 0.16,
+        map: t.map, bumpMap: t.bump, bumpScale: 0.22,
         emissiveMap: t.emissive, emissive: 0xffffff, emissiveIntensity: 0, vertexColors: true,
-        roughness: 0.8, metalness: 0.05, envMapIntensity: 0.75,
+        roughness: 0.74, metalness: 0.07, envMapIntensity: 0.92,
       });
     mats['f_' + s] = m;
     facadeMats.push(m);
@@ -276,8 +276,8 @@ export function buildCity(): CityData {
   const ocean = new THREE.Mesh(
     new THREE.PlaneGeometry(14000, 9000).rotateX(-Math.PI / 2),
     new THREE.MeshPhysicalMaterial({
-      color: 0x0b597c, roughness: 0.04, metalness: 0.42, clearcoat: 1.0, clearcoatRoughness: 0.04,
-      normalMap: waterNormal, normalScale: new THREE.Vector2(0.8, 0.8), envMapIntensity: 2.5,
+      color: 0x09688a, roughness: 0.035, metalness: 0.44, clearcoat: 1.0, clearcoatRoughness: 0.035,
+      normalMap: waterNormal, normalScale: new THREE.Vector2(1.15, 1.15), envMapIntensity: 2.7,
     }),
   );
   ocean.position.set(0, -0.42, 4800);

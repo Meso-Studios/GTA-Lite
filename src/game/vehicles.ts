@@ -3,7 +3,7 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { box, cyl, finish, sph } from './geo';
 import type { AircraftSpec } from './physics';
-import { makeGlow } from './textures';
+import { makeGlow, makeVehicleShadow } from './textures';
 import {
   cloneAircraftGlb,
   cloneCarGlb,
@@ -131,12 +131,12 @@ export function paintMat(color: number) {
     m = new THREE.MeshPhysicalMaterial({
       color,
       vertexColors: true,
-      metalness: vehicleRtxOn ? 0.66 : 0.36,
-      roughness: vehicleRtxOn ? 0.15 : 0.32,
-      clearcoat: vehicleRtxOn ? 1.0 : 0.0,
-      clearcoatRoughness: 0.04,
-      reflectivity: 0.98,
-      envMapIntensity: vehicleRtxOn ? 2.15 : 0.85,
+      metalness: vehicleRtxOn ? 0.68 : 0.38,
+      roughness: vehicleRtxOn ? 0.14 : 0.3,
+      clearcoat: vehicleRtxOn ? 1.0 : 0.25,
+      clearcoatRoughness: 0.035,
+      reflectivity: 1.0,
+      envMapIntensity: vehicleRtxOn ? 2.35 : 0.95,
     });
     microtextures.registerVehiclePaint(m);
     paintCache.set(color, m);
@@ -144,15 +144,15 @@ export function paintMat(color: number) {
   return m;
 }
 export const glassMat = new THREE.MeshPhysicalMaterial({
-  color: 0x0b1620,
-  metalness: 0.94,
-  roughness: 0.04,
+  color: 0x09131d,
+  metalness: 0.95,
+  roughness: 0.035,
   clearcoat: 1.0,
-  clearcoatRoughness: 0.03,
-  envMapIntensity: 2.35,
+  clearcoatRoughness: 0.025,
+  envMapIntensity: 2.55,
 });
-export const trimMat = new THREE.MeshStandardMaterial({ vertexColors: true, metalness: 0.38, roughness: 0.46 });
-export const wheelMat = new THREE.MeshStandardMaterial({ vertexColors: true, metalness: 0.35, roughness: 0.55 });
+export const trimMat = new THREE.MeshStandardMaterial({ vertexColors: true, metalness: 0.54, roughness: 0.36, envMapIntensity: 1.15 });
+export const wheelMat = new THREE.MeshStandardMaterial({ vertexColors: true, metalness: 0.48, roughness: 0.44, envMapIntensity: 1.1 });
 export const headMat = new THREE.MeshStandardMaterial({ color: 0xfff6dd, emissive: 0xfff0c0, emissiveIntensity: 0.15, roughness: 0.2 });
 export const tailDim = new THREE.MeshStandardMaterial({ color: 0x7a0a0a, emissive: 0xff1010, emissiveIntensity: 0.15, roughness: 0.3 });
 export const tailBright = new THREE.MeshStandardMaterial({ color: 0xff2020, emissive: 0xff1010, emissiveIntensity: 2.5, roughness: 0.3 });
@@ -191,6 +191,22 @@ const beamMat = () => {
   return new THREE.MeshBasicMaterial({ map: glowTex, color: 0xfff1c8, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false });
 };
 export const beamMaterial = beamMat();
+
+let vehicleShadowMat: THREE.MeshBasicMaterial | null = null;
+function getVehicleShadowMat() {
+  if (!vehicleShadowMat) {
+    vehicleShadowMat = new THREE.MeshBasicMaterial({
+      map: makeVehicleShadow(),
+      transparent: true,
+      opacity: 0.78,
+      depthWrite: false,
+      polygonOffset: true,
+      polygonOffsetFactor: -1,
+      polygonOffsetUnits: -1,
+    });
+  }
+  return vehicleShadowMat;
+}
 
 export const PAINTS = [0xc0392b, 0x2c3e8f, 0xe8e8e8, 0x15171a, 0x7f8c8d, 0x27ae60, 0xf39c12, 0x8e44ad, 0x5b6b7a, 0xb03a2e, 0x0e6e8c, 0xd7ccc8];
 
@@ -542,6 +558,13 @@ export function buildVehicle(type: VehicleType, paint: number, allowHeroSite = f
     g.add(pivot);
     wheels.push({ pivot, spin, front: fr, mesh: m, glbWheel: null });
   }
+
+  // grounded underbody ambient-occlusion contact shadow
+  const vShadow = new THREE.Mesh(new THREE.PlaneGeometry(W * 1.24, L * 1.14), getVehicleShadowMat());
+  vShadow.rotation.x = -Math.PI / 2;
+  vShadow.position.set(0, 0.032, 0);
+  vShadow.renderOrder = 1;
+  g.add(vShadow);
 
   // headlight beam on the road
   const beam = new THREE.Mesh(new THREE.PlaneGeometry(7, 15), beamMaterial);

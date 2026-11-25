@@ -1,0 +1,8 @@
+{
+  "name": "SAN NOVA",
+  "description": "10 km × 10 km Open World Crime Sandbox with Optional Gemini AI NPCs, Ray-Traced RTX, Handcrafted .GLB Models, Smartphone, Banks, and 14 Story Missions.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

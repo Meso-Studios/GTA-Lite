@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { Game, HudState } from '../game/Game';
 import type { PhoneAppId, SnapNovaPost } from '../game/phoneSystem';
+import { MISSIONS } from '../game/missions';
 
 interface PhoneOverlayProps {
   game: Game;
@@ -11,6 +12,7 @@ interface PhoneOverlayProps {
   onToggleGore: () => void;
   onToggleVoices: () => void;
   onToggleBetaBody: () => void;
+  onToggleGeminiNpcs: () => void;
 }
 
 const FILTER_CSS: Record<SnapNovaPost['filter'], string> = {
@@ -38,6 +40,7 @@ export function PhoneOverlay({
   onToggleGore,
   onToggleVoices,
   onToggleBetaBody,
+  onToggleGeminiNpcs,
 }: PhoneOverlayProps) {
   const phone = game.phone;
   const banking = game.banking;
@@ -111,7 +114,8 @@ export function PhoneOverlay({
   const apps: { id: PhoneAppId; label: string; bg: string; icon: string; badge?: number }[] = [
     { id: 'messages', label: 'Messages', bg: 'bg-emerald-600', icon: 'MSG', badge: hud.phoneUnread },
     { id: 'contacts', label: 'Contacts', bg: 'bg-sky-600', icon: 'CALL' },
-    { id: 'camera', label: 'Camera', bg: 'bg-amber-500', icon: 'CAM' },
+    { id: 'missions', label: 'Contracts', bg: 'bg-amber-600', icon: 'JOBS', badge: MISSIONS.length - hud.completedMissions.length },
+    { id: 'camera', label: 'Camera', bg: 'bg-orange-500', icon: 'CAM' },
     { id: 'snapnova', label: 'SnapNova', bg: 'bg-pink-600', icon: 'FEED' },
     { id: 'bank', label: 'NovaBank', bg: 'bg-teal-600', icon: 'BANK' },
     { id: 'settings', label: 'Settings', bg: 'bg-zinc-600', icon: 'SET' },
@@ -121,7 +125,7 @@ export function PhoneOverlay({
     <aside
       aria-label="San Nova Smartphone"
       data-testid="phone-overlay"
-      className="pointer-events-auto fixed bottom-5 right-5 z-30 flex h-[565px] max-h-[85vh] w-[316px] flex-col overflow-hidden rounded-[34px] border-[3px] border-zinc-700 bg-[#0b0f17] text-white shadow-[0_22px_60px_rgba(0,0,0,0.88)]"
+      className="pointer-events-auto fixed bottom-3 left-1/2 z-30 flex h-[min(580px,84dvh)] w-[min(348px,calc(100vw-20px))] -translate-x-1/2 flex-col overflow-hidden rounded-[30px] border-[3px] border-zinc-700 bg-[#0b0f17] text-white shadow-[0_22px_60px_rgba(0,0,0,0.88)] sm:bottom-5 sm:left-auto sm:right-5 sm:w-[324px] sm:translate-x-0 sm:rounded-[34px]"
     >
       {/* Top hardware bezel + status bar */}
       <div className="flex items-center justify-between border-b border-white/10 bg-[#070a10] px-5 py-2.5 text-[11px] font-bold text-white/85">
@@ -133,7 +137,7 @@ export function PhoneOverlay({
             type="button"
             aria-label="Close Phone"
             onClick={() => game.togglePhone(false)}
-            className="rounded bg-white/10 px-1.5 py-0.5 text-[10px] font-bold text-white/80 hover:bg-white/20"
+            className="rounded-md bg-white/15 px-2.5 py-1 text-[11px] font-extrabold text-white hover:bg-white/25"
           >
             ✕
           </button>
@@ -184,7 +188,7 @@ export function PhoneOverlay({
             ‹ Home
           </button>
           <span className="text-xs font-extrabold uppercase tracking-[0.2em] text-white/90">
-            {app === 'snapnova' ? 'SnapNova' : app === 'bank' ? 'NovaBank' : app}
+            {app === 'snapnova' ? 'SnapNova' : app === 'bank' ? 'NovaBank' : app === 'missions' ? 'Contracts' : app}
           </span>
           <div className="w-12 text-right">
             {app === 'snapnova' && (
@@ -259,6 +263,12 @@ export function PhoneOverlay({
 
             <div className="rounded-xl border border-white/10 bg-[#0a0f18] px-3 py-2 text-[11px] text-white/65">
               <div className="flex items-center justify-between">
+                <span>Story Contracts</span>
+                <span className="font-bold text-emerald-300">
+                  {hud.completedMissions.length} / {MISSIONS.length}
+                </span>
+              </div>
+              <div className="mt-0.5 flex items-center justify-between">
                 <span>Events Found</span>
                 <span className="font-bold text-amber-300">
                   {hud.randomEventsDone} / {hud.randomEventsTotal}
@@ -686,6 +696,93 @@ export function PhoneOverlay({
           </div>
         )}
 
+        {/* ---------------- CONTRACTS / MISSIONS ---------------- */}
+        {app === 'missions' && (
+          <div className="space-y-2.5 p-3">
+            {hud.mission && (
+              <div className="rounded-xl border border-amber-400/50 bg-amber-500/15 p-3">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="text-[10px] font-black uppercase tracking-widest text-amber-300">
+                    ACTIVE CONTRACT
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      game.cancelActiveMission();
+                      setTick((t) => t + 1);
+                    }}
+                    className="rounded bg-red-600/90 px-2 py-0.5 text-[10px] font-bold text-white hover:bg-red-500"
+                  >
+                    Abort
+                  </button>
+                </div>
+                <div className="mt-0.5 text-sm font-extrabold text-white">{hud.mission.title}</div>
+                <div className="text-[11px] text-white/80">{hud.mission.objective}</div>
+              </div>
+            )}
+
+            <div className="flex items-center justify-between px-1 text-[10px] font-bold uppercase tracking-widest text-white/55">
+              <span>{MISSIONS.length} San Nova Contracts</span>
+              <span className="text-emerald-300">{hud.completedMissions.length} Completed</span>
+            </div>
+
+            {MISSIONS.map((m, idx) => {
+              const done = hud.completedMissions.includes(m.id);
+              const isActive = hud.mission?.title === m.title;
+              return (
+                <div
+                  key={m.id}
+                  data-mission-card={m.id}
+                  className={`rounded-xl border p-2.5 transition ${
+                    isActive
+                      ? 'border-amber-400 bg-amber-500/15'
+                      : done
+                        ? 'border-emerald-500/35 bg-emerald-950/25'
+                        : 'border-white/10 bg-[#121928]'
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span className="text-[10px] font-black text-white/45">#{idx + 1}</span>
+                        <span className="truncate text-xs font-extrabold text-white">{m.title}</span>
+                        {done && (
+                          <span className="rounded bg-emerald-500 px-1.5 py-0.5 text-[9px] font-black text-black">
+                            DONE
+                          </span>
+                        )}
+                      </div>
+                      <div className="mt-0.5 text-[10px] font-semibold uppercase tracking-wider text-amber-300/90">
+                        {m.category} · {m.district} · {m.giver.name}
+                      </div>
+                    </div>
+                    <span className="shrink-0 rounded bg-emerald-600/25 px-2 py-0.5 text-[11px] font-black text-emerald-300">
+                      ${m.reward.toLocaleString()}
+                    </span>
+                  </div>
+                  <p className="mt-1.5 text-[11px] leading-snug text-white/75">{m.summary}</p>
+                  <div className="mt-2 flex justify-end">
+                    <button
+                      type="button"
+                      data-start-mission={m.id}
+                      onClick={() => {
+                        game.launchMissionById(m.id);
+                      }}
+                      className={`rounded-lg px-3 py-1 text-[11px] font-extrabold transition ${
+                        isActive
+                          ? 'bg-white/15 text-white/75'
+                          : 'bg-amber-400 text-black hover:bg-amber-300'
+                      }`}
+                    >
+                      {isActive ? 'Restart' : done ? 'Replay' : 'Start Contract'}
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
         {/* ---------------- SETTINGS ---------------- */}
         {app === 'settings' && (
           <div className="space-y-2 p-3">
@@ -709,6 +806,13 @@ export function PhoneOverlay({
                 sub: 'Surface normal & roughness maps',
                 on: hud.microtexturesEnabled,
                 toggle: onToggleMicro,
+                beta: false,
+              },
+              {
+                label: 'Gemini AI NPCs',
+                sub: 'All nearby NPCs think, react & talk via Gemini',
+                on: hud.geminiNpcsEnabled,
+                toggle: onToggleGeminiNpcs,
                 beta: false,
               },
               {

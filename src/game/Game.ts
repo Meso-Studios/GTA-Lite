@@ -62,6 +62,13 @@ import {
   spawnRandomEventNear,
 } from './randomEvents';
 import {
+  GeminiNpcDirector,
+  type GeminiNpcCandidate,
+  type GeminiTalkMessage,
+  type GeminiTalkResult,
+  type GeminiWorldContext,
+} from './geminiNpc';
+import {
   type PhoneAppId,
   type PhoneState,
   type SnapNovaPost,
@@ -121,6 +128,19 @@ export interface HudState {
   randomEventsTotal: number;
   randomEventsDone: number;
   activePlansCount: number;
+  completedMissions: string[];
+  geminiNpcsEnabled: boolean;
+  geminiNpcError: string | null;
+  nearbyGeminiNpc: { id: number; name: string; role: string; dist: number; mood: string } | null;
+  geminiTalk: {
+    pedId: number;
+    name: string;
+    role: string;
+    occupation: string;
+    mood: string;
+    thought: string;
+    history: GeminiTalkMessage[];
+  } | null;
 }
 export interface GameEvents {
   onHud(h: HudState): void;
@@ -136,24 +156,46 @@ varying vec3 vDir; uniform vec3 top; uniform vec3 hor; uniform vec3 sunDir; unif
 float hash(vec3 p){ return fract(sin(dot(p, vec3(127.1,311.7,74.7)))*43758.5453); }
 float noise(vec2 p){ vec2 i=floor(p), f=fract(p); f=f*f*(3.-2.*f);
   return mix(mix(hash(vec3(i,0.)),hash(vec3(i+vec2(1,0),0.)),f.x), mix(hash(vec3(i+vec2(0,1),0.)),hash(vec3(i+vec2(1,1),0.)),f.x), f.y); }
-float fbm(vec2 p){ float v=0., a=.5; for(int i=0;i<4;i++){ v+=a*noise(p); p*=2.1; a*=.5;} return v; }
+float fbm(vec2 p){ float v=0., a=.5; mat2 rot = mat2(0.8,-0.6,0.6,0.8); for(int i=0;i<5;i++){ v+=a*noise(p); p=rot*p*2.04; a*=.5;} return v; }
 void main(){
   vec3 d = normalize(vDir);
-  float h = clamp(d.y,0.,1.);
-  vec3 col = mix(hor, top, pow(h, 0.5));
-  if (d.y < 0.) col = hor*0.75;
+  float h = clamp(d.y, 0., 1.);
+  // Rayleigh coastal atmosphere gradient with warm horizon band
+  vec3 col = mix(hor, top, pow(h, 0.48));
+  float horBand = exp(-abs(d.y) * 9.5);
+  col += mix(vec3(0.06, 0.14, 0.22), vec3(0.18, 0.10, 0.04), clamp(1.0 - sunDir.y * 2.4, 0.0, 1.0)) * horBand * (1.0 - night * 0.82);
+  if (d.y < 0.) col = mix(hor * 0.82, top * 0.35, clamp(-d.y * 2.5, 0., 1.));
+
+  // Mie solar aureole, corona & crisp sun disc
   float sd = max(dot(d, sunDir), 0.);
-  col += sunCol * (pow(sd, 8.)*0.35 + pow(sd, 400.)*6.0);
-  float sh = hash(floor(d*260.));
-  col += vec3(step(0.9978, sh))*night*smoothstep(0.05,0.4,d.y)*(0.5+0.5*hash(floor(d*260.)+1.));
-  float md = max(dot(d, -sunDir),0.); col += vec3(0.8,0.86,1.0)*pow(md,1200.)*3.0*night;
-  if (d.y>0.015){
-    vec2 uv = d.xz/(d.y+0.18)*1.1 + vec2(time*0.006, time*0.002);
-    float c = smoothstep(0.52,0.9,fbm(uv*1.6));
-    vec3 cc = mix(vec3(1.0), hor*1.1+vec3(0.1), 0.35 + 0.4*(1.0-night))*(1.0-night*0.88);
-    col = mix(col, cc, c*0.75*smoothstep(0.015,0.22,d.y));
+  col += sunCol * (pow(sd, 3.0) * 0.22 + pow(sd, 24.0) * 0.42 + pow(sd, 480.0) * 6.5);
+
+  // Twinkling night starfield + moon disc & halo
+  float sh = hash(floor(d * 280.));
+  float twinkle = 0.65 + 0.35 * sin(time * 2.2 + sh * 62.8);
+  col += vec3(0.88, 0.93, 1.0) * step(0.9974, sh) * night * smoothstep(0.04, 0.38, d.y) * twinkle;
+  float md = max(dot(d, -sunDir), 0.);
+  col += vec3(0.76, 0.86, 1.0) * (pow(md, 40.0) * 0.14 + pow(md, 1400.0) * 3.4) * night;
+
+  // Volumetric-lit multi-layer tropical cumulus clouds with sunlit silver-gold rims & shaded undersides
+  if (d.y > 0.012) {
+    vec2 uv = d.xz / (d.y + 0.16) * 1.05 + vec2(time * 0.0055, time * 0.0022);
+    float base = fbm(uv * 1.45);
+    float detail = fbm(uv * 3.4 + vec2(3.1, -1.7));
+    float density = smoothstep(0.46, 0.84, base * 0.78 + detail * 0.28);
+    // Directional self-shadowing sample toward sun
+    vec2 sunOff = normalize(sunDir.xz + vec2(0.0001)) * 0.14;
+    float litSample = fbm((uv + sunOff) * 1.45);
+    float lightAmt = clamp((base - litSample) * 3.2 + 0.58, 0.15, 1.0);
+    vec3 cloudShadow = mix(hor * 0.72 + vec3(0.05, 0.08, 0.14), vec3(0.06, 0.09, 0.18), night);
+    vec3 cloudBright = mix(vec3(1.0, 0.99, 0.97), sunCol * 1.15 + vec3(0.18), 0.38) * (1.0 - night * 0.86);
+    // Silver lining near sun
+    float silver = pow(sd, 6.0) * (1.0 - density * 0.5) * (1.0 - night);
+    vec3 cc = mix(cloudShadow, cloudBright, lightAmt) + sunCol * silver * 0.55;
+    float fade = smoothstep(0.012, 0.20, d.y) * (1.0 - smoothstep(0.86, 1.0, d.y) * 0.25);
+    col = mix(col, cc, density * 0.84 * fade);
   }
-  gl_FragColor = vec4(col,1.);
+  gl_FragColor = vec4(col, 1.);
 }`;
 function skyMaterial() {
   return new THREE.ShaderMaterial({
@@ -195,6 +237,9 @@ export class Game {
   hdGlbMode = isGlbWorldMode();
   microtexturesEnabled = true;
   experimentalBodyLogic = false;
+  geminiNpcsEnabled = false;
+  geminiDirector = new GeminiNpcDirector();
+  geminiTalkPedId: number | null = null;
   trafficManager = new TrafficManager();
   voices = new NpcVoiceEngine();
   npcLife: NpcLifeWorld = createNpcLifeWorld();
@@ -292,6 +337,7 @@ export class Game {
   route: [number, number][] | null = null;
   routeT = 0;
   missionIdx = 0;
+  completedMissions = new Set<string>();
   mission: { def: MissionDef; s: any } | null = null;
   objective = '';
   timer: { t: number | null; label: string } = { t: null, label: '' };
@@ -531,6 +577,7 @@ export class Game {
     const tag = (e.target as HTMLElement | null)?.tagName;
     if (tag === 'INPUT' || tag === 'TEXTAREA') {
       if (e.code === 'Escape') {
+        if (this.geminiTalkPedId !== null) this.closeGeminiTalk();
         if (this.phone.open) this.togglePhone(false);
         if (this.bankOpen) this.closeBankModal();
       }
@@ -539,12 +586,14 @@ export class Game {
     if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Tab'].includes(e.code)) e.preventDefault();
     if (e.repeat) return;
     if (e.code === 'Tab' && this.state === 'playing' && !this.mapOpen) {
+      if (this.geminiTalkPedId !== null) this.closeGeminiTalk();
       this.togglePhone();
       return;
     }
     this.input.keys.add(e.code);
     this.input.pressed.add(e.code);
-    if (e.code === 'KeyM' && this.state === 'playing' && !this.phone.open && !this.bankOpen) { this.setMapOpen(!this.mapOpen); return; }
+    if (e.code === 'KeyM' && this.state === 'playing' && !this.phone.open && !this.bankOpen && this.geminiTalkPedId === null) { this.setMapOpen(!this.mapOpen); return; }
+    if (e.code === 'Escape' && this.geminiTalkPedId !== null) { this.closeGeminiTalk(); return; }
     if (e.code === 'Escape' && this.phone.open) { this.togglePhone(false); return; }
     if (e.code === 'Escape' && this.bankOpen) { this.closeBankModal(); return; }
     if (e.code === 'Escape' && this.mapOpen) { this.setMapOpen(false); return; }
@@ -556,7 +605,7 @@ export class Game {
     if (this.input.locked) { this.input.dx += e.movementX; this.input.dy += e.movementY; }
   };
   onMouseDown = (e: MouseEvent) => {
-    if (this.state !== 'playing' || this.phone.open || this.bankOpen) return;
+    if (this.state !== 'playing' || this.phone.open || this.bankOpen || this.geminiTalkPedId !== null) return;
     if (e.button === 0) this.input.fire = true;
     if (e.button === 2) this.input.aim = true;
   };
@@ -565,7 +614,7 @@ export class Game {
     if (e.button === 2) this.input.aim = false;
   };
   onWheel = (e: WheelEvent) => {
-    if (this.state !== 'playing' || this.player.vehicle || this.phone.open || this.bankOpen) return;
+    if (this.state !== 'playing' || this.player.vehicle || this.phone.open || this.bankOpen || this.geminiTalkPedId !== null) return;
     this.cycleWeapon(e.deltaY > 0 ? 1 : -1);
   };
   onCtx = (e: Event) => e.preventDefault();
@@ -574,12 +623,12 @@ export class Game {
     const locked = document.pointerLockElement === this.renderer.domElement;
     this.input.locked = locked;
     this.ev.onLock(locked);
-    if (wasLocked && !locked && this.state === 'playing' && this.running && !this.mapOpen && !this.phone.open && !this.bankOpen) this.setPaused(true);
+    if (wasLocked && !locked && this.state === 'playing' && this.running && !this.mapOpen && !this.phone.open && !this.bankOpen && this.geminiTalkPedId === null) this.setPaused(true);
   };
   onLockError = () => { this.lockFailed = true; };
   onCanvasClick = () => {
     this.audio.init();
-    if (this.mobileMode || this.phone.open || this.bankOpen) return;
+    if (this.mobileMode || this.phone.open || this.bankOpen || this.geminiTalkPedId !== null) return;
     if (this.state === 'playing' && !this.input.locked) this.requestLock();
   };
   onResize = () => {
@@ -654,6 +703,144 @@ export class Game {
       'info',
     );
     this.emitHud(true);
+  }
+  setGeminiNpcsEnabled(enabled: boolean) {
+    this.geminiNpcsEnabled = enabled;
+    this.geminiDirector.setEnabled(enabled);
+    if (!enabled) {
+      this.geminiTalkPedId = null;
+      for (const p of this.peds) p.geminiDecision = null;
+    }
+    this.ev.onToast(
+      enabled
+        ? 'Gemini AI NPCs ON — NPCs think, react & converse live with Gemini (Press V near any NPC to talk)'
+        : 'Gemini AI NPCs OFF — local algorithmic NPCs active',
+      enabled ? 'good' : 'info',
+    );
+    this.emitHud(true);
+  }
+  private buildGeminiCandidate(ped: Ped): GeminiNpcCandidate {
+    const lp = ped.lifeProfile;
+    const name = lp?.fullName ?? (ped.freeCity ? FREE_CITY_LABELS[ped.freeCity.archetype] : `${ped.kind.toUpperCase()} #${ped.id}`);
+    const occupation = lp?.occupation ?? (ped.indoorRole ? ped.indoorRole : ped.kind);
+    const personality = lp
+      ? `${lp.traits.join(', ')} (lives in ${lp.homeDistrict})`
+      : ped.kind === 'cop'
+        ? 'by-the-book officer'
+        : ped.kind === 'gang'
+          ? 'tough streetwise hustler'
+          : 'streetwise San Nova local';
+    const existing = this.geminiDirector.getDecision(ped.id);
+    return {
+      id: ped.id,
+      name,
+      role: ped.kind,
+      occupation,
+      personality,
+      mood: existing?.mood ?? 'chill',
+      x: ped.x,
+      z: ped.z,
+      dist: Math.hypot(ped.x - this.player.x, ped.z - this.player.z),
+      indoor: ped.indoor,
+      hostile: ped.hostile,
+      lastUpdatedAt: existing?.updatedAt ?? 0,
+      lastLine: existing?.speech ?? ped.freeCityLastHint ?? undefined,
+    };
+  }
+  private buildGeminiWorldContext(): GeminiWorldContext {
+    const p = this.player;
+    const pv = p.vehicle;
+    const armed = !isMeleeWeapon(p.weapon) && (p.ammo[p.weapon] ?? 0) > 0;
+    return {
+      district: this.interior ? this.interior.name.toUpperCase() : districtNameAt(p.x, p.z, p.y),
+      timeStr: this.clockString,
+      isNight: this.night > 0.45,
+      wanted: this.wanted,
+      playerArmed: armed,
+      playerWeapon: WEAPONS[p.weapon].name,
+      playerInVehicle: Boolean(pv),
+      playerVehicleName: pv ? pv.spec.name : '',
+      playerSpeedKmh: pv ? Math.round(Math.abs(pv.fwd) * 3.6) : 0,
+      playerFiring: this.playerFiring,
+      playerFighting: p.punchT > 0,
+      recentEvent: this.randomEvents.active ? this.randomEvents.active.def.title : undefined,
+    };
+  }
+  private findNearestGeminiNpc(maxDist = 8.5): Ped | null {
+    const p = this.player;
+    let best: Ped | null = null;
+    let bd = maxDist;
+    for (const ped of this.peds) {
+      if (ped.dead) continue;
+      const d = Math.hypot(ped.x - p.x, ped.z - p.z);
+      if (d < bd) {
+        bd = d;
+        best = ped;
+      }
+    }
+    return best;
+  }
+  openGeminiTalk(pedId?: number) {
+    if (!this.geminiNpcsEnabled) return;
+    const target = pedId !== undefined
+      ? this.peds.find((q) => q.id === pedId && !q.dead) ?? null
+      : this.findNearestGeminiNpc(8.5);
+    if (!target) {
+      this.ev.onToast('Walk closer to an NPC to talk with Gemini AI', 'info');
+      return;
+    }
+    this.geminiTalkPedId = target.id;
+    this.phone.open = false;
+    this.bankOpen = false;
+    this.input.fire = false;
+    this.input.aim = false;
+    if (document.pointerLockElement) document.exitPointerLock();
+    this.emitHud(true);
+  }
+  closeGeminiTalk() {
+    if (this.geminiTalkPedId === null) return;
+    this.geminiTalkPedId = null;
+    if (this.state === 'playing' && !this.mobileMode && !this.mapOpen && !this.phone.open && !this.bankOpen) {
+      this.requestLock();
+    }
+    this.emitHud(true);
+  }
+  async sendGeminiNpcMessage(pedId: number, text: string): Promise<GeminiTalkResult> {
+    const ped = this.peds.find((q) => q.id === pedId && !q.dead);
+    if (!ped) return { ok: false, error: 'That citizen walked away.' };
+    const cand = this.buildGeminiCandidate(ped);
+    const world = this.buildGeminiWorldContext();
+    const res = await this.geminiDirector.talkToNpc(cand, world, text, this.time);
+    if (res.ok) {
+      ped.geminiDecision = this.geminiDirector.getDecision(ped.id);
+      if (res.reply) {
+        ped.freeCityLastHint = res.reply;
+        ped.speakingT = Math.max(2.6, res.reply.length * 0.055);
+        if (this.voicesEnabled) {
+          try {
+            this.voices.speak(ped.id, ped.kind as VoiceKind, res.reply, Math.max(1.5, cand.dist), true, Boolean(this.interior));
+          } catch {
+            // Isolate voice engine
+          }
+        }
+      }
+      if (res.intent === 'flee') {
+        ped.flee(this, this.player.x, this.player.z, 9);
+      } else if (res.intent === 'confront' && !ped.mission) {
+        ped.canFightBack = true;
+        ped.state = 'brawl';
+        ped.brawlT = 14;
+      }
+      if (res.tipCash && res.tipCash > 0) {
+        this.player.money += res.tipCash;
+        this.audio.cash();
+        this.ev.onToast(`${cand.name} handed you $${res.tipCash}!`, 'cash');
+      }
+    } else if (res.error) {
+      this.ev.onToast(res.error, 'warn');
+    }
+    this.emitHud(true);
+    return res;
   }
 
   // =============================================================== GTA 5 Smartphone API
@@ -987,7 +1174,7 @@ export class Game {
         else this.input.keys.delete('Space');
         break;
       case 'interact':
-        if (down) this.interact();
+        if (down) this.interact(true);
         break;
       case 'scope':
         if (down && !this.player.vehicle) this.input.pressed.add('KeyG');
@@ -1316,6 +1503,23 @@ export class Game {
   setGoals(g: Goal[]) { this.goals = g; }
   setTimer(t: number | null, label = '') { this.timer = { t, label }; }
   setProgress(p: number | null) { this.progress = p; }
+  launchMissionById(id: string) {
+    const def = MISSIONS.find((m) => m.id === id);
+    if (!def) return;
+    if (this.interior) this.exitInterior();
+    if (this.phone.open) this.togglePhone(false);
+    if (this.bankOpen) this.closeBankModal();
+    if (this.mission) this.cleanupMission();
+    this.startMission(def);
+    this.emitHud(true);
+  }
+  cancelActiveMission() {
+    if (!this.mission) return;
+    const title = this.mission.def.title;
+    this.cleanupMission();
+    this.ev.onToast(`Aborted contract: ${title}`, 'warn');
+    this.emitHud(true);
+  }
   startMission(def: MissionDef) {
     if (this.mission) return;
     this.mission = { def, s: { stage: 0, t: 0 } };
@@ -1335,12 +1539,17 @@ export class Game {
     if (!this.mission) return;
     const def = this.mission.def;
     this.player.money += def.reward;
+    this.completedMissions.add(def.id);
     this.cleanupMission();
-    this.missionIdx++;
+    const nextUnfinished = MISSIONS.findIndex((m) => !this.completedMissions.has(m.id));
+    this.missionIdx = nextUnfinished >= 0 ? nextUnfinished : MISSIONS.length;
     this.audio.missionPass();
     this.ev.onBanner('passed', 'MISSION PASSED', `${def.title}  ·  +$${def.reward.toLocaleString()}${msg ? '  ·  ' + msg : ''}`);
     setTimeout(() => this.ev.onBanner(null), 5200);
-    if (this.missionIdx >= MISSIONS.length) this.sayLater('Narrator', 'You have finished every contract in San Nova. Hunt the hidden packages and cause some mayhem!', 6, 5);
+    if (this.completedMissions.size >= MISSIONS.length) {
+      this.sayLater('Narrator', 'You have completed every single contract in San Nova! Replay any job from your Phone Contracts app.', 6, 5);
+    }
+    this.emitHud(true);
   }
   failMission(reason: string) {
     if (!this.mission) return;
@@ -1483,8 +1692,11 @@ export class Game {
       this.phone.activeCall.elapsedSec += dt;
     }
     p.hurtT = Math.max(0, p.hurtT - dt * 1.4);
-    // toggles (suppressed while typing in smartphone or bank modal)
-    const uiBlockingKeys = this.phone.open || this.bankOpen;
+    // toggles (suppressed while typing in smartphone, bank modal, or Gemini NPC talk)
+    const uiBlockingKeys = this.phone.open || this.bankOpen || this.geminiTalkPedId !== null;
+    if (!uiBlockingKeys && this.geminiNpcsEnabled && k.pressed.has('KeyV') && !p.vehicle) {
+      this.openGeminiTalk();
+    }
     if (!uiBlockingKeys && k.pressed.has('KeyT')) { this.finderOn = !this.finderOn; this.ev.onToast(this.finderOn ? 'Package finder ON' : 'Package finder OFF', 'info'); }
     if (!uiBlockingKeys && k.pressed.has('KeyG') && !p.vehicle) {
       if (!isMeleeWeapon(p.weapon)) {
@@ -1509,6 +1721,7 @@ export class Game {
     this.collideVehicles();
     this.pedVehicle(dt);
     this.updateNpcLife(dt);
+    this.updateGeminiNpcs(dt);
     for (const pd of this.peds) pd.update(dt, this);
     for (const pr of this.props) pr.update(dt, this);
     this.updatePickups(dt);
@@ -1573,6 +1786,77 @@ export class Game {
         }
       }
     }
+  }
+
+  private updateGeminiNpcs(dt: number) {
+    if (!this.geminiNpcsEnabled) return;
+    const activeIds = new Set<number>();
+    const candidates: GeminiNpcCandidate[] = [];
+    for (const ped of this.peds) {
+      if (ped.dead) continue;
+      activeIds.add(ped.id);
+      const d = Math.hypot(ped.x - this.player.x, ped.z - this.player.z);
+      if (d <= 56) candidates.push(this.buildGeminiCandidate(ped));
+    }
+    this.geminiDirector.pruneStale(activeIds);
+    if (this.geminiTalkPedId !== null && !activeIds.has(this.geminiTalkPedId)) {
+      this.geminiTalkPedId = null;
+    }
+
+    const world = this.buildGeminiWorldContext();
+    this.geminiDirector.step(
+      dt,
+      this.time,
+      world,
+      candidates,
+      (decisions) => {
+        let closestSpoken: { ped: Ped; dist: number; text: string; name: string } | null = null;
+        for (const dec of decisions) {
+          const ped = this.peds.find((q) => q.id === dec.id && !q.dead);
+          if (!ped) continue;
+          ped.geminiDecision = dec;
+          if (dec.speech) {
+            ped.freeCityLastHint = dec.speech;
+            const d = Math.hypot(ped.x - this.player.x, ped.z - this.player.z);
+            if (d < 26 && (!closestSpoken || d < closestSpoken.dist)) {
+              const name = ped.lifeProfile?.fullName ?? (ped.freeCity ? FREE_CITY_LABELS[ped.freeCity.archetype] : 'Citizen');
+              closestSpoken = { ped, dist: d, text: dec.speech, name };
+            }
+          }
+        }
+        if (closestSpoken && !this.sub && !this.subQ.length && this.geminiTalkPedId === null) {
+          this.ambientSub = {
+            pedId: closestSpoken.ped.id,
+            who: `${closestSpoken.name} (Gemini AI)`,
+            text: closestSpoken.text,
+            kind: closestSpoken.ped.kind,
+            remaining: 4.5,
+            x: closestSpoken.ped.x,
+            z: closestSpoken.ped.z,
+          };
+          closestSpoken.ped.speakingT = Math.max(2.8, closestSpoken.text.length * 0.055);
+          if (this.voicesEnabled) {
+            try {
+              this.voices.speak(
+                closestSpoken.ped.id,
+                closestSpoken.ped.kind as VoiceKind,
+                closestSpoken.text,
+                closestSpoken.dist,
+                false,
+                Boolean(this.interior),
+              );
+            } catch {
+              // Isolate voice engine
+            }
+          }
+        }
+        this.emitHud(true);
+      },
+      (msg) => {
+        this.ev.onToast(msg, 'warn');
+        this.emitHud(true);
+      },
+    );
   }
 
   private updateBankHeist(dt: number) {
@@ -1652,35 +1936,35 @@ export class Game {
     this.night = 1 - smooth(-0.06, 0.16, elev);
     const dusk = Math.exp(-Math.pow(elev / 0.2, 2));
     const U = this.skyMat.uniforms;
-    const top = new THREE.Color(0x050a1c).lerp(new THREE.Color(0x2c6bc2), day).lerp(new THREE.Color(0x3a4a8c), dusk * 0.35 * day);
-    const hor = new THREE.Color(0x0e1830).lerp(new THREE.Color(0x9cc3e6), day).lerp(new THREE.Color(0xff8a4a), dusk * 0.6);
+    const top = new THREE.Color(0x04091b).lerp(new THREE.Color(0x1656b8), day).lerp(new THREE.Color(0x28347a), dusk * 0.45 * day);
+    const hor = new THREE.Color(0x0c1630).lerp(new THREE.Color(0x9ad4f2), day).lerp(new THREE.Color(0xff7e42), dusk * 0.68);
     U.top.value.copy(top); U.hor.value.copy(hor);
     U.sunDir.value.copy(sunDir);
-    const sunC = new THREE.Color(1, 0.96, 0.9).lerp(new THREE.Color(1, 0.5, 0.2), 1 - smooth(0, 0.45, elev));
+    const sunC = new THREE.Color(1.0, 0.96, 0.88).lerp(new THREE.Color(1.0, 0.46, 0.16), 1 - smooth(0, 0.45, elev));
     U.sunCol.value.copy(sunC).multiplyScalar(day);
     U.night.value = this.night;
     U.time.value = this.time;
-    (this.scene.fog as THREE.Fog).color.copy(hor).multiplyScalar(0.92);
-    this.hemi.color.set(0x2d3f68).lerp(new THREE.Color(0xc2dcff), day).lerp(new THREE.Color(0xffbfa0), dusk * 0.28);
-    this.hemi.groundColor.set(0x13161e).lerp(new THREE.Color(0x6e604f), day);
-    this.hemi.intensity = (this.isSoftwareGl ? 0.58 : 0.34) + day * (this.isSoftwareGl ? 0.72 : 0.6);
+    (this.scene.fog as THREE.Fog).color.copy(hor).lerp(top, 0.08).multiplyScalar(0.95);
+    this.hemi.color.set(0x283c6b).lerp(new THREE.Color(0xbce0ff), day).lerp(new THREE.Color(0xffb48a), dusk * 0.34);
+    this.hemi.groundColor.set(0x12151f).lerp(new THREE.Color(0x7c6952), day);
+    this.hemi.intensity = (this.isSoftwareGl ? 0.44 : 0.34) + day * (this.isSoftwareGl ? 0.54 : 0.56);
     const useSun = elev > 0.02;
     const dir = useSun ? sunDir : sunDir.clone().negate();
     const cx = this.camX, cz = this.camZ;
     this.sun.position.set(cx + dir.x * 220, dir.y * 220 + 20, cz + dir.z * 220);
     this.sun.target.position.set(cx, 0, cz);
-    this.sun.color.copy(useSun ? sunC : new THREE.Color(0x96b2ff));
-    this.sun.intensity = useSun ? day * (this.rtxEnabled ? 3.45 : 2.85) * (0.38 + 0.62 * smooth(0, 0.35, elev)) : this.night * (this.rtxEnabled ? 0.68 : 0.45);
+    this.sun.color.copy(useSun ? sunC : new THREE.Color(0x94b4ff));
+    this.sun.intensity = useSun ? day * (this.rtxEnabled ? 3.7 : 3.05) * (0.42 + 0.58 * smooth(0, 0.35, elev)) : this.night * (this.rtxEnabled ? 0.72 : 0.48);
     // Tighten sun shadow frustum when RTX is enabled for crisper contact shadows
     if (this.rtxShadowTight !== this.rtxEnabled) {
       this.rtxShadowTight = this.rtxEnabled;
       const sc = this.sun.shadow.camera;
-      const span = this.rtxEnabled ? 68 : 96;
+      const span = this.rtxEnabled ? 64 : 96;
       sc.left = -span; sc.right = span; sc.top = span; sc.bottom = -span;
       sc.updateProjectionMatrix();
-      this.sun.shadow.bias = this.rtxEnabled ? -0.00025 : -0.0005;
-      this.sun.shadow.normalBias = this.rtxEnabled ? 0.03 : 0.055;
-      this.sun.shadow.radius = this.rtxEnabled ? 2.2 : 3.2;
+      this.sun.shadow.bias = this.rtxEnabled ? -0.00022 : -0.00048;
+      this.sun.shadow.normalBias = this.rtxEnabled ? 0.026 : 0.05;
+      this.sun.shadow.radius = this.rtxEnabled ? 2.0 : 3.0;
     }
     // Dynamic HDR PMREM environment selection (Day / Golden-Hour Sunset / Vice Neon Night / Flat)
     const targetEnv = !this.rtxEnabled
@@ -1696,33 +1980,33 @@ export class Game {
     // Multi-bounce sky/golden GI fill + crisp silhouette rim sculpting
     this.bounceLight.position.set(cx - dir.x * 160, 48, cz - dir.z * 160);
     this.bounceLight.target.position.set(cx, 0, cz);
-    this.bounceLight.color.set(0x45c4f8).lerp(new THREE.Color(0xff9c58), dusk * 0.72 + (1 - this.night) * 0.24);
-    this.bounceLight.intensity = this.rtxEnabled ? (0.44 + day * 0.42 + dusk * 0.42) : 0.12;
+    this.bounceLight.color.set(0x3ec4ff).lerp(new THREE.Color(0xff9852), dusk * 0.74 + (1 - this.night) * 0.24);
+    this.bounceLight.intensity = this.rtxEnabled ? (0.48 + day * 0.44 + dusk * 0.46) : 0.14;
     this.rimLight.position.set(cx - dir.z * 120, 92, cz + dir.x * 120);
     this.rimLight.target.position.set(cx, 0, cz);
-    this.rimLight.color.set(0xffe0be).lerp(new THREE.Color(0x62b4ff), this.night * 0.8);
-    this.rimLight.intensity = this.rtxEnabled ? (0.28 + dusk * 0.36 + this.night * 0.2) : 0.07;
+    this.rimLight.color.set(0xffe4c4).lerp(new THREE.Color(0x62b4ff), this.night * 0.8);
+    this.rimLight.intensity = this.rtxEnabled ? (0.34 + dusk * 0.38 + this.night * 0.22) : 0.08;
     if (this.rtxEnabled && !this.interior) {
       const neonPhase = (Math.sin(this.time * 0.35 + this.player.x * 0.018) + 1) * 0.5;
       const sx = Math.cos(this.camYaw), sz = -Math.sin(this.camYaw);
       // Elevated soft warm coral/magenta storefront bounce (casts realistic tint without blowing out asphalt)
       this.neonLight.color.set(0xff5298).lerp(new THREE.Color(0xff8e4a), dusk * 0.65 + neonPhase * 0.25);
       this.neonLight.position.set(this.player.x + sx * 17, this.player.y + 9.5, this.player.z + sz * 17);
-      this.neonLight.intensity = this.night * 3.1 + dusk * 0.65;
+      this.neonLight.intensity = this.night * 3.2 + dusk * 0.7;
       // Elevated cool cyan/amber opposite storefront bounce
       this.neonLight2.color.set(0x2cd8ff).lerp(new THREE.Color(0xffb868), dusk * 0.55 + (1 - neonPhase) * 0.25);
       this.neonLight2.position.set(this.player.x - sx * 17, this.player.y + 9.5, this.player.z - sz * 17);
-      this.neonLight2.intensity = this.night * 2.7 + dusk * 0.55;
+      this.neonLight2.intensity = this.night * 2.8 + dusk * 0.6;
     } else {
       this.neonLight.intensity = 0;
       this.neonLight2.intensity = 0;
     }
     if (!this.interior) {
-      this.renderer.toneMappingExposure = lerp(this.rtxEnabled ? 1.16 : 1.05, this.rtxEnabled ? 1.08 : 1.0, day);
+      this.renderer.toneMappingExposure = lerp(this.rtxEnabled ? 1.18 : 1.06, this.rtxEnabled ? 1.12 : 1.02, day);
     }
     (this.scene as any).environmentIntensity = this.rtxEnabled
-      ? (0.34 + day * 0.72 + dusk * 0.16 + this.night * 0.34)
-      : (0.14 + day * 0.42);
+      ? (0.38 + day * 0.82 + dusk * 0.18 + this.night * 0.38)
+      : (0.16 + day * 0.45);
     this.city.setNight(this.night);
     headMat.emissiveIntensity = 0.2 + this.night * 2.2;
     tailDim.emissiveIntensity = 0.18 + this.night * 0.95;
@@ -2418,8 +2702,16 @@ export class Game {
           z: ped.z,
           dead: ped.dead,
           panicking: ped.state === 'flee' || ped.state === 'cower' || ped.panicT > 0.2,
-          speakerName: ped.freeCity ? FREE_CITY_LABELS[ped.freeCity.archetype] : undefined,
-          freeCityLine: ped.freeCityLastHint,
+          speakerName:
+            this.geminiNpcsEnabled && ped.geminiDecision
+              ? `${ped.lifeProfile?.fullName ?? (ped.freeCity ? FREE_CITY_LABELS[ped.freeCity.archetype] : 'Citizen')} (Gemini AI)`
+              : ped.freeCity
+                ? FREE_CITY_LABELS[ped.freeCity.archetype]
+                : undefined,
+          freeCityLine:
+            this.geminiNpcsEnabled && ped.geminiDecision?.speech
+              ? ped.geminiDecision.speech
+              : ped.freeCityLastHint,
         });
       }
     }
@@ -2878,6 +3170,13 @@ export class Game {
       const key = this.mobileMode ? 'Tap USE' : 'Press F';
       return foundVeh.spec.isAircraft ? `${key} — Fly ${foundVeh.spec.name}` : `${key} — Enter ${foundVeh.spec.name}`;
     }
+    if (this.geminiNpcsEnabled && this.geminiTalkPedId === null) {
+      const nearNpc = this.findNearestGeminiNpc(6.2);
+      if (nearNpc) {
+        const name = nearNpc.lifeProfile?.fullName ?? (nearNpc.freeCity ? FREE_CITY_LABELS[nearNpc.freeCity.archetype] : 'Citizen');
+        return this.mobileMode ? `Tap TALK — Speak to ${name} (Gemini AI)` : `Press V — Talk to ${name} (Gemini AI)`;
+      }
+    }
     return null;
   }
 
@@ -2990,6 +3289,38 @@ export class Game {
       randomEventsTotal: RANDOM_EVENTS.length,
       randomEventsDone: this.randomEvents.completedCount,
       activePlansCount: this.npcLife.plans.size,
+      completedMissions: Array.from(this.completedMissions),
+      geminiNpcsEnabled: this.geminiNpcsEnabled,
+      geminiNpcError: this.geminiDirector.lastError,
+      nearbyGeminiNpc: (() => {
+        if (!this.geminiNpcsEnabled || p.vehicle) return null;
+        const n = this.findNearestGeminiNpc(7.5);
+        if (!n) return null;
+        const dec = this.geminiDirector.getDecision(n.id);
+        return {
+          id: n.id,
+          name: n.lifeProfile?.fullName ?? (n.freeCity ? FREE_CITY_LABELS[n.freeCity.archetype] : 'Citizen'),
+          role: n.kind,
+          dist: Math.round(Math.hypot(n.x - p.x, n.z - p.z) * 10) / 10,
+          mood: dec?.mood ?? 'chill',
+        };
+      })(),
+      geminiTalk: (() => {
+        if (this.geminiTalkPedId === null) return null;
+        const target = this.peds.find((q) => q.id === this.geminiTalkPedId && !q.dead);
+        if (!target) return null;
+        const cand = this.buildGeminiCandidate(target);
+        const dec = this.geminiDirector.getDecision(target.id);
+        return {
+          pedId: target.id,
+          name: cand.name,
+          role: cand.role,
+          occupation: cand.occupation,
+          mood: dec?.mood ?? cand.mood,
+          thought: dec?.thought ?? '',
+          history: [...this.geminiDirector.getHistory(target.id)],
+        };
+      })(),
     });
   }
 }

@@ -35,6 +35,14 @@ import {
 } from './subAnimations';
 import { ROOM_SPECS } from './interiors';
 import { STORES, STORE_COUNT, getStoreByIndex, getStoreIndexByName } from './stores';
+import { MISSIONS } from './missions';
+import {
+  GeminiNpcDirector,
+  computeGeminiSteering,
+  sanitizeGeminiDecisions,
+  selectNearbyNpcsForGemini,
+  type GeminiNpcCandidate,
+} from './geminiNpc';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import {
@@ -1296,6 +1304,71 @@ test('GTA 5 smartphone supports contextual SMS replies, calls, and SnapNova phot
   togglePostLike(phone, post.id);
   assert.equal(post.likes, likesBefore);
 });
+
+test('expanded story campaign provides 14+ diverse multi-stage missions with valid coordinates and payouts', () => {
+  assert.ok(MISSIONS.length >= 14, `Expected >= 14 missions, got ${MISSIONS.length}`);
+  const ids = new Set(MISSIONS.map((m) => m.id));
+  const titles = new Set(MISSIONS.map((m) => m.title));
+  const categories = new Set(MISSIONS.map((m) => m.category));
+  assert.equal(ids.size, MISSIONS.length, 'Every mission must have a unique ID');
+  assert.equal(titles.size, MISSIONS.length, 'Every mission must have a unique title');
+  assert.ok(categories.size >= 5, `Expected >= 5 mission categories, got ${categories.size}`);
+  for (const m of MISSIONS) {
+    assert.ok(m.reward >= 1000, `Mission ${m.id} reward should be >= $1000`);
+    assert.ok(m.briefing.length >= 2, `Mission ${m.id} must have multi-line briefing`);
+    assert.ok(m.district.length > 0 && m.summary.length > 10, `Mission ${m.id} missing district or summary`);
+    assert.ok(Math.abs(m.giver.x) < WORLD_HALF && Math.abs(m.giver.z) < WORLD_HALF, `Mission ${m.id} giver out of bounds`);
+    assert.equal(typeof m.start, 'function');
+    assert.equal(typeof m.update, 'function');
+  }
+});
+
+test('optional Gemini AI NPC director prioritizes nearby citizens, sanitizes JSON decisions, and computes physical steering', () => {
+  const director = new GeminiNpcDirector();
+  assert.equal(director.enabled, false, 'Gemini AI NPCs must default OFF (optional)');
+
+  const cands: GeminiNpcCandidate[] = [
+    { id: 1, name: 'Maya', role: 'civ', occupation: 'barista', personality: 'friendly', mood: 'chill', x: 10, z: 0, dist: 10, indoor: false, hostile: false, lastUpdatedAt: 95 },
+    { id: 2, name: 'Carlos', role: 'civ', occupation: 'mechanic', personality: 'bold', mood: 'chill', x: 6, z: 0, dist: 6, indoor: false, hostile: false, lastUpdatedAt: 0 },
+    { id: 3, name: 'Elena', role: 'tourist', occupation: 'visitor', personality: 'curious', mood: 'excited', x: 80, z: 0, dist: 80, indoor: false, hostile: false, lastUpdatedAt: 0 },
+    { id: 4, name: 'Officer Cruz', role: 'cop', occupation: 'officer', personality: 'strict', mood: 'suspicious', x: 14, z: 0, dist: 14, indoor: false, hostile: true, lastUpdatedAt: 0 },
+  ];
+  const batch = selectNearbyNpcsForGemini(cands, 100, 6, 56, 15, false);
+  // ID 3 is out of range (80m), ID 1 was updated only 5s ago, so IDs 2 and 4 must be selected with closest first
+  assert.deepEqual(batch.map((c) => c.id), [2, 4]);
+
+  const parsed = sanitizeGeminiDecisions(
+    [
+      { id: 2, intent: 'approach_player', mood: 'friendly', thought: 'Nice car!', speech: 'Whoa, clean ride you got there!' },
+      { id: 4, intent: 'invalid_intent', mood: 'bad_mood', thought: 'Watching closely', speech: 'Keep moving.' },
+      { id: 999, intent: 'flee', mood: 'scared', thought: 'Unknown id', speech: 'Ignored' },
+    ],
+    new Set([2, 4]),
+    100,
+  );
+  assert.equal(parsed.length, 2);
+  assert.equal(parsed[0].intent, 'approach_player');
+  assert.equal(parsed[0].mood, 'friendly');
+  assert.equal(parsed[1].intent, 'stroll', 'Invalid intent must fall back cleanly to stroll');
+  assert.equal(parsed[1].mood, 'chill', 'Invalid mood must fall back cleanly to chill');
+
+  const steerApproach = computeGeminiSteering(parsed[0], 0, 0, 10, 0);
+  assert.ok(steerApproach.moveDx > 0.9 && steerApproach.facePlayer && !steerApproach.triggerFlee);
+
+  const steerFlee = computeGeminiSteering({ ...parsed[0], intent: 'flee' }, 0, 0, 10, 0);
+  assert.ok(steerFlee.moveDx < -0.9 && steerFlee.triggerFlee && steerFlee.speedMul > 2);
+
+  const steerConfront = computeGeminiSteering({ ...parsed[0], intent: 'confront' }, 0, 0, 6, 0);
+  assert.ok(steerConfront.triggerConfront && steerConfront.facePlayer);
+
+  // Verify server-side Gemini capability metadata & zero client-side @google/genai imports
+  const root = process.cwd();
+  const meta = JSON.parse(fs.readFileSync(path.join(root, 'metadata.json'), 'utf8')) as { majorCapabilities?: string[] };
+  assert.ok(meta.majorCapabilities?.includes('MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API'));
+  const clientCode = fs.readFileSync(path.join(root, 'src', 'game', 'geminiNpc.ts'), 'utf8');
+  assert.ok(!/from\s+['"]@google\/genai['"]/.test(clientCode), 'Client code must never import @google/genai');
+});
+
 
 
 

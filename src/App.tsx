@@ -3,6 +3,7 @@ import { Game, HudState } from './game/Game';
 import { MobileControls } from './components/MobileControls';
 import { PhoneOverlay } from './components/PhoneOverlay';
 import { BankModal } from './components/BankModal';
+import { GeminiNpcTalkModal } from './components/GeminiNpcTalkModal';
 
 type Toast = { id: number; text: string; kind: string };
 type Banner = { kind: 'wasted' | 'passed' | 'failed'; title: string; sub?: string } | null;
@@ -24,7 +25,8 @@ const CONTROLS: [string, string][] = [
   ['R / H', 'Radio station · Horn'],
   ['G / T', 'Scope · Package finder'],
   ['M', '10km Map, Banks & GPS'],
-  ['Esc / P', 'Pause · RTX / GLB / Beta IK'],
+  ['V', 'Talk to nearby Gemini AI NPC'],
+  ['Esc / P', 'Pause · RTX / GLB / Gemini AI'],
 ];
 
 function Skyline() {
@@ -106,6 +108,7 @@ export default function App() {
   const [hdGlbMode, setHdGlbMode] = useState<boolean>(true);
   const [microtexturesEnabled, setMicrotexturesEnabled] = useState<boolean>(true);
   const [experimentalBodyLogic, setExperimentalBodyLogic] = useState<boolean>(false);
+  const [geminiNpcsEnabled, setGeminiNpcsEnabled] = useState<boolean>(false);
   const [hud, setHud] = useState<HudState | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [banner, setBanner] = useState<Banner>(null);
@@ -142,6 +145,7 @@ export default function App() {
         g.setHdGlbMode(hdGlbMode);
         g.setMicrotexturesEnabled(microtexturesEnabled);
         g.setExperimentalBodyLogic(experimentalBodyLogic);
+        g.setGeminiNpcsEnabled(geminiNpcsEnabled);
         g.setVoiceVolume(volume / 100);
         gameRef.current = g;
         (window as any).__game = g;
@@ -155,7 +159,7 @@ export default function App() {
         setPhase('title');
       }
     }, 60);
-  }, [quality, mobileMode, rtxEnabled, goreEnabled, voicesEnabled, hdGlbMode, microtexturesEnabled, experimentalBodyLogic, volume]);
+  }, [quality, mobileMode, rtxEnabled, goreEnabled, voicesEnabled, hdGlbMode, microtexturesEnabled, experimentalBodyLogic, geminiNpcsEnabled, volume]);
 
   // Support ?autostart=1 and Enter/Space to start on title screen
   useEffect(() => {
@@ -233,6 +237,11 @@ export default function App() {
     const next = !(hud?.experimentalBodyLogic ?? experimentalBodyLogic);
     setExperimentalBodyLogic(next);
     g?.setExperimentalBodyLogic(next);
+  };
+  const toggleGeminiNpcs = () => {
+    const next = !(hud?.geminiNpcsEnabled ?? geminiNpcsEnabled);
+    setGeminiNpcsEnabled(next);
+    g?.setGeminiNpcsEnabled(next);
   };
   const onMapClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
     const c = e.currentTarget;
@@ -317,6 +326,7 @@ export default function App() {
                   <span className="text-lime-300">GRENADES {hud.grenades}</span>
                   {hud.rtxEnabled && <span className="font-bold text-fuchsia-300">RT-RTX</span>}
                   {hud.experimentalBodyLogic && <span className="font-bold text-amber-300">BETA IK</span>}
+                  {hud.geminiNpcsEnabled && <span className="font-bold text-cyan-300">GEMINI AI</span>}
                 </div>
               </>
             )}
@@ -351,7 +361,7 @@ export default function App() {
                 <div className="rounded-md border-l-4 border-white/40 bg-black/70 px-4 py-2">
                   <div className="text-[10px] font-bold tracking-[0.25em] text-white/65">NEXT CONTRACT</div>
                   <div className="gta-font text-lg text-amber-200">{hud.nextMission.toUpperCase()}</div>
-                  <div className="text-xs text-white/75">Follow the pink GPS line to the yellow marker.</div>
+                  <div className="text-xs text-white/75">Follow the pink GPS line or open Phone → Contracts.</div>
                 </div>
               )
             )}
@@ -386,7 +396,9 @@ export default function App() {
         {hud && hud.heist.active && !hud.scope && (
           <div
             data-testid="heist-hud"
-            className="absolute left-1/2 top-4 w-[min(460px,88vw)] -translate-x-1/2 rounded-lg border border-red-500/60 bg-[#18070a]/95 px-4 py-2.5 shadow-xl"
+            className={`absolute left-1/2 w-[min(460px,88vw)] -translate-x-1/2 rounded-lg border border-red-500/60 bg-[#18070a]/95 px-4 py-2.5 shadow-xl ${
+              isMobileHud ? 'top-[160px]' : 'top-4'
+            }`}
           >
             <div className="flex items-center justify-between gap-2">
               <span className="text-[10px] font-black uppercase tracking-[0.28em] text-red-400">
@@ -535,7 +547,7 @@ export default function App() {
         )}
 
         {/* subtitles (story/mission takes priority over ambient NPC chatter) */}
-        {hud?.subtitle && !hud.scope && (
+        {hud?.subtitle && !hud.scope && !hud.geminiTalk && (
           <div className={`absolute left-1/2 w-[min(780px,88vw)] -translate-x-1/2 text-center ${isMobileHud ? 'bottom-[228px]' : 'bottom-20'}`}>
             <span className={`rounded bg-black/75 px-3 py-1 font-semibold leading-snug text-white hud-text ${isMobileHud ? 'text-xs' : 'text-base leading-relaxed'}`}>
               <span className="mr-1.5 font-black text-amber-300">{hud.subtitle.who}:</span>
@@ -543,7 +555,7 @@ export default function App() {
             </span>
           </div>
         )}
-        {!hud?.subtitle && hud?.ambientSubtitle && !hud.scope && (
+        {!hud?.subtitle && hud?.ambientSubtitle && !hud.scope && !hud.geminiTalk && (
           <div
             data-ambient-subtitle="true"
             className={`absolute left-1/2 w-[min(680px,86vw)] -translate-x-1/2 text-center ${isMobileHud ? 'bottom-[228px]' : 'bottom-20'}`}
@@ -597,17 +609,17 @@ export default function App() {
         )}
 
         {/* click to capture (desktop only) */}
-        {phase === 'playing' && hud && !hud.mobileMode && !hud.locked && !hud.paused && !hud.mapOpen && !hud.phoneOpen && !hud.bankOpen && !banner && !hud.scope && (
+        {phase === 'playing' && hud && !hud.mobileMode && !hud.locked && !hud.paused && !hud.mapOpen && !hud.phoneOpen && !hud.bankOpen && !hud.geminiTalk && !banner && !hud.scope && (
           <div className="pointer-events-auto absolute inset-x-0 bottom-4 flex justify-center">
             <div className="rounded-full bg-black/80 px-5 py-1.5 text-center text-[11px] tracking-wide border border-white/15">
               <span className="font-bold text-amber-300">CLICK TO CAPTURE MOUSE</span>
-              <span className="ml-2 text-white/70">Tab for Phone · E for Banks/Events · Esc for Settings</span>
+              <span className="ml-2 text-white/70">Tab for Phone · E for Banks/Events{hud.geminiNpcsEnabled ? ' · V to Talk to NPCs' : ''} · Esc for Settings</span>
             </div>
           </div>
         )}
 
         {/* Quick Phone Button */}
-        {playing && !hud.phoneOpen && !hud.paused && !hud.mapOpen && !hud.bankOpen && !hud.scope && !isMobileHud && (
+        {playing && !hud.phoneOpen && !hud.paused && !hud.mapOpen && !hud.bankOpen && !hud.geminiTalk && !hud.scope && !isMobileHud && (
           <button
             type="button"
             aria-label="Open Smartphone"
@@ -641,7 +653,13 @@ export default function App() {
           onToggleGore={toggleGore}
           onToggleVoices={toggleVoices}
           onToggleBetaBody={toggleExperimentalBodyLogic}
+          onToggleGeminiNpcs={toggleGeminiNpcs}
         />
+      )}
+
+      {/* ------------------------------------------------------------ Live Gemini NPC Conversation */}
+      {playing && hud.geminiTalk && !hud.paused && g && (
+        <GeminiNpcTalkModal game={g} hud={hud} />
       )}
 
       {/* ------------------------------------------------------------ NovaBank / ATM Modal */}
@@ -832,6 +850,30 @@ export default function App() {
                   {hud.experimentalBodyLogic ? 'ON' : 'OFF'}
                 </span>
               </button>
+
+              <button
+                type="button"
+                data-toggle-gemini-npcs="true"
+                onClick={toggleGeminiNpcs}
+                className={`flex items-center justify-between rounded-lg border px-4 py-3 text-left transition sm:col-span-2 lg:col-span-3 ${
+                  hud.geminiNpcsEnabled
+                    ? 'border-cyan-400 bg-cyan-500/20 text-cyan-200'
+                    : 'border-white/15 bg-white/5 text-white/85 hover:bg-white/10'
+                }`}
+              >
+                <div>
+                  <div className="flex items-center gap-2 text-xs font-extrabold tracking-widest">
+                    <span>GEMINI AI NPCS</span>
+                    <span className="rounded bg-cyan-400 px-1.5 py-0.5 text-[9px] font-black text-black">OPTIONAL</span>
+                  </div>
+                  <div className="text-[11px] text-white/65">
+                    Every nearby NPC thinks, reacts & speaks via Gemini — press V (or tap TALK) near any citizen to converse live
+                  </div>
+                </div>
+                <span className={`rounded px-2.5 py-0.5 text-xs font-black ${hud.geminiNpcsEnabled ? 'bg-cyan-400 text-black' : 'bg-white/15 text-white/70'}`}>
+                  {hud.geminiNpcsEnabled ? 'ON' : 'OFF'}
+                </span>
+              </button>
             </div>
 
             <div className="mt-6 grid gap-8 md:grid-cols-2">
@@ -992,9 +1034,24 @@ export default function App() {
                     <span>BODY-LOGIC NPCS (BETA):</span>
                     <span>{experimentalBodyLogic ? 'ON' : 'OFF'}</span>
                   </button>
+
+                  {/* Optional Gemini AI NPCs Toggle */}
+                  <button
+                    type="button"
+                    data-title-gemini-npcs="true"
+                    onClick={() => setGeminiNpcsEnabled((v) => !v)}
+                    className={`flex items-center gap-2 rounded-lg border px-4 py-2 text-xs font-extrabold tracking-widest transition ${
+                      geminiNpcsEnabled
+                        ? 'border-cyan-300 bg-cyan-400 text-black'
+                        : 'border-white/20 bg-black/65 text-white/80 hover:bg-white/15'
+                    }`}
+                  >
+                    <span>GEMINI AI NPCS:</span>
+                    <span>{geminiNpcsEnabled ? 'ON' : 'OFF'}</span>
+                  </button>
                 </div>
 
-                <div className="mt-1.5 text-[11px] text-white/75">Graphics quality · toggle Mobile Mode, Ray-Traced RTX, Handcrafted .GLB Pack, PBR Microtextures & Beta Body-Logic NPCs</div>
+                <div className="mt-1.5 text-[11px] text-white/75">Graphics quality · toggle Mobile Mode, Ray-Traced RTX, Handcrafted .GLB Pack, PBR Microtextures, Beta Body-Logic & Optional Gemini AI NPCs</div>
                 <button
                   data-start="true"
                   onClick={start}

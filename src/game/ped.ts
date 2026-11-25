@@ -15,6 +15,7 @@ import {
   stepMeleeCombat,
 } from './combatAI';
 import type { CitizenProfile } from './npcLifeSim';
+import { computeGeminiSteering, type GeminiNpcDecision } from './geminiNpc';
 import type { Game } from './Game';
 import type { PushOut } from './world';
 
@@ -105,6 +106,7 @@ export class Ped {
   gunAI: GunfightState;
   lifeProfile: CitizenProfile | null = null;
   experimentalBodyLogic = false;
+  geminiDecision: GeminiNpcDecision | null = null;
 
   constructor(kind: PedKind, look: Look) {
     this.kind = kind;
@@ -696,6 +698,35 @@ export class Ped {
         fcSpeedMul = 2.15;
       } else if (lp.situation === 'phone_call') {
         fcSpeedMul = 0.85;
+      }
+    }
+
+    // Optional Gemini AI NPC override: executes live server-side Gemini decisions physically in the world
+    if (g.geminiNpcsEnabled && this.geminiDecision && !this.indoor && !this.hostile && this.state !== 'brawl') {
+      const gd = this.geminiDecision;
+      if (gd.speech) this.freeCityLastHint = gd.speech;
+      const steer = computeGeminiSteering(gd, this.x, this.z, px, pz);
+      if (steer.triggerFlee && dp < 36) {
+        this.flee(g, px, pz, 7);
+      } else if (steer.triggerConfront && dp < 18 && !this.mission && g.playerOnFoot && g.playerAlive) {
+        this.canFightBack = true;
+        this.state = 'brawl';
+        this.brawlT = 14;
+      } else {
+        if (steer.facePlayer) fcFaceYaw = Math.atan2(dxp, dzp);
+        if (steer.triggerPhoto) fcPhoto = true;
+        if (steer.wave) this.handsUp = Math.max(this.handsUp, 0.28);
+        if (steer.stop) {
+          fcStop = true;
+        } else if (Math.hypot(steer.moveDx, steer.moveDz) > 0.1) {
+          this.moveDir(steer.moveDx, steer.moveDz, this.speed * steer.speedMul, dt);
+          if (fcFaceYaw !== null) this.yaw = dampAngle(this.yaw, fcFaceYaw, 7, dt);
+          this.animate(dt, Math.hypot(this.vx, this.vz), false, 0, fcPhoto);
+          this.finish(g);
+          return;
+        } else {
+          fcSpeedMul = steer.speedMul;
+        }
       }
     }
 

@@ -68,29 +68,41 @@ const WIN: Record<FacadeStyle, (j: number) => number[] | null> = {
 };
 
 function glassPane(ctx: Ctx, x: number, y: number, w: number, h: number, rng: Rng, style: FacadeStyle) {
-  const g = ctx.createLinearGradient(x, y, x + w * 0.35, y + h);
+  const g = ctx.createLinearGradient(x, y, x + w * 0.25, y + h);
   const tint = rng.range(-10, 10);
   if (style === 'glass') {
-    g.addColorStop(0, hsl(198 + tint, 48, 66));
-    g.addColorStop(0.45, hsl(204 + tint, 52, 42));
-    g.addColorStop(1, hsl(214 + tint, 58, 22));
+    g.addColorStop(0, hsl(197 + tint, 56, 70));
+    g.addColorStop(0.36, hsl(204 + tint, 58, 44));
+    g.addColorStop(0.72, hsl(212 + tint, 54, 24));
+    g.addColorStop(1, hsl(218 + tint, 52, 14));
   } else {
-    g.addColorStop(0, hsl(204 + tint, 32, 48));
-    g.addColorStop(0.55, hsl(212 + tint, 36, 26));
-    g.addColorStop(1, hsl(218 + tint, 40, 13));
+    g.addColorStop(0, hsl(202 + tint, 38, 52));
+    g.addColorStop(0.48, hsl(212 + tint, 40, 24));
+    g.addColorStop(1, hsl(220 + tint, 44, 10));
   }
   ctx.fillStyle = g;
   ctx.fillRect(x, y, w, h);
-  // subtle interior ceiling/depth hint inside glass
-  ctx.fillStyle = 'rgba(20, 28, 38, 0.25)';
-  ctx.fillRect(x, y, w, h * 0.28);
-  // diagonal sky reflection streak
-  ctx.fillStyle = 'rgba(255,255,255,0.14)';
+  // Subtle parallax room ceiling + recessed interior silhouette
+  ctx.fillStyle = 'rgba(10, 16, 26, 0.36)';
+  ctx.fillRect(x, y, w, h * 0.24);
+  if (rng.chance(0.55)) {
+    ctx.fillStyle = 'rgba(255, 224, 175, 0.14)';
+    ctx.fillRect(x + w * 0.14, y + h * 0.16, w * 0.72, Math.max(2, h * 0.08));
+  }
+  // Crisp diagonal sky reflection streaks
+  ctx.fillStyle = style === 'glass' ? 'rgba(225,245,255,0.24)' : 'rgba(255,255,255,0.16)';
   ctx.beginPath();
-  ctx.moveTo(x + w * 0.08, y + h);
-  ctx.lineTo(x + w * 0.46, y);
-  ctx.lineTo(x + w * 0.72, y);
-  ctx.lineTo(x + w * 0.34, y + h);
+  ctx.moveTo(x + w * 0.06, y + h);
+  ctx.lineTo(x + w * 0.42, y);
+  ctx.lineTo(x + w * 0.62, y);
+  ctx.lineTo(x + w * 0.26, y + h);
+  ctx.fill();
+  ctx.fillStyle = 'rgba(255,255,255,0.09)';
+  ctx.beginPath();
+  ctx.moveTo(x + w * 0.44, y + h);
+  ctx.lineTo(x + w * 0.78, y);
+  ctx.lineTo(x + w * 0.86, y);
+  ctx.lineTo(x + w * 0.52, y + h);
   ctx.fill();
 }
 
@@ -381,27 +393,27 @@ export function makeRoad(seed = 5) {
   const rng = new Rng(seed);
   const W = 512, H = 320; // 20m wide x 12.5m long -> 25.6 px/m
   const [c, d] = mk(W, H);
-  d.fillStyle = '#383a3e';
+  d.fillStyle = '#2d3036';
   d.fillRect(0, 0, W, H);
   // fine asphalt stone aggregate
-  addNoise(d, W, H, 32, rng);
+  addNoise(d, W, H, 34, rng);
   const ppm = 25.6;
-  // subtle edge gutter darkening
-  const gl = d.createLinearGradient(0, 0, 28, 0);
-  gl.addColorStop(0, 'rgba(0,0,0,0.28)'); gl.addColorStop(1, 'rgba(0,0,0,0)');
-  d.fillStyle = gl; d.fillRect(0, 0, 28, H);
-  const gr = d.createLinearGradient(W - 28, 0, W, 0);
-  gr.addColorStop(0, 'rgba(0,0,0,0)'); gr.addColorStop(1, 'rgba(0,0,0,0.28)');
-  d.fillStyle = gr; d.fillRect(W - 28, 0, 28, H);
-  // tire wear tracks
+  // subtle edge gutter AO darkening
+  const gl = d.createLinearGradient(0, 0, 34, 0);
+  gl.addColorStop(0, 'rgba(0,0,0,0.42)'); gl.addColorStop(1, 'rgba(0,0,0,0)');
+  d.fillStyle = gl; d.fillRect(0, 0, 34, H);
+  const gr = d.createLinearGradient(W - 34, 0, W, 0);
+  gr.addColorStop(0, 'rgba(0,0,0,0)'); gr.addColorStop(1, 'rgba(0,0,0,0.42)');
+  d.fillStyle = gr; d.fillRect(W - 34, 0, 34, H);
+  // tire wear tracks with subtle sheen contrast
   for (const off of [-5.9, -2.4, 2.4, 5.9]) {
     for (const o of [-0.75, 0.75]) {
-      d.fillStyle = 'rgba(18,19,22,0.16)';
+      d.fillStyle = 'rgba(14,15,18,0.22)';
       d.fillRect(W / 2 + (off + o) * ppm - 14, 0, 28, H);
     }
   }
   // asphalt cracks & tar repairs
-  d.strokeStyle = 'rgba(12,12,14,0.58)';
+  d.strokeStyle = 'rgba(10,10,12,0.62)';
   d.lineWidth = 1.4;
   for (let k = 0; k < 10; k++) {
     d.beginPath();
@@ -410,14 +422,14 @@ export function makeRoad(seed = 5) {
     for (let s = 0; s < 6; s++) { x += rng.range(-24, 24); y += rng.range(-24, 24); d.lineTo(x, y); }
     d.stroke();
   }
-  d.fillStyle = 'rgba(26,27,31,0.46)';
+  d.fillStyle = 'rgba(20,22,26,0.48)';
   for (let k = 0; k < 4; k++) d.fillRect(rng.range(0, W - 70), rng.range(0, H - 50), rng.range(30, 75), rng.range(20, 55));
   // double yellow centerlines
-  d.fillStyle = '#e8ba22';
+  d.fillStyle = '#f2c229';
   d.fillRect(W / 2 - 0.35 * ppm - 2.5, 0, 5, H);
   d.fillRect(W / 2 + 0.35 * ppm - 2.5, 0, 5, H);
   // crisp lane & edge markings
-  d.fillStyle = '#e4e6ea';
+  d.fillStyle = '#edf0f5';
   for (const s of [-1, 1]) {
     const x = W / 2 + s * 4.15 * ppm;
     d.fillRect(x - 2, 0, 4, H * 0.46);
@@ -425,10 +437,10 @@ export function makeRoad(seed = 5) {
   }
   // subtle paint wear
   d.globalCompositeOperation = 'destination-out';
-  d.fillStyle = 'rgba(0,0,0,0.22)';
-  for (let k = 0; k < 120; k++) d.fillRect(rng.range(0, W), rng.range(0, H), rng.range(2, 7), rng.range(2, 9));
+  d.fillStyle = 'rgba(0,0,0,0.18)';
+  for (let k = 0; k < 110; k++) d.fillRect(rng.range(0, W), rng.range(0, H), rng.range(2, 7), rng.range(2, 9));
   d.globalCompositeOperation = 'source-over';
-  return toTex(c, { aniso: 12 });
+  return toTex(c, { aniso: 16 });
 }
 
 export function makeRoadBump(seed = 55) {
@@ -586,15 +598,27 @@ function surface(base: string, noiseAmt: number, seed: number, size = 256, extra
 }
 
 export const makeSidewalk = () =>
-  surface('#aeaea7', 22, 11, 256, (d, rng, s) => {
+  surface('#585650', 28, 11, 512, (d, rng, s) => {
+    const cell = s / 2;
     for (let i = 0; i < 2; i++) for (let j = 0; j < 2; j++) {
-      d.fillStyle = hsl(38, 6, rng.range(62, 70));
-      d.fillRect(i * s / 2 + 2, j * s / 2 + 2, s / 2 - 4, s / 2 - 4);
-      // bevel highlight & shadow
-      d.fillStyle = 'rgba(255,255,255,0.18)';
-      d.fillRect(i * s / 2 + 2, j * s / 2 + 2, s / 2 - 4, 2);
-      d.fillStyle = 'rgba(0,0,0,0.22)';
-      d.fillRect(i * s / 2 + 2, (j + 1) * s / 2 - 4, s / 2 - 4, 2);
+      const x0 = i * cell + 5, y0 = j * cell + 5, w = cell - 10, h = cell - 10;
+      d.fillStyle = hsl(34, 8, rng.range(47, 54));
+      d.fillRect(x0, y0, w, h);
+      // subtle directional broom-finish concrete grain
+      for (let line = 0; line < 18; line++) {
+        d.fillStyle = line % 2 === 0 ? 'rgba(255,252,244,0.035)' : 'rgba(20,18,16,0.045)';
+        d.fillRect(x0, y0 + rng.range(0, h - 2), w, rng.range(1, 3));
+      }
+      // soft pedestrian weathering patches
+      d.fillStyle = 'rgba(34,32,28,0.07)';
+      d.fillRect(x0 + rng.range(8, w * 0.5), y0 + rng.range(8, h * 0.5), rng.range(36, 92), rng.range(28, 76));
+      // crisp top-edge sunlight catch & bottom recessed mortar bevel
+      d.fillStyle = 'rgba(255,250,240,0.16)';
+      d.fillRect(x0, y0, w, 3);
+      d.fillRect(x0, y0, 2, h);
+      d.fillStyle = 'rgba(12,12,10,0.28)';
+      d.fillRect(x0, y0 + h - 3, w, 3);
+      d.fillRect(x0 + w - 2, y0, 2, h);
     }
   });
 
@@ -963,16 +987,45 @@ export function makeGlow() {
   return toTex(c, { repeat: false, aniso: 1 });
 }
 
-/** Soft radial contact shadow decal texture for pedestrians & vehicles. */
+/** Soft radial contact shadow decal texture for pedestrians. */
 export function makeContactShadow() {
   const [c, d] = mk(128, 128);
   const g = d.createRadialGradient(64, 64, 8, 64, 64, 60);
-  g.addColorStop(0, 'rgba(0,0,0,0.46)');
-  g.addColorStop(0.55, 'rgba(0,0,0,0.22)');
+  g.addColorStop(0, 'rgba(0,0,0,0.56)');
+  g.addColorStop(0.52, 'rgba(0,0,0,0.26)');
   g.addColorStop(1, 'rgba(0,0,0,0)');
   d.fillStyle = g;
   d.fillRect(0, 0, 128, 128);
   return toTex(c, { repeat: false, aniso: 1 });
+}
+
+/** Soft rounded-rectangle underbody AO contact shadow for cars & aircraft. */
+export function makeVehicleShadow() {
+  const W = 128, H = 256;
+  const [c, d] = mk(W, H);
+  d.clearRect(0, 0, W, H);
+  // Outer soft ambient penumbra
+  const g1 = d.createRadialGradient(W / 2, H / 2, 16, W / 2, H / 2, W * 0.56);
+  g1.addColorStop(0, 'rgba(0,0,0,0.52)');
+  g1.addColorStop(0.7, 'rgba(0,0,0,0.24)');
+  g1.addColorStop(1, 'rgba(0,0,0,0)');
+  d.save();
+  d.translate(W / 2, H / 2);
+  d.scale(1, 1.85);
+  d.fillStyle = g1;
+  d.beginPath();
+  d.arc(0, 0, W * 0.52, 0, Math.PI * 2);
+  d.fill();
+  d.restore();
+  // Dense chassis core AO directly under frame
+  d.save();
+  d.filter = 'blur(8px)';
+  d.fillStyle = 'rgba(0,0,0,0.68)';
+  d.beginPath();
+  d.roundRect(22, 24, W - 44, H - 48, 22);
+  d.fill();
+  d.restore();
+  return toTex(c, { repeat: false, aniso: 4 });
 }
 
 // ---------------------------------------------------------------- 320+ GTA-6 Store Sign Atlas (8 cols x 42 rows, 2048x2048)

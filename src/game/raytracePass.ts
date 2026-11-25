@@ -244,22 +244,29 @@ void main() {
         reflCol = texture2D(tDiffuse, hitUv).rgb;
         // Clamp specular fireflies cleanly
         reflCol = min(reflCol, vec3(2.2));
-        reflMask = clamp(surfaceGloss * (0.36 + uWetness * 0.28 + uIsNight * 0.16) * rFade * uRtxStrength, 0.0, 0.56);
+        reflMask = clamp(surfaceGloss * (0.42 + uWetness * 0.30 + uIsNight * 0.18) * rFade * uRtxStrength, 0.0, 0.62);
       }
     }
   }
 
   // -------------------------------------------------------------------------
-  // 4. COMPOSE REAL RAY-TRACED LIGHTING + VIBRANT FILMIC PRESERVATION
+  // 4. COMPOSE REAL RAY-TRACED LIGHTING + CINEMATIC VIBRANCY & AERIAL DEPTH
   // -------------------------------------------------------------------------
-  vec3 lit = col * ao * contactShadow + giBounce * (0.55 + 0.45 * col);
+  vec3 lit = col * ao * contactShadow + giBounce * (0.58 + 0.42 * col);
   lit = mix(lit, reflCol, reflMask);
 
-  // Subtle vibrant filmic contrast — keeps colors rich and saturated, NEVER washed out!
+  // Subtle sunlit atmospheric aerial glow on distant skyscrapers (enhances depth without grey washout)
+  float aerial = smoothstep(85.0, 620.0, viewDist) * (1.0 - uIsNight * 0.65) * 0.12 * uRtxStrength;
+  vec3 sunScatter = mix(vec3(0.42, 0.68, 0.94), vec3(1.0, 0.72, 0.46), clamp(dot(normalize(P), uSunDirView) * 0.5 + 0.5, 0.0, 1.0));
+  lit = mix(lit, lit + sunScatter * 0.38, aerial);
+
+  // Rich filmic vibrancy & crisp S-curve micro-contrast (deep grounded shadows, luminous highlights)
   float outLuma = dot(lit, vec3(0.2126, 0.7152, 0.0722));
-  lit = mix(vec3(outLuma), lit, 1.07);
-  // Gentle micro-contrast in shadows/highlights without clipping sky or crushing darks
-  lit = lit * (1.025 + 0.025 * smoothstep(0.2, 0.85, outLuma));
+  lit = mix(vec3(outLuma), lit, 1.11);
+  lit = lit * (0.985 + 0.075 * smoothstep(0.14, 0.84, outLuma));
+  // Subtle crisp vignette framing at extreme edges
+  vec2 vig = vUv * 2.0 - 1.0;
+  lit *= 1.0 - dot(vig, vig) * 0.045;
 
   gl_FragColor = vec4(max(lit, vec3(0.0)), 1.0);
 }

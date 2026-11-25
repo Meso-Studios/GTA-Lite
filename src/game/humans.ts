@@ -282,15 +282,21 @@ function buildFace(L: Look): FaceParts {
   if (L.hairStyle === 'bald') {
     hair.push(sph(1, 0, hy - 0.02, -0.005, tintOf(skin, 0.9), 0.092, 0.06, 0.1, 12));
   } else {
-    hair.push(cap(1, L.hairStyle === 'crew' ? 0.72 : 0.9, 1, 0.042));
-    const n = L.hairStyle === 'crew' ? 4 : 9;
-    for (let i = 0; i < n; i++) {
-      const a = (i / n) * Math.PI * 2;
-      hair.push(lock(Math.cos(a) * 0.06, hy + 0.08 + Math.sin(a * 2) * 0.014, Math.sin(a) * 0.065 - 0.01, 0.05, 0.055, 0.035, Math.cos(a) * 0.35, Math.sin(a) * 0.35));
+    // Smooth contoured cranial hair cap + layered rounded tufts (zero jagged protruding boxes)
+    const isCrew = L.hairStyle === 'crew';
+    hair.push(cap(1.03, isCrew ? 0.78 : 0.95, 1.03, 0.044, -0.012));
+    hair.push(sph(1, 0, hy + (isCrew ? 0.072 : 0.092), -0.008, tintOf(hc, 1.04), 0.094, isCrew ? 0.042 : 0.058, 0.108, 14));
+    // Smooth tapered back & side fade hugging the skull cleanly
+    hair.push(sph(1, 0, hy + 0.008, -0.048, tintOf(hc, 0.92), 0.094, 0.088, 0.082, 14));
+    for (const s of [-1, 1]) {
+      hair.push(sph(1, s * 0.072, hy + 0.028, -0.006, tintOf(hc, 0.95), 0.038, 0.068, 0.084, 12));
     }
-    hair.push(lock(0, hy + 0.045, 0.093, 0.09, 0.042, 0.03, 0.42));
-    hair.push(lock(-0.05, hy + 0.05, 0.083, 0.05, 0.036, 0.03, 0.3, -0.2));
-    hair.push(lock(0.05, hy + 0.05, 0.083, 0.05, 0.036, 0.03, 0.3, 0.2));
+    // Soft sculpted hairline fringe
+    hair.push(sph(1, 0, hy + 0.062, 0.066, tintOf(hc, 0.98), 0.078, 0.036, 0.048, 12));
+    if (!isCrew) {
+      hair.push(sph(1, -0.032, hy + 0.088, 0.038, tintOf(hc, 1.05), 0.056, 0.034, 0.068, 12));
+      hair.push(sph(1, 0.034, hy + 0.084, 0.028, tintOf(hc, 0.96), 0.054, 0.032, 0.064, 12));
+    }
   }
   if (L.hairStyle === 'long') {
     hair.push(sph(1, 0, hy - 0.09, -0.075, hc, 0.095, 0.2, 0.062, 14));
@@ -816,13 +822,17 @@ export function upgradeHumanToGlb(
       }
 
       const b = L.build;
-      // Anatomical ribcage depth (~0.62 front-to-back ratio) eliminates barrel-chest silhouette
+      // Anatomical ribcage depth & natural shoulder taper eliminate barrel-chest / floating-arm gaps
       torsoGlb.position.set(0, 0.03, 0);
-      torsoGlb.scale.set(b * 0.94, 1.0, b * 0.62);
+      torsoGlb.scale.set(b * 1.02, 1.0, b * 0.66);
       r.spine.add(torsoGlb);
 
+      // Tuck arm roots slightly closer into the torso so shoulders blend naturally without sticking out
+      r.armL.position.x = Math.abs(r.armL.position.x) * 0.86;
+      r.armR.position.x = -Math.abs(r.armR.position.x) * 0.86;
+
       // Solid collar & upper-chest seal so there is zero gap around the neck
-      const collarGeo = new THREE.CylinderGeometry(0.058 * b, 0.088 * b, 0.075, 14);
+      const collarGeo = new THREE.CylinderGeometry(0.058 * b, 0.092 * b, 0.078, 14);
       const collarMesh = new THREE.Mesh(collarGeo, topMat);
       collarMesh.position.set(0, 0.495, 0);
       collarMesh.scale.set(1.0, 1.0, 0.72);
@@ -832,10 +842,10 @@ export function upgradeHumanToGlb(
       r.head.position.y = 0.58;
 
       // Grounded pelvis hip bridge matching trousers/skirt with natural anatomical depth
-      const pelvisGeo = new THREE.CylinderGeometry(0.142 * b, 0.132 * b, 0.16, 14);
+      const pelvisGeo = new THREE.CylinderGeometry(0.146 * b, 0.136 * b, 0.17, 14);
       const pelvisMesh = new THREE.Mesh(pelvisGeo, botMat);
-      pelvisMesh.position.set(0, 0.015, 0);
-      pelvisMesh.scale.set(0.95, 1.0, 0.66);
+      pelvisMesh.position.set(0, 0.012, 0);
+      pelvisMesh.scale.set(0.96, 1.0, 0.68);
       pelvisMesh.castShadow = true;
       pelvisMesh.receiveShadow = true;
       r.hips.add(pelvisMesh);
@@ -855,23 +865,25 @@ export function upgradeHumanToGlb(
       const sleeveMat = getHumanPartMat(sleeveHex, sleeveRough);
       const foreHex = L.topStyle === 'long' || L.topStyle === 'jacket' || L.topStyle === 'suit' || L.topStyle === 'uniform' ? L.top : L.skin;
       const foreRough = foreHex === L.skin ? 0.58 : topRough;
-      const deltGeo = new THREE.SphereGeometry(0.064 * b, 12, 10);
+      // Sleek tapered deltoid transition tucked slightly inward toward the clavicle
+      const deltGeo = new THREE.SphereGeometry(0.048 * b, 12, 10);
       for (const arm of [r.armL, r.armR]) {
+        const inward = arm === r.armL ? -0.022 * b : 0.022 * b;
         const delt = new THREE.Mesh(deltGeo, sleeveMat);
-        delt.position.set(0, -0.01, 0);
-        delt.scale.set(1.0, 0.92, 0.85);
+        delt.position.set(inward, -0.016, 0);
+        delt.scale.set(0.84, 0.9, 0.72);
         delt.castShadow = true;
         arm.add(delt);
         const ua = cloneHumanGlbPart('arm_u', sleeveHex, sleeveRough);
         if (ua) {
-          ua.position.set(0, -0.02, 0);
-          ua.scale.set(b * 0.88, 1.0, b * 0.84);
+          ua.position.set(0, -0.015, 0);
+          ua.scale.set(b * 0.88, 1.02, b * 0.84);
           arm.add(ua);
         }
       }
       for (const el of [r.elL, r.elR]) {
         const fa = cloneHumanGlbPart('arm_l', foreHex, foreRough);
-        if (fa) { fa.scale.set(b * 0.94, 1.04, b * 0.94); el.add(fa); }
+        if (fa) { fa.scale.set(b * 0.94, 1.05, b * 0.94); el.add(fa); }
         const hd = cloneHumanGlbPart('hand', L.skin, 0.58);
         if (hd) { hd.position.set(0, -0.25, 0); el.add(hd); }
       }
@@ -879,13 +891,21 @@ export function upgradeHumanToGlb(
       const thighRough = L.bottomStyle === 'skirt' ? 0.58 : 0.84;
       const shinHex = L.bottomStyle === 'shorts' || L.bottomStyle === 'skirt' ? L.skin : L.bottom;
       const shinRough = shinHex === L.skin ? 0.58 : 0.84;
+      const kneeMat = getHumanPartMat(shinHex, shinRough);
+      const kneeGeo = new THREE.SphereGeometry(0.047 * b, 10, 8);
       for (const leg of [r.legL, r.legR]) {
         const th = cloneHumanGlbPart('leg_u', thighHex, thighRough);
-        if (th) { th.scale.set(b * 0.94, 1.06, b * 0.9); leg.add(th); }
+        if (th) { th.scale.set(b * 0.96, 1.09, b * 0.92); leg.add(th); }
       }
       for (const kn of [r.knL, r.knR]) {
+        // Seamless knee bridge eliminates dark crease seam on trousers/jeans
+        const kneeCap = new THREE.Mesh(kneeGeo, kneeMat);
+        kneeCap.position.set(0, 0.008, 0.004);
+        kneeCap.scale.set(0.95, 0.88, 0.9);
+        kneeCap.castShadow = true;
+        kn.add(kneeCap);
         const sh = cloneHumanGlbPart('leg_l', shinHex, shinRough);
-        if (sh) { sh.scale.set(b * 0.94, 1.04, b * 0.92); kn.add(sh); }
+        if (sh) { sh.position.set(0, 0.02, 0); sh.scale.set(b * 0.96, 1.08, b * 0.92); kn.add(sh); }
         const shoe = cloneHumanGlbPart('shoe', L.shoe, 0.48);
         if (shoe) { shoe.position.set(0, -0.41, 0.01); kn.add(shoe); }
       }

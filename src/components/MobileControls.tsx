@@ -17,6 +17,8 @@ function TouchBtn({
   onUp,
   className = '',
   active = false,
+  badge,
+  testId,
 }: {
   label: string;
   sub?: string;
@@ -24,14 +26,21 @@ function TouchBtn({
   onUp?: () => void;
   className?: string;
   active?: boolean;
+  badge?: number;
+  testId?: string;
 }) {
   const [pressed, setPressed] = useState(false);
   return (
     <button
       type="button"
+      data-testid={testId}
       onPointerDown={(e) => {
         e.stopPropagation();
-        e.currentTarget.setPointerCapture(e.pointerId);
+        try {
+          e.currentTarget.setPointerCapture(e.pointerId);
+        } catch {
+          // Synthetic pointer events may not support capture
+        }
         setPressed(true);
         onDown();
       }}
@@ -45,12 +54,17 @@ function TouchBtn({
         setPressed(false);
         onUp?.();
       }}
-      className={`pointer-events-auto touch-none select-none flex flex-col items-center justify-center rounded-xl border text-center font-extrabold tracking-wider transition-transform active:scale-95 ${
-        pressed || active ? 'border-amber-300 bg-amber-400/90 text-black' : 'border-white/25 bg-black/70 text-white'
+      className={`pointer-events-auto relative touch-none select-none flex flex-col items-center justify-center rounded-xl border text-center font-extrabold tracking-wider transition-transform active:scale-95 ${
+        pressed || active ? 'border-amber-300 bg-amber-400/90 text-black' : 'border-white/25 bg-black/75 text-white'
       } ${className}`}
     >
       <span className="leading-none">{label}</span>
       {sub && <span className={`mt-0.5 text-[9px] font-bold ${pressed || active ? 'text-black/80' : 'text-white/60'}`}>{sub}</span>}
+      {badge && badge > 0 ? (
+        <span className="absolute -right-1.5 -top-1.5 flex h-4 min-w-[16px] items-center justify-center rounded-full bg-red-600 px-1 text-[9px] font-black text-white shadow">
+          {badge}
+        </span>
+      ) : null}
     </button>
   );
 }
@@ -122,24 +136,32 @@ export function MobileControls({ game, hud }: Props) {
         aria-label="Camera look pad"
       />
 
-      {/* Top-center compact mobile toolbar: PAUSE · MAP · WEAPON/RADIO */}
+      {/* Top-center compact mobile toolbar: PAUSE · MAP · PHONE · WEAPON/RADIO */}
       <div className="pointer-events-none absolute left-1/2 top-2.5 flex -translate-x-1/2 items-center gap-1.5">
         <TouchBtn
           label="II"
           sub="PAUSE"
           onDown={() => game.setPaused(true)}
-          className="h-11 min-w-[52px] px-2.5 text-xs"
+          className="h-11 min-w-[46px] px-2 text-xs"
         />
         <TouchBtn
           label="MAP"
           onDown={() => game.setMapOpen(true)}
-          className="h-11 min-w-[52px] px-2.5 text-xs"
+          className="h-11 min-w-[46px] px-2 text-xs"
+        />
+        <TouchBtn
+          label="PHONE"
+          sub="APPS"
+          testId="mobile-phone-btn"
+          badge={hud.phoneUnread}
+          onDown={() => game.togglePhone(true)}
+          className="h-11 min-w-[58px] border-amber-400/60 bg-[#11192c]/95 px-2.5 text-[11px] text-amber-300"
         />
         {inCar || inPlane ? (
           <TouchBtn
             label="RADIO"
             onDown={() => game.setTouchAction('radio', true)}
-            className="h-11 min-w-[56px] px-2.5 text-xs"
+            className="h-11 min-w-[52px] px-2 text-xs"
           />
         ) : (
           <>
@@ -147,13 +169,13 @@ export function MobileControls({ game, hud }: Props) {
               label="◀"
               sub="GUN"
               onDown={() => game.setTouchAction('prevWeapon', true)}
-              className="h-11 min-w-[48px] px-2 text-xs"
+              className="h-11 min-w-[44px] px-1.5 text-xs"
             />
             <TouchBtn
               label="▶"
               sub="GUN"
               onDown={() => game.setTouchAction('nextWeapon', true)}
-              className="h-11 min-w-[48px] px-2 text-xs"
+              className="h-11 min-w-[44px] px-1.5 text-xs"
             />
           </>
         )}
@@ -204,16 +226,28 @@ export function MobileControls({ game, hud }: Props) {
         </div>
       </div>
 
-      {/* Context-aware Interact / Exit button */}
-      {(hud.prompt || inCar || inPlane) && (
-        <div className={`pointer-events-none absolute right-5 ${inPlane ? 'bottom-[218px]' : 'bottom-44'}`}>
-          <TouchBtn
-            label={inPlane || inCar ? 'EXIT' : 'USE'}
-            sub={inPlane || inCar ? 'VEHICLE' : 'ENTER'}
-            active={Boolean(hud.prompt) && !inCar && !inPlane}
-            onDown={() => game.setTouchAction('interact', true)}
-            className="h-12 min-w-[76px] px-3 text-xs"
-          />
+      {/* Context-aware Interact / Exit / Gemini Talk buttons */}
+      {(hud.prompt || inCar || inPlane || (hud.geminiNpcsEnabled && hud.nearbyGeminiNpc && !hud.geminiTalk)) && (
+        <div className={`pointer-events-none absolute right-5 flex items-center gap-2 ${inPlane ? 'bottom-[218px]' : 'bottom-44'}`}>
+          {hud.geminiNpcsEnabled && hud.nearbyGeminiNpc && !inCar && !inPlane && !hud.geminiTalk && (
+            <TouchBtn
+              label="TALK"
+              sub="GEMINI"
+              testId="mobile-talk-btn"
+              active
+              onDown={() => game.openGeminiTalk(hud.nearbyGeminiNpc?.id)}
+              className="h-12 min-w-[76px] border-cyan-300 bg-cyan-400/95 px-3 text-xs text-black"
+            />
+          )}
+          {(hud.prompt || inCar || inPlane) && (
+            <TouchBtn
+              label={inPlane || inCar ? 'EXIT' : 'USE'}
+              sub={inPlane || inCar ? 'VEHICLE' : 'ENTER'}
+              active={Boolean(hud.prompt) && !inCar && !inPlane}
+              onDown={() => game.setTouchAction('interact', true)}
+              className="h-12 min-w-[76px] px-3 text-xs"
+            />
+          )}
         </div>
       )}
 
