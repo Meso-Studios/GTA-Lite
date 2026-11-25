@@ -19,7 +19,7 @@ import { World } from './world';
 export interface MapRect { x0: number; z0: number; x1: number; z1: number; c: string }
 export interface Place { x: number; z: number; yaw?: number; r?: number }
 export interface PropSpawn { kind: 'cone' | 'barrel' | 'xbarrel' | 'bin' | 'crate'; x: number; z: number }
-export interface Door { x: number; z: number; yaw: number; name: string; kind: 'shop' | 'diner' | 'office' | 'apartment' | 'bank' | 'police' | 'hospital' | 'gun' | 'garage' }
+export interface Door { x: number; z: number; yaw: number; name: string; kind: 'shop' | 'diner' | 'office' | 'apartment' | 'bank' | 'police' | 'hospital' | 'gun' | 'garage' | 'parking' }
 export interface BCtx {
   b: Batcher;
   world: World;
@@ -63,6 +63,7 @@ export function doorKind(name: string): Door['kind'] {
   if (name === 'POLICE') return 'police';
   if (name === 'HOSPITAL' || name.includes('CLINIC') || name.includes('DENTAL')) return 'hospital';
   if (name === 'AMMO' || name.includes('GUN') || name.includes('TACTICAL') || name.includes('SURPLUS')) return 'gun';
+  if (name.includes('PARKING')) return 'parking';
   if (name === 'PAY N SPRAY' || name.includes('CUSTOMS') || name.includes('MOTOR') || name.includes('AUTOS') || name.includes('GARAGE') || name.includes('HANGAR')) return 'garage';
   if (/(PIZZA|DINER|CAFE|COFFEE|BURGER|SUSHI|TACO|NOODLE|RAMEN|CLUB|BAR|LOUNGE|BAKERY|GRILL|DELI|STEAK|SEAFOOD|BBQ|WAFFLE|DONUT|JUICE|TEA|GELATO|CANTINA|PUB|BISTRO|DISCO|TAPROOM|CHICKEN|WINGS|CLUCKIN|EMPANADA|AREPA|CEVICHE|BRUNCH|CREAM)/i.test(name)) return 'diner';
   if (/(HOTEL|MOTEL|INN|RESORT|SUITES|LODGE|PALACE)/i.test(name)) return 'apartment';
@@ -767,6 +768,148 @@ export function addGunShop(c: BCtx, bx: number, bz: number) {
   c.places.gunshop = { x: bx, z: bz - 44.5 };
   c.b.add('prop', box(2.4, 0.04, 2.4, bx, 0.19, bz - 44.5, 0xc0392b), ch);
   void r;
+}
+
+/**
+ * Handcrafted 4-level open-air Downtown Multi-Deck Parking Garage Building (`SAN NOVA PARKING GARAGE`):
+ * Layered concrete decks with parapet safety walls, perimeter structural columns, glass elevator/stair tower,
+ * visible parked cars across upper levels & rooftop, illuminated PARKING rooftop & entry signage,
+ * clearance gantry, barrier gate, attendant booth, and enterable parking interior door.
+ */
+export function addParkingGarage(c: BCtx, bx: number, bz: number) {
+  const ch = c.chunk(bx, bz);
+  const W = 68;
+  const D = 52;
+  const cx = bx;
+  const cz = bz - 7;
+  const front = cz + D / 2;
+  const LEVELS = 4;
+  const LEVEL_H = 4.2;
+  const totalH = LEVELS * LEVEL_H;
+
+  // Paved asphalt entry apron & painted parking lot markings around entrance
+  c.b.add('g_asph', flat(bx - 42, bz - 42, bx + 42, bz + 42, 0.19, (px, pz) => [px / 6, pz / 6]), ch);
+  for (let i = 0; i < 6; i++) {
+    c.b.add('prop', box(0.16, 0.025, 5.2, cx - 24 + i * 9.6, 0.2, front + 12, 0xf2f4f6), ch);
+  }
+  // Yellow entrance directional lane bars
+  c.b.add('prop', box(0.24, 0.025, 9.0, cx - 5.2, 0.2, front + 5.5, 0xf2c94c), ch);
+  c.b.add('prop', box(0.24, 0.025, 9.0, cx + 5.2, 0.2, front + 5.5, 0xf2c94c), ch);
+
+  // Dark interior core shadow recess (creates crisp architectural depth behind the open concrete decks)
+  c.b.add('prop', box(W - 3.6, totalH - 0.6, D - 3.6, cx, 0.25, cz, 0x262a31), ch);
+
+  // 4 Concrete Parking Decks + Perimeter Safety Parapet Walls + Interior Fluorescent Strip Lights
+  for (let lv = 0; lv < LEVELS; lv++) {
+    const y = 0.25 + lv * LEVEL_H;
+    // Heavy precast concrete floor slab
+    c.b.add('conc', box(W, 0.48, D, cx, y, cz, lv === LEVELS - 1 ? 0xc2c6cc : 0xb4b8be), ch);
+    // Raised safety parapet walls on all 4 faces (leave wide entry portal open on ground front face)
+    const paraH = lv === LEVELS - 1 ? 1.25 : 1.15;
+    const paraCol = lv % 2 === 0 ? 0xd2d6dc : 0xc6cbd2;
+    // Back parapet
+    c.b.add('f_stone', box(W, paraH, 0.55, cx, y + 0.48, cz - D / 2 + 0.28, paraCol), ch);
+    // Left & Right parapets
+    c.b.add('f_stone', box(0.55, paraH, D, cx - W / 2 + 0.28, y + 0.48, cz, paraCol), ch);
+    c.b.add('f_stone', box(0.55, paraH, D, cx + W / 2 - 0.28, y + 0.48, cz, paraCol), ch);
+    // Front parapet (split at ground floor for the wide vehicle & pedestrian portal)
+    if (lv === 0) {
+      c.b.add('f_stone', box(W / 2 - 7.5, paraH, 0.55, cx - W / 4 - 3.75, y + 0.48, front - 0.28, paraCol), ch);
+      c.b.add('f_stone', box(W / 2 - 7.5, paraH, 0.55, cx + W / 4 + 3.75, y + 0.48, front - 0.28, paraCol), ch);
+    } else {
+      c.b.add('f_stone', box(W, paraH, 0.55, cx, y + 0.48, front - 0.28, paraCol), ch);
+      // Warm architectural strip light beneath each deck ceiling visible from street
+      c.b.add('emit', box(W - 8, 0.16, 0.3, cx, y - 0.14, front - 1.1, 0xfff0c8), ch);
+      c.b.add('emit', box(0.3, 0.16, D - 8, cx - W / 2 + 1.1, y - 0.14, cz, 0xfff0c8), ch);
+      c.b.add('emit', box(0.3, 0.16, D - 8, cx + W / 2 - 1.1, y - 0.14, cz, 0xfff0c8), ch);
+    }
+    // High-contrast blue/yellow floor level stripe band along the front edge
+    c.b.add('prop', box(W + 0.15, 0.22, 0.16, cx, y + 0.46, front + 0.05, lv === LEVELS - 1 ? 0x2563eb : 0x3b82f6), ch);
+  }
+
+  // Structural Reinforced Concrete Perimeter Columns rising full height
+  for (let i = 0; i <= 6; i++) {
+    const px = cx - W / 2 + 0.55 + i * ((W - 1.1) / 6);
+    for (const pz of [cz - D / 2 + 0.55, front - 0.55]) {
+      if (pz > cz && Math.abs(px - cx) < 6) continue; // Keep entry portal clean
+      c.b.add('conc', box(1.1, totalH + 0.6, 1.1, px, 0.2, pz, 0xa8aeb6), ch);
+      // Yellow/black bumper hazard guard at ground floor base
+      c.b.add('prop', box(1.22, 1.1, 1.22, px, 0.25, pz, 0xf2b705), ch);
+    }
+  }
+  for (let j = 1; j <= 4; j++) {
+    const pz = cz - D / 2 + j * (D / 5);
+    for (const px of [cx - W / 2 + 0.55, cx + W / 2 - 0.55]) {
+      c.b.add('conc', box(1.1, totalH + 0.6, 1.1, px, 0.2, pz, 0xa8aeb6), ch);
+    }
+  }
+
+  // Glass-Enclosed Corner Stair & Elevator Core Tower (front-right)
+  const tx = cx + W / 2 - 4.2;
+  const tz = front - 4.2;
+  const towerH = totalH + 4.4;
+  c.b.add('f_stone', box(7.8, towerH, 7.8, tx, 0.2, tz, 0x334155), ch);
+  c.b.add('glass', box(5.4, towerH - 1.4, 8.0, tx, 1.0, tz, 0x38bdf8), ch);
+  c.b.add('glass', box(8.0, towerH - 1.4, 5.4, tx, 1.0, tz, 0x38bdf8), ch);
+  c.b.add('emit', box(1.8, towerH - 2.0, 1.8, tx, 1.2, tz, 0xffe8a6), ch);
+  c.b.add('propMetal', box(8.2, 0.45, 8.2, tx, towerH + 0.2, tz, 0x1e293b), ch);
+
+  // Diagonal exterior ramp truss accent visible along left side
+  for (let lv = 0; lv < LEVELS - 1; lv++) {
+    const ry = 0.7 + lv * LEVEL_H + LEVEL_H * 0.5;
+    c.b.add('conc', box(0.7, 0.55, 16, cx - W / 2 - 0.1, ry, cz + (lv % 2 === 0 ? -4 : 4), 0x9ca3af), ch);
+  }
+
+  // Rooftop Deck Parking Stall Lines, Light Poles & Sculpted Parked Cars visible from street/air
+  const roofY = 0.25 + (LEVELS - 1) * LEVEL_H + 0.5;
+  for (let i = 0; i < 9; i++) {
+    c.b.add('prop', box(0.14, 0.03, 5.2, cx - 26 + i * 6.5, roofY, cz - 14, 0xf8fafc), ch);
+    c.b.add('prop', box(0.14, 0.03, 5.2, cx - 26 + i * 6.5, roofY, cz + 8, 0xf8fafc), ch);
+  }
+  const carColors = [0xd62834, 0x2563eb, 0xf59e0b, 0x10b981, 0xf8fafc, 0x374151, 0x06b6d4];
+  const rooftopCars: [number, number, number][] = [
+    [-22, -14, 0], [-15.5, -14, 0], [-2.5, -14, 0], [10.5, -14, 0],
+    [-22, 8, Math.PI], [-9, 8, Math.PI], [4, 8, Math.PI],
+  ];
+  rooftopCars.forEach(([ox, oz, yaw], idx) => {
+    const col = carColors[idx % carColors.length];
+    c.b.add('propMetal', box(2.05, 0.65, 4.4, cx + ox, roofY + 0.22, cz + oz, col, yaw), ch);
+    c.b.add('glass', box(1.75, 0.5, 2.05, cx + ox, roofY + 0.87, cz + oz, 0x1e293b, yaw), ch);
+    c.b.add('propMetal', box(1.65, 0.08, 1.55, cx + ox, roofY + 1.37, cz + oz, col, yaw), ch);
+  });
+  // Rooftop light standards
+  for (const [lx, lz] of [[-24, -4], [0, -4], [22, -4]]) {
+    c.b.add('propMetal', cyl(0.12, 0.16, 5.2, cx + lx, roofY, cz + lz, 0x475569, 8), ch);
+    c.b.add('emit', box(1.4, 0.16, 0.45, cx + lx, roofY + 5.15, cz + lz, 0xfff3c4), ch);
+  }
+
+  // Ground Floor Wide Entrance Portal, Clearance Bar, Barrier Gate & Attendant Kiosk
+  c.b.add('prop', box(14.5, 4.1, 0.5, cx, 0.2, front + 0.1, 0x181c22), ch);
+  // Blue-and-white Entrance Header + Illuminated PARKING Signs (Entry + Rooftop Tower)
+  c.b.add('propMetal', box(16.2, 1.35, 1.4, cx, 4.1, front + 0.65, 0x1e3a8a), ch);
+  c.b.add('sign', sign(11.5, 2.4, cx, 5.65, front + 0.6, 0, signUV('PARKING')), ch);
+  c.b.add('sign', sign(10.0, 2.2, tx, towerH - 0.8, tz + 4.15, 0, signUV('PARKING')), ch);
+  // Yellow/Black Clearance Bar hanging in front of entrance
+  c.b.add('propMetal', box(12.2, 0.28, 0.28, cx, 3.3, front + 2.6, 0xfacc15), ch);
+  c.b.add('propMetal', box(0.18, 3.6, 0.18, cx - 6.1, 0.2, front + 2.6, 0x334155), ch);
+  c.b.add('propMetal', box(0.18, 3.6, 0.18, cx + 6.1, 0.2, front + 2.6, 0x334155), ch);
+  // Glass Attendant Kiosk & Striped Barrier Arm right beside entrance
+  c.b.add('propMetal', box(2.8, 2.6, 2.6, cx - 8.2, 0.2, front + 3.4, 0x1e293b), ch);
+  c.b.add('glass', box(2.5, 1.25, 2.68, cx - 8.2, 1.18, front + 3.4, 0x38bdf8), ch);
+  c.b.add('emit', box(2.1, 0.18, 2.1, cx - 8.2, 2.52, front + 3.4, 0xfff0b8), ch);
+  c.b.add('prop', box(4.2, 0.14, 0.14, cx - 4.4, 1.15, front + 3.8, 0xef4444), ch);
+
+  // Decorative palms along the street corners
+  for (const [tx2, tz2] of [[-36, 34], [36, 34], [-36, -34], [36, -34]]) {
+    addTree(c, bx + tx2, bz + tz2, 2);
+  }
+
+  // World collision & map footprint
+  c.world.addBox(cx - W / 2, cx + W / 2, cz - D / 2, front + 0.3, totalH + 2);
+  c.world.addBox(cx - 9.7, cx - 6.7, front + 2.0, front + 4.8, 2.8);
+  pushRect(c, cx, cz, W, D, '#7d8590');
+  c.places.parking = { x: cx, z: front + 9.5 };
+  c.doors.push({ x: cx, z: front + 5.2, yaw: 0, name: 'SAN NOVA PARKING GARAGE', kind: 'parking' });
 }
 export function addPark(c: BCtx, bx: number, bz: number) {
   const r = c.rng;

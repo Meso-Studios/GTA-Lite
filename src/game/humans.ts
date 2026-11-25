@@ -174,6 +174,51 @@ export function baristaLook(r: Rng): Look {
     bottom: 0x1c2228, bottomStyle: 'jeans', shoe: 0x151515, build: 0.96, hat: 'cap', hatColor: 0x2b4030, height: 0.98,
   };
 }
+export function doctorLook(r: Rng): Look {
+  const gender = r.chance(0.45) ? 'f' : 'm';
+  return {
+    gender, skin: r.pick(SKINS), hair: r.pick(HAIRS), eyeColor: r.pick(EYES),
+    hairStyle: gender === 'f' ? r.pick(['bun', 'pony', 'short'] as const) : r.pick(['short', 'crew'] as const),
+    top: 0xf4f7fa, topStyle: 'jacket', bottom: 0x2a7b78, bottomStyle: 'suit', shoe: 0xeaeef2,
+    build: r.range(0.95, 1.08), glasses: r.chance(0.55), tie: 0x246a73, height: gender === 'f' ? 0.96 : 1.03,
+  };
+}
+export function nurseLook(r: Rng): Look {
+  const gender = r.chance(0.68) ? 'f' : 'm';
+  return {
+    gender, skin: r.pick(SKINS), hair: r.pick(HAIRS), eyeColor: r.pick(EYES),
+    hairStyle: gender === 'f' ? r.pick(['pony', 'bun', 'short'] as const) : 'crew',
+    top: r.pick([0x38a3a5, 0x4ea8de]), topStyle: 'uniform', bottom: 0x2b7a78, bottomStyle: 'jeans', shoe: 0xf2f4f7,
+    build: r.range(0.92, 1.04), glasses: r.chance(0.25), height: gender === 'f' ? 0.95 : 1.02,
+  };
+}
+export function chefLook(r: Rng): Look {
+  const gender = r.chance(0.35) ? 'f' : 'm';
+  return {
+    gender, skin: r.pick(SKINS), hair: r.pick(HAIRS), eyeColor: r.pick(EYES),
+    hairStyle: gender === 'f' ? 'bun' : 'crew',
+    top: 0xfafafa, topStyle: 'uniform', bottom: 0x1c2026, bottomStyle: 'jeans', shoe: 0x14161a,
+    build: r.range(0.98, 1.14), hat: 'cap', hatColor: 0xffffff, height: gender === 'f' ? 0.96 : 1.04,
+  };
+}
+export function serverLook(r: Rng): Look {
+  const gender = r.chance(0.55) ? 'f' : 'm';
+  return {
+    gender, skin: r.pick(SKINS), hair: r.pick(HAIRS), eyeColor: r.pick(EYES),
+    hairStyle: gender === 'f' ? r.pick(['pony', 'long', 'bun'] as const) : 'short',
+    top: 0xf2f4f8, topStyle: 'tee', bottom: 0x1c2129, bottomStyle: 'suit', shoe: 0x14161a,
+    build: r.range(0.92, 1.05), tie: 0x9b2626, height: gender === 'f' ? 0.95 : 1.02,
+  };
+}
+export function attendantLook(r: Rng): Look {
+  const gender = r.chance(0.3) ? 'f' : 'm';
+  return {
+    gender, skin: r.pick(SKINS), hair: r.pick(HAIRS), eyeColor: r.pick(EYES),
+    hairStyle: 'crew',
+    top: 0xe6b81e, topStyle: 'uniform', bottom: 0x1d2c42, bottomStyle: 'jeans', shoe: 0x121418,
+    build: r.range(0.98, 1.1), hat: 'cap', hatColor: 0x1d2c42, glasses: r.chance(0.35), height: 1.02,
+  };
+}
 export function bankTellerLook(r: Rng): Look {
   return {
     gender: r.chance(0.4) ? 'f' : 'm', skin: r.pick(SKINS), hair: r.pick(HAIRS), eyeColor: r.pick(EYES),

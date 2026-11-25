@@ -4,7 +4,14 @@ import { CORNER, NB, applySandFootPhysics, clamp, dampAngle, isMeleeWeapon, near
 import { AnimIn, GunKind, HumanRig, Look, Ragdoll, animateHuman, createHuman, disposeHumanRig, muzzleWorld, setWeapon } from './humans';
 import { computeRagdollImpulse, computeVehiclePedImpact } from './physics';
 import { createFreeCityBrain, stepFreeCityNpc, type FreeCityArchetype, type FreeCityBrain, type FreeCityContext } from './freeCityNpc';
-import { BRAWL_TAUNTS, type BareHandMove, shouldNpcFightBack } from './subAnimations';
+import {
+  BRAWL_TAUNTS,
+  PANIC_SHOUTS,
+  type BareHandMove,
+  type ViolenceWeaponKind,
+  evaluateViolenceReaction,
+  shouldNpcFightBack,
+} from './subAnimations';
 import {
   type GunfightState,
   type MeleeCombatState,
@@ -69,7 +76,7 @@ export class Ped {
   wasKilledByPlayer = false;
   rag: Ragdoll | null = null;
   indoor = false;
-  indoorRole: 'clerk' | 'customer' | 'guard' | 'queue' | 'seated' | 'server' | null = null;
+  indoorRole: 'clerk' | 'customer' | 'guard' | 'queue' | 'seated' | 'server' | 'doctor' | 'nurse' | 'chef' | 'attendant' | null = null;
   indoorHomeX = 0;
   indoorHomeZ = 0;
   indoorBaseYaw = 0;
@@ -219,11 +226,79 @@ export class Ped {
 
   flee(g: Game, fx: number, fz: number, dur = 8) {
     if (this.dead || this.hostile) return;
-    if (this.indoor) { this.handsUp = Math.max(this.handsUp, dur * 0.6); return; }
     this.state = 'flee';
-    this.panicT = dur;
-    this.threatX = fx; this.threatZ = fz;
+    this.panicT = Math.max(this.panicT, dur);
+    this.threatX = fx;
+    this.threatZ = fz;
+    this.handsUp = 0;
+    if (!this.freeCityLastHint || Math.random() < 0.35) {
+      this.freeCityLastHint = PANIC_SHOUTS[this.id % PANIC_SHOUTS.length];
+    }
     void g;
+  }
+
+  /** Evaluates and executes a realistic flee, brawl, gunfight, or cower response to nearby or direct violence. */
+  reactToViolence(
+    g: Game,
+    threatX: number,
+    threatZ: number,
+    weaponKind: ViolenceWeaponKind,
+    isVictim: boolean,
+    byPlayer: boolean,
+  ) {
+    if (this.dead || this.kind === 'ally') return;
+    const dist = Math.hypot(this.x - threatX, this.z - threatZ);
+    const reaction = evaluateViolenceReaction({
+      pedId: this.id,
+      kind: this.kind,
+      archetype: this.freeCity?.archetype,
+      indoor: this.indoor,
+      indoorRole: this.indoorRole,
+      weaponKind,
+      isVictim,
+      dist,
+      hpRatio: this.hp / Math.max(1, this.maxHp),
+    });
+
+    if (reaction === 'attack_gun') {
+      if (byPlayer) {
+        this.hostile = true;
+        this.aggro = true;
+        this.state = 'attack';
+        this.handsUp = 0;
+        if (!this.weapon) this.arm('pistol');
+        this.freeCityLastHint = this.kind === 'cop'
+          ? 'San Nova PD! Drop the weapon now!'
+          : this.indoor
+            ? 'Security! Drop it or get dropped!'
+            : 'Wrong street to start shooting!';
+        if (this.kind === 'cop' || this.indoorRole === 'guard') g.alertAround(this, 26);
+      }
+      return;
+    }
+
+    if (reaction === 'brawl' && byPlayer && this.hp > 6) {
+      const wasBrawl = this.state === 'brawl';
+      this.state = 'brawl';
+      this.brawlT = 20;
+      this.guardT = 4.5;
+      this.brawlCooldown = Math.max(this.brawlCooldown, 0.32 + Math.random() * 0.2);
+      this.handsUp = 0;
+      if (!wasBrawl) {
+        this.meleeAI = createMeleeCombatState(this.id * 19 + 5);
+        this.freeCityLastHint = BRAWL_TAUNTS[this.id % BRAWL_TAUNTS.length];
+      }
+      return;
+    }
+
+    if (reaction === 'cower') {
+      this.handsUp = Math.max(this.handsUp, 7);
+      this.panicT = Math.max(this.panicT, 7);
+      this.freeCityLastHint = PANIC_SHOUTS[this.id % PANIC_SHOUTS.length];
+      return;
+    }
+
+    this.flee(g, threatX, threatZ, isVictim ? 11 : 8 + Math.random() * 4);
   }
 
   /** applies damage; returns true if died */
@@ -291,27 +366,14 @@ export class Ped {
       this.kill(g, imp.vx, imp.vy, imp.vz, byPlayer, imp.headWhip);
       return true;
     }
+    const attackerWeapon: ViolenceWeaponKind = opts?.meleeKind ?? (opts?.explosive ? 'explosion' : 'gun');
     if (!this.hostile) {
-      const attackerWeapon = opts?.meleeKind ?? (opts?.explosive ? 'explosion' : 'gun');
-      if (
-        byPlayer &&
-        !this.indoor &&
-        this.hp > 6 &&
-        shouldNpcFightBack(this.id, this.kind, this.freeCity?.archetype, attackerWeapon)
-      ) {
-        const wasBrawl = this.state === 'brawl';
-        this.state = 'brawl';
-        this.brawlT = 20;
-        this.guardT = 4.5;
-        this.brawlCooldown = Math.max(this.brawlCooldown, 0.32 + Math.random() * 0.2);
-        this.handsUp = 0;
-        if (!wasBrawl) {
-          this.meleeAI = createMeleeCombatState(this.id * 19 + 5);
-          this.freeCityLastHint = BRAWL_TAUNTS[this.id % BRAWL_TAUNTS.length];
-        }
-      } else {
-        this.flee(g, this.x - dx * 5, this.z - dz * 5, 10);
-      }
+      this.reactToViolence(g, this.x - dx * 5, this.z - dz * 5, attackerWeapon, true, byPlayer);
+    } else if (byPlayer) {
+      this.aggro = true;
+    }
+    if (byPlayer) {
+      g.onViolenceEvent(this.x, this.z, attackerWeapon === 'fists' ? 14 : 26, attackerWeapon, true, this);
     }
     return false;
   }
@@ -449,7 +511,9 @@ export class Ped {
       if (!g.playerAlive || !g.playerOnFoot || dp > 28 || this.brawlT <= 0) {
         this.brawlPunchT = 0;
         this.brawlPunchProgress = 0;
-        if (this.crowdHome) this.pickCrowdTarget();
+        if (this.indoor) {
+          this.state = 'idle';
+        } else if (this.crowdHome) this.pickCrowdTarget();
         else {
           this.state = 'walk';
           this.cur = this.nearestCorner();
@@ -554,8 +618,9 @@ export class Ped {
       return;
     }
 
-    // Specialized indoor customer / wait-line / seated diner / clerk behavior
-    if (this.indoor && !this.hostile) {
+    // Specialized indoor customer / wait-line / seated diner / medical & kitchen staff behavior
+    // (yields immediately when panicking/fleeing, brawling, or engaging in security gunfight!)
+    if (this.indoor && !this.hostile && this.state !== 'flee' && this.state !== 'brawl') {
       this.vx *= 0.75;
       this.vz *= 0.75;
       if (this.indoorRole === 'seated') {
@@ -575,10 +640,19 @@ export class Ped {
         this.finish(g);
         return;
       }
-      if (this.indoorRole === 'clerk' || this.indoorRole === 'server') {
-        const lookTarget = dp < 4.5 && Math.abs(g.player.y - this.y) < 1.5
+      if (
+        this.indoorRole === 'clerk' ||
+        this.indoorRole === 'server' ||
+        this.indoorRole === 'doctor' ||
+        this.indoorRole === 'nurse' ||
+        this.indoorRole === 'chef' ||
+        this.indoorRole === 'attendant' ||
+        this.indoorRole === 'guard'
+      ) {
+        const activeRange = this.indoorRole === 'chef' ? 3.4 : 4.8;
+        const lookTarget = dp < activeRange && Math.abs(g.player.y - this.y) < 1.6
           ? Math.atan2(dxp, dzp)
-          : this.indoorBaseYaw + Math.sin(g.time * 0.4 + this.id) * 0.18;
+          : this.indoorBaseYaw + Math.sin(g.time * (this.indoorRole === 'chef' ? 0.9 : 0.45) + this.id) * 0.24;
         this.yaw = dampAngle(this.yaw, lookTarget, 4.5, dt);
         this.animate(dt, 0, false, 0, false);
         this.finish(g);
@@ -734,11 +808,22 @@ export class Ped {
       case 'flee': {
         this.panicT -= dt;
         let ax = this.x - this.threatX, az = this.z - this.threatZ;
+        // Indoors: blend fleeing away from attacker with running toward the room's main exit
+        if (this.indoor && g.interior) {
+          const ex = g.interior.room.exit.x - this.x;
+          const ez = g.interior.room.exit.z - this.z;
+          const el = Math.hypot(ex, ez) || 1;
+          const al = Math.hypot(ax, az) || 1;
+          ax = (ax / al) * 0.65 + (ex / el) * 0.35;
+          az = (az / al) * 0.65 + (ez / el) * 0.35;
+        }
         const l = Math.hypot(ax, az) || 1;
         ax /= l; az /= l;
-        this.moveDir(ax, az, 5.6, dt);
+        this.moveDir(ax, az, this.indoor ? 4.3 : 5.6, dt);
         if (this.panicT <= 0) {
-          if (this.crowdHome) this.pickCrowdTarget();
+          if (this.indoor) {
+            this.state = 'idle';
+          } else if (this.crowdHome) this.pickCrowdTarget();
           else {
             this.state = 'walk';
             this.cur = this.nearestCorner();

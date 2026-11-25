@@ -601,3 +601,79 @@ export const BRAWL_TAUNTS = [
   "Alright, you asked for it! Hands up!",
   "Watch the jaw, tough guy!",
 ];
+
+export const PANIC_SHOUTS = [
+  "Run! Get out of here!",
+  "Somebody call 911 — they're crazy!",
+  "Move! Move! Get away!",
+  "No way, I'm out of here!",
+  "Help! Security!",
+  "Watch out! Everybody run!",
+];
+
+export type ViolenceWeaponKind = 'fists' | 'melee' | 'gun' | 'explosion' | 'vehicle';
+export type ViolenceReaction = 'flee' | 'brawl' | 'attack_gun' | 'cower';
+
+export interface ViolenceReactionInput {
+  pedId: number;
+  kind: string;
+  archetype?: string | null;
+  indoor: boolean;
+  indoorRole?: string | null;
+  weaponKind: ViolenceWeaponKind;
+  isVictim: boolean;
+  dist: number;
+  hpRatio?: number;
+}
+
+/**
+ * Pure, deterministic violence reaction engine for both outdoor street NPCs and indoor staff/customers:
+ * - Armed cops, security guards, and gang members fight back with firearms (`attack_gun`).
+ * - Tough civilians, joggers, racers, and gritty indoor staff (chefs/attendants/clerks) fight back bare-handed (`brawl`) against fists/melee.
+ * - Against gunfire, explosions, or reckless vehicle attacks, unarmed civilians & indoor patrons immediately run away (`flee`) or take cover (`cower`).
+ */
+export function evaluateViolenceReaction(inp: ViolenceReactionInput): ViolenceReaction {
+  const hp = inp.hpRatio ?? 1;
+  const isSecurity = inp.kind === 'cop' || inp.kind === 'guard' || inp.indoorRole === 'guard' || inp.archetype === 'security';
+  const isGang = inp.kind === 'gang';
+
+  // Armed responders (cops, guards, gangsters) fight back against any violence
+  if (isSecurity || isGang) {
+    if (inp.weaponKind === 'fists' && !inp.isVictim && inp.kind === 'guard' && inp.dist < 5) {
+      return 'attack_gun';
+    }
+    return 'attack_gun';
+  }
+
+  // Gunfire, explosions, and vehicle attacks always scatter unarmed people
+  if (inp.weaponKind === 'gun' || inp.weaponKind === 'explosion' || inp.weaponKind === 'vehicle') {
+    if (inp.indoor && hp < 0.45) return 'cower';
+    return 'flee';
+  }
+
+  // Fists / melee violence: victims and close brave witnesses may fight back bare-handed
+  const h = (Math.imul(inp.pedId | 0, 2654435761) >>> 0) % 100;
+  if (inp.indoor) {
+    if (inp.indoorRole === 'chef' || inp.indoorRole === 'attendant') {
+      return (inp.isVictim ? h < 65 : h < 35 && inp.dist < 9) ? 'brawl' : 'flee';
+    }
+    if (inp.indoorRole === 'clerk' || inp.indoorRole === 'server' || inp.indoorRole === 'doctor') {
+      return (inp.isVictim && h < 30) ? 'brawl' : 'flee';
+    }
+    // Patients, waiting customers, diners run away from violence
+    return inp.isVictim && h < 22 ? 'brawl' : 'flee';
+  }
+
+  if (inp.isVictim) {
+    return shouldNpcFightBack(inp.pedId, inp.kind, inp.archetype, inp.weaponKind) ? 'brawl' : 'flee';
+  }
+
+  // Close street witness to a melee fight: tough locals sometimes jump in, most flee
+  if (inp.dist < 10) {
+    const tough = inp.archetype === 'street_racer' || inp.archetype === 'jogger';
+    if (tough && h < 38) return 'brawl';
+    if (h < 22) return 'brawl';
+  }
+  return 'flee';
+}
+

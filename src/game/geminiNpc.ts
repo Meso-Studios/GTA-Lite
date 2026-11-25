@@ -525,4 +525,50 @@ export class GeminiNpcDirector {
       return { ok: false, error, code: 'NETWORK_ERROR' };
     }
   }
+
+  /** Records a spoken transcript turn from a live Gemini Voice Chat session into the NPC's chat history. */
+  recordLiveTranscript(pedId: number, from: 'player' | 'npc', text: string, nowSec: number) {
+    const clean = text.replace(/\s+/g, ' ').trim().slice(0, 240);
+    if (!clean) return;
+    const hist = this.histories.get(pedId) ?? [];
+    const existing = this.decisions.get(pedId);
+    const updated: GeminiTalkMessage[] = [
+      ...hist.slice(-10),
+      from === 'npc'
+        ? { from: 'npc', text: clean, mood: existing?.mood, intent: existing?.intent, thought: existing?.thought }
+        : { from: 'player', text: clean },
+    ];
+    this.histories.set(pedId, updated);
+    if (from === 'npc') {
+      this.decisions.set(pedId, {
+        id: pedId,
+        intent: existing?.intent ?? 'watch',
+        mood: existing?.mood ?? 'chill',
+        thought: existing?.thought ?? '',
+        speech: clean,
+        updatedAt: nowSec,
+        spoken: true,
+      });
+    }
+  }
+
+  /** Applies an in-world physical reaction emitted by Gemini Live tool calling. */
+  applyLiveReaction(pedId: number, rawIntent: string, rawMood: string, rawThought: string, nowSec: number): GeminiNpcDecision {
+    const existing = this.decisions.get(pedId);
+    const intent: GeminiNpcIntent = INTENT_SET.has(rawIntent) ? (rawIntent as GeminiNpcIntent) : (existing?.intent ?? 'watch');
+    const mood: GeminiNpcMood = MOOD_SET.has(rawMood) ? (rawMood as GeminiNpcMood) : (existing?.mood ?? 'chill');
+    const thought = rawThought.replace(/\s+/g, ' ').trim().slice(0, 70) || (existing?.thought ?? '');
+    const decision: GeminiNpcDecision = {
+      id: pedId,
+      intent,
+      mood,
+      thought,
+      speech: existing?.speech ?? '',
+      updatedAt: nowSec,
+      spoken: true,
+    };
+    this.decisions.set(pedId, decision);
+    return decision;
+  }
 }
+

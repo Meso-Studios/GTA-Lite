@@ -178,6 +178,7 @@ export function playerFire(g: Game) {
   if (!silenced) g.fx.muzzle(mx, my, mzz);
   g.audio.shot(p.weapon, 1, 0);
   g.alarm(p.x, p.z, silenced ? 16 : p.weapon === 'pistol' ? 45 : 75, !silenced);
+  g.onViolenceEvent(p.x, p.z, silenced ? 16 : 44, 'gun', true);
   g.kick(('recoil' in w ? w.recoil : 0.014) ?? 0.014);
   g.playerFiring = true;
   g.firingT = 0.4;
@@ -247,6 +248,7 @@ export function playerMelee(g: Game) {
   else if (blockedAny) g.audio.hit(0.45);
   else if (hitAny) g.audio.punch();
   else g.audio.hit(0.28);
+  g.onViolenceEvent(p.x, p.z, hitAny ? 18 : 10, isFists ? 'fists' : 'melee', true);
 }
 
 export function npcShoot(g: Game, p: Ped, acc: number) {
@@ -317,4 +319,5 @@ export function explode(g: Game, x: number, y: number, z: number, radius: number
     }
   }
   g.alarm(x, z, 80, false);
+  g.onViolenceEvent(x, z, 55, 'explosion', byPlayer);
 }

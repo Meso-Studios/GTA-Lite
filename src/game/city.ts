@@ -12,7 +12,7 @@ import { World } from './world';
 import {
   BCtx, Door, Lot, MapRect, Place, PropSpawn, addAirport, addBank, addBeachfront, addBoardwalkWheel, addBuilding,
   addContainers, addCrane, addGas, addGunShop, addHospital, addHouse, addLamp, addLittleHavanaBlock, addPark,
-  addPaySpray, addPolice, addRuralGasStation, addSilos, addStripMallBlock, addSuburbanDistrict, addTower, addTree,
+  addParkingGarage, addPaySpray, addPolice, addRuralGasStation, addSilos, addStripMallBlock, addSuburbanDistrict, addTower, addTree,
   addWarehouse, addWynwoodArtsBlock, beachProps, buildingInLot, splitLots,
 } from './buildings';
 import type { FacadeStyle } from './textures';
@@ -369,7 +369,7 @@ export function buildCity(): CityData {
 
   // ---------------------------------------------------------------- core city blocks
   const shift = (lot: Lot, bx: number, bz: number): Lot => ({ x0: lot.x0 + bx, x1: lot.x1 + bx, z0: lot.z0 + bz, z1: lot.z1 + bz, faces: lot.faces });
-  const mapColors: Record<string, string> = { R: '#5b6b4a', C: '#6c675e', M: '#6c675e', D: '#6c675e', B: '#6c675e', P: '#4f7a3a', I: '#5b5d60', H: '#6c675e', Q: '#6c675e', T: '#8a8160', K: '#55575c', S: '#55575c', Y: '#55575c', G: '#6c675e' };
+  const mapColors: Record<string, string> = { R: '#5b6b4a', C: '#6c675e', M: '#6c675e', D: '#6c675e', B: '#6c675e', L: '#596068', P: '#4f7a3a', I: '#5b5d60', H: '#6c675e', Q: '#6c675e', T: '#8a8160', K: '#55575c', S: '#55575c', Y: '#55575c', G: '#6c675e' };
   for (let bj = 0; bj < NB; bj++)
     for (let bi = 0; bi < NB; bi++) {
       const bx = blockCenter(bi), bz = blockCenter(bj);
@@ -468,6 +468,7 @@ export function buildCity(): CityData {
         case 'H': addHospital(ctx, bx, bz); break;
         case 'Q': addPolice(ctx, bx, bz); break;
         case 'B': addBank(ctx, bx, bz); break;
+        case 'L': addParkingGarage(ctx, bx, bz); break;
         case 'S': {
           addGas(ctx, bx, bz);
           for (const s of [-1, 1]) addBuilding(ctx, { cx: bx + s * 33, cz: bz - 8, w: 14, d: 38, floors: 3, style: 'apartment', store: true, faces: s > 0 ? 2 : 8, fire: false });
@@ -571,6 +572,14 @@ export function buildCity(): CityData {
   if (ctx.places.police) {
     const pp = ctx.places.police;
     for (let i = 0; i < 6; i++) parking.push({ x: pp.x - 25 + i * 10, z: pp.z + 8, yaw: Math.PI, used: false, id: spotId++, police: true });
+  }
+  if (ctx.places.parking) {
+    const pg = ctx.places.parking;
+    for (let i = 0; i < 5; i++) {
+      const ox = -19.2 + i * 9.6;
+      if (Math.abs(ox) < 5) continue;
+      parking.push({ x: pg.x + ox, z: pg.z + 2.5, yaw: 0, used: false, id: spotId++ });
+    }
   }
 
   // ---------------------------------------------------------------- traffic signals

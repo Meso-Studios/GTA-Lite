@@ -1,13 +1,24 @@
+import http from 'http';
 import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
+import { WebSocketServer, WebSocket } from 'ws';
+import {
+  GoogleGenAI,
+  Modality,
+  ThinkingLevel,
+  Type,
+  type FunctionDeclaration,
+  type LiveServerMessage,
+} from '@google/genai';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const PORT = Number(process.env.PORT) || 3000;
 const GEMINI_MODEL = 'gemini-4-hydrogen';
+const GEMINI_LIVE_MODEL = 'gemini-3.8-live';
+const VALID_LIVE_VOICES = ['Puck', 'Charon', 'Kore', 'Fenrir', 'Zephyr'] as const;
 
 const VALID_INTENTS = [
   'stroll',
@@ -124,7 +135,7 @@ async function startServer() {
 
   app.get('/api/gemini-npc/status', (_req, res) => {
     const configured = Boolean((process.env.GEMINI_API_KEY ?? '').trim());
-    res.json({ configured, model: GEMINI_MODEL });
+    res.json({ configured, model: GEMINI_MODEL, liveModel: GEMINI_LIVE_MODEL });
   });
 
   app.post('/api/gemini-npc/batch', async (req, res) => {
@@ -356,7 +367,224 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
+  const server = http.createServer(app);
+  const wss = new WebSocketServer({ server, path: '/api/gemini-live' });
+
+  const npcWorldReactionTool: FunctionDeclaration = {
+    name: 'setNpcReaction',
+    description: 'Update the NPC physical action and mood in the 3D city based on what the player just said.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        intent: {
+          type: Type.STRING,
+          enum: [...VALID_INTENTS],
+          description: 'Physical reaction to execute in the open world',
+        },
+        mood: {
+          type: Type.STRING,
+          enum: [...VALID_MOODS],
+          description: 'Updated emotional state',
+        },
+        thought: {
+          type: Type.STRING,
+          description: 'Short internal thought under 50 characters',
+        },
+      },
+      required: ['intent', 'mood', 'thought'],
+    },
+  };
+
+  wss.on('connection', (clientWs: WebSocket) => {
+    let liveSession: Awaited<ReturnType<GoogleGenAI['live']['connect']>> | null = null;
+    let initializing = false;
+    let closed = false;
+
+    const safeSend = (payload: Record<string, unknown>) => {
+      if (closed || clientWs.readyState !== WebSocket.OPEN) return;
+      clientWs.send(JSON.stringify(payload));
+    };
+
+    const cleanupSession = () => {
+      if (liveSession) {
+        try {
+          liveSession.close();
+        } catch {
+          // Ignore close errors
+        }
+        liveSession = null;
+      }
+    };
+
+    clientWs.on('close', () => {
+      closed = true;
+      cleanupSession();
+    });
+
+    clientWs.on('error', () => {
+      closed = true;
+      cleanupSession();
+    });
+
+    clientWs.on('message', async (raw) => {
+      if (closed) return;
+      let msg: Record<string, unknown>;
+      try {
+        msg = JSON.parse(raw.toString()) as Record<string, unknown>;
+      } catch {
+        return;
+      }
+
+      if (msg.type === 'init') {
+        if (liveSession || initializing) return;
+        const ai = getGeminiClient();
+        if (!ai) {
+          safeSend({
+            type: 'error',
+            code: 'MISSING_API_KEY',
+            error: 'Gemini API key is not configured on the server. Add GEMINI_API_KEY in Settings > Secrets.',
+          });
+          clientWs.close();
+          return;
+        }
+
+        initializing = true;
+        const npc = (msg.npc ?? {}) as Partial<BatchNpcInput>;
+        const world = (msg.world ?? {}) as Partial<WorldSnapInput>;
+        const reqVoice = sanitizeStr(msg.voiceName, 16);
+        const voiceName = VALID_LIVE_VOICES.includes(reqVoice as (typeof VALID_LIVE_VOICES)[number])
+          ? reqVoice
+          : 'Zephyr';
+
+        const npcName = sanitizeStr(npc.name, 36) || 'San Nova Local';
+        const npcRole = sanitizeStr(npc.role, 24) || 'civ';
+        const npcOcc = sanitizeStr(npc.occupation, 36) || 'resident';
+        const npcPers = sanitizeStr(npc.personality, 60) || 'streetwise';
+        const npcMood = sanitizeStr(npc.mood, 20) || 'chill';
+        const district = sanitizeStr(world.district, 48) || 'San Nova';
+        const timeStr = sanitizeStr(world.timeStr, 12) || '12:00';
+        const wanted = Math.max(0, Math.min(5, Math.trunc(sanitizeNum(world.wanted, 0))));
+
+        const systemInstruction = [
+          `You are ${npcName}, a living ${npcOcc} (${npcRole}) in the sunny coastal city of San Nova (${district} at ${timeStr}).`,
+          `Personality: ${npcPers}. Current mood: ${npcMood}.`,
+          `Context right now: Player has ${wanted} wanted stars, ${world.playerArmed ? `visibly carrying a ${sanitizeStr(world.playerWeapon, 28)}` : 'unarmed'}${world.playerInVehicle ? `, near ${sanitizeStr(world.playerVehicleName, 32)}` : ''}${npc.indoor ? ', and you are currently indoors' : ''}.`,
+          'Speak naturally and concisely in 1-2 short, lively spoken sentences as if talking face-to-face on the street. Never break character and never mention AI, prompts, or video games.',
+          'Whenever the player threatens you, tells you to run, asks you to follow/hang out, insults you, or changes your mood, call setNpcReaction with an appropriate intent (flee, confront, follow_player, wave, chat_nearby, watch) and mood while speaking naturally.',
+        ].join(' ');
+
+        try {
+          const session = await ai.live.connect({
+            model: GEMINI_LIVE_MODEL,
+            config: {
+              responseModalities: [Modality.AUDIO],
+              speechConfig: {
+                voiceConfig: {
+                  prebuiltVoiceConfig: { voiceName },
+                },
+              },
+              inputAudioTranscription: {},
+              outputAudioTranscription: {},
+              tools: [{ functionDeclarations: [npcWorldReactionTool] }],
+              systemInstruction,
+            },
+            callbacks: {
+              onmessage: (message: LiveServerMessage) => {
+                if (closed) return;
+                const sc = message.serverContent;
+                if (sc?.inputTranscription?.text) {
+                  safeSend({ type: 'inputTranscript', text: sc.inputTranscription.text });
+                }
+                if (sc?.outputTranscription?.text) {
+                  safeSend({ type: 'outputTranscript', text: sc.outputTranscription.text });
+                }
+                for (const part of sc?.modelTurn?.parts ?? []) {
+                  if (part.inlineData?.data) {
+                    safeSend({ type: 'audio', data: part.inlineData.data });
+                  }
+                }
+                if (sc?.interrupted) {
+                  safeSend({ type: 'interrupted' });
+                }
+                if (sc?.turnComplete) {
+                  safeSend({ type: 'turnComplete' });
+                }
+                if (message.toolCall?.functionCalls?.length) {
+                  const responses = message.toolCall.functionCalls.map((call) => {
+                    const args = (call.args ?? {}) as Record<string, unknown>;
+                    const intent = VALID_INTENTS.includes(args.intent as (typeof VALID_INTENTS)[number])
+                      ? String(args.intent)
+                      : 'watch';
+                    const mood = VALID_MOODS.includes(args.mood as (typeof VALID_MOODS)[number])
+                      ? String(args.mood)
+                      : 'chill';
+                    const thought = sanitizeStr(args.thought, 60);
+                    safeSend({ type: 'reaction', intent, mood, thought });
+                    return {
+                      id: call.id,
+                      name: call.name,
+                      response: { ok: true, applied: intent },
+                    };
+                  });
+                  try {
+                    session.sendToolResponse({ functionResponses: responses });
+                  } catch {
+                    // Ignore tool response send errors on closed session
+                  }
+                }
+              },
+              onerror: (err: unknown) => {
+                const info = classifyGeminiError(err);
+                safeSend({ type: 'error', code: info.code, error: info.message });
+              },
+              onclose: () => {
+                if (!closed && clientWs.readyState === WebSocket.OPEN) {
+                  clientWs.close();
+                }
+              },
+            },
+          });
+
+          if (closed) {
+            session.close();
+            return;
+          }
+          liveSession = session;
+          initializing = false;
+          safeSend({ type: 'ready', voiceName, model: GEMINI_LIVE_MODEL });
+        } catch (err) {
+          initializing = false;
+          const info = classifyGeminiError(err);
+          safeSend({ type: 'error', code: info.code, error: info.message });
+          clientWs.close();
+        }
+        return;
+      }
+
+      if (!liveSession) return;
+
+      if (msg.type === 'audio' && typeof msg.data === 'string' && msg.data.length > 0) {
+        try {
+          liveSession.sendRealtimeInput({
+            audio: { data: msg.data, mimeType: 'audio/pcm;rate=16000' },
+          });
+        } catch {
+          // Ignore send errors on closing session
+        }
+      } else if (msg.type === 'text' && typeof msg.text === 'string') {
+        const clean = sanitizeStr(msg.text, 220);
+        if (clean) {
+          try {
+            liveSession.sendRealtimeInput({ text: clean });
+          } catch {
+            // Ignore send errors on closing session
+          }
+        }
+      }
+    });
+  });
+
+  server.listen(PORT, '0.0.0.0', () => {
     console.log(`SAN NOVA server running on http://0.0.0.0:${PORT}`);
   });
 }

@@ -145,6 +145,7 @@ export class MapRenderer {
       else if (n === 'payspray') list.push({ x: p.x, z: p.z, kind: 'spray', label: 'S' });
       else if (n === 'gunshop') list.push({ x: p.x, z: p.z, kind: 'gun', label: 'G' });
       else if (n === 'bank') list.push({ x: p.x, z: p.z, kind: 'bank', label: '$' });
+      else if (n === 'parking') list.push({ x: p.x, z: p.z, kind: 'parking', label: 'PK' });
       else if (n === 'resort') list.push({ x: p.x, z: p.z, kind: 'landmark', label: 'R' });
       else if (n === 'oasis') list.push({ x: p.x, z: p.z, kind: 'landmark', label: 'O' });
       else if (n === 'observatory') list.push({ x: p.x, z: p.z, kind: 'landmark', label: '★' });
@@ -168,7 +169,7 @@ export class MapRenderer {
     const colors: Record<string, string> = {
       mission: '#ffd23d', goal: '#ffd23d', enemy: '#ff4040', vehicle: '#3dd6ff', item: '#ffd23d',
       hospital: '#ff5a5a', police: '#4a90ff', spray: '#ffb347', gun: '#e0e0e0', bank: '#34d399',
-      atm: '#38bdf8', event: '#fbbf24',
+      parking: '#0ea5e9', atm: '#38bdf8', event: '#fbbf24',
       waypoint: '#ff2fd0', package: '#ff9d2e', cop: '#ff3030', landmark: '#38d9a9', airport: '#38bdf8', gas: '#ff7b2e',
     };
     const col = colors[kind] ?? '#fff';
@@ -248,10 +249,17 @@ export class MapRenderer {
         case 'hospital': box(-4, 2.9, 8, 1, '#9fd6cf'); for (let i = 0; i < 4; i++) box(-8.1 + i * 1.5, -3.4, 1, 2.1, '#cfd4d8'); break;
         case 'gun': box(-6.6, 2.1, 10, 1, '#6b2b2b'); for (let i = 0; i < 5; i++) box(-8.15 + i * 1.9, -7.5, 1.5, 0.5, '#5a4434'); break;
         case 'garage': box(-3.4, -4, 6.8, 3.2, '#3a3d42'); for (let i = 0; i < 5; i++) box(-8.6 + (i % 3) * 2.6, -7 + Math.floor(i / 3) * 1.4, 2.4, 0.7, '#6b5a3a'); break;
+        case 'parking': for (let i = 0; i < 4; i++) box(-12 + i * 6.5, -8.5, 3.6, 5.2, '#5a6370'); box(-12.5, 4.8, 3.8, 3.2, '#1e3a8a'); break;
         default: box(-6.5, 2.7, 7, 1, '#7d3c3c'); for (let i = 0; i < 2; i++) box(i ? 3.8 : -9.5, -5.5, 6, 1.2, '#6c5844');
       }
       for (const n of room.npcSpots) {
-        d.fillStyle = n.role === 'guard' ? '#ff5a5a' : n.role === 'clerk' ? '#ffd23d' : '#8fd6c0';
+        d.fillStyle = n.role === 'guard'
+          ? '#ff5a5a'
+          : n.role === 'doctor' || n.role === 'nurse'
+            ? '#38d9a9'
+            : n.role === 'chef' || n.role === 'attendant' || n.role === 'clerk' || n.role === 'server'
+              ? '#ffd23d'
+              : '#8fd6c0';
         d.beginPath(); d.arc((n.x - room.cx) * sc, (n.z - room.cz) * sc, 3.4, 0, 7); d.fill();
       }
       const px = (g.playerX - room.cx) * sc, pz = (g.playerZ - room.cz) * sc;

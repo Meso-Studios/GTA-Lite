@@ -11,7 +11,7 @@ import {
 } from './interiorMath';
 import type { BCtx, Door } from './buildings';
 
-export type IndoorNpcRole = 'clerk' | 'customer' | 'guard' | 'queue' | 'seated' | 'server';
+export type IndoorNpcRole = 'clerk' | 'customer' | 'guard' | 'queue' | 'seated' | 'server' | 'doctor' | 'nurse' | 'chef' | 'attendant';
 
 export interface IndoorNpcSpot {
   x: number;
@@ -84,6 +84,11 @@ export const ROOM_SPECS: Record<Door['kind'], RoomSpec> = {
     floorMat: 'intTile', floorTint: 0xd8dde2, wallCol: 0xbcc3c8, ceilCol: 0x9aa2a8,
     beamMat: 'propMetal', beamCol: 0x4a5058, warmTint: 0xfff0d4, shadeCol: 0xb8382a,
   },
+  parking: {
+    w: 32, d: 24, h: 6.8, mezzY: 3.15, mezzDepth: 6.4, stairSide: 'right',
+    floorMat: 'intTile', floorTint: 0xc2c8ce, wallCol: 0x9da5ae, ceilCol: 0x89919a,
+    beamMat: 'propMetal', beamCol: 0x4b5563, warmTint: 0xf4f8ff, shadeCol: 0x1e3a8a,
+  },
 };
 
 export interface Room {
@@ -111,7 +116,7 @@ const FLOOR_Y = 0.26;
 
 export function buildInteriors(c: BCtx): Room[] {
   const rooms: Room[] = [];
-  const kinds: Door['kind'][] = ['shop', 'diner', 'office', 'apartment', 'bank', 'police', 'hospital', 'gun', 'garage'];
+  const kinds: Door['kind'][] = ['shop', 'diner', 'office', 'apartment', 'bank', 'police', 'hospital', 'gun', 'garage', 'parking'];
   let idx = 0;
   for (const kind of kinds) {
     for (let variant = 0; variant < 2; variant++) {
@@ -593,10 +598,22 @@ function buildRoom(c: BCtx, kind: Door['kind'], cx: number, cz: number, id: numb
   // ---------------------------------------------------------------- BESPOKE LAYOUT PER INTERIOR KIND
   switch (kind) {
     case 'diner': {
-      // Classic Vice/Leonida Coastal Diner: checkered floor zone, chrome wrap counter with stools,
-      // stainless kitchen hood & espresso machine, red leather booths, jukebox, and upstairs balcony dining!
+      // Classic Vice/Leonida Coastal Restaurant & Full Commercial Kitchen:
+      // Front dining hall with checkered tile, chrome stools, booths, wait line, jukebox;
+      // Rear Commercial Kitchen behind pass-through warming window with flat-top grill, range burners,
+      // stainless exhaust hood, deep fryers, prep island, twin walk-in fridges, dishwashing sink & chefs!
       B('intTile', 11.5, 0.025, 11.5, 4.2, FLOOR_Y, 1.2, 0xf2ece0);
+      // Hygienic commercial quarry tile floor in kitchen zone
+      B('intTile', 12.2, 0.028, 7.6, -5.2, FLOOR_Y, -5.0, 0xd8dfe6);
+
+      // Front service & pass-through counter separating dining from kitchen
       counter(-5.2, 0.4, 9.2, 0, 0x882c26);
+      // Overhead stainless pass-through shelf & glowing amber heat lamps
+      B('propMetal', 8.4, 0.12, 0.45, -5.2, FLOOR_Y + 2.05, 0.35, 0xcad2d9);
+      B('emit', 7.6, 0.06, 0.14, -5.2, FLOOR_Y + 1.97, 0.35, 0xffaa44);
+      for (const px of [-9.2, -1.2]) {
+        B('propMetal', 0.12, 1.0, 0.12, px, FLOOR_Y + 1.08, 0.35, 0xadb5bd);
+      }
       // Chrome diner counter stools facing the counter
       for (let i = 0; i < 4; i++) {
         const sx = -8.4 + i * 1.9;
@@ -604,25 +621,67 @@ function buildRoom(c: BCtx, kind: Door['kind'], cx: number, cz: number, id: numb
         G('propMetal', cyl(0.05, 0.05, 0.68, sx, FLOOR_Y + 0.05, 1.55, 0xd8dfe6, 10));
         G('carpet2', cyl(0.24, 0.24, 0.1, sx, FLOOR_Y + 0.72, 1.55, 0x9b2626, 12));
       }
-      // Espresso bar + glass pastry case + POS registers
+      // Espresso bar + glass pastry case + POS register
       B('propMetal', 1.2, 0.68, 0.62, -8.4, FLOOR_Y + 1.12, 0.35, 0xd4dade);
       B('prop', 0.5, 0.36, 0.38, -5.8, FLOOR_Y + 1.12, 0.4, 0x1f2228);
       B('emit', 0.34, 0.18, 0.04, -5.8, FLOOR_Y + 1.24, 0.58, 0xffe4a0);
       B('propMetal', 2.2, 0.58, 0.78, -2.0, FLOOR_Y + 1.12, 0.4, 0xcfd6dc);
       B('glass', 2.1, 0.52, 0.72, -2.0, FLOOR_Y + 1.16, 0.4, 0x345a6b);
       B('emit', 1.85, 0.05, 0.5, -2.0, FLOOR_Y + 1.62, 0.4, 0xfff0c4);
-      // Stainless steel kitchen hood tucked neatly under mezzanine back-left
-      B('propMetal', 7.2, 0.75, 1.6, -5.6, MEZZ_Y - 1.0, -RD / 2 + 1.1, 0xc6cdd4);
-      B('propMetal', 6.8, 0.92, 1.1, -5.6, FLOOR_Y, -RD / 2 + 1.0, 0x8f969e);
+
+      // --- COMMERCIAL RESTAURANT KITCHEN (back-left under mezzanine) ---
+      // Kitchen partition half-wall with swinging double-door entry on right of kitchen
+      B('intTile', 0.2, 2.35, 5.2, -0.3, FLOOR_Y, -6.4, 0xe8eef2);
+      B('propMetal', 0.1, 1.55, 1.05, -0.3, FLOOR_Y + 0.42, -3.1, 0xc2cbd2); // Swinging kitchen door
+      B('glass', 0.14, 0.42, 0.36, -0.3, FLOOR_Y + 1.38, -3.1, 0x2a4554); // Porthole window on kitchen door
+      P(0.28, 2.35, 5.2, -0.3, FLOOR_Y, -6.4);
+
+      // Back cooking line: Commercial Flat-Top Grill, 4-Burner Range, Dual Deep Fryers & Exhaust Hood
+      B('propMetal', 7.4, 0.92, 1.15, -5.6, FLOOR_Y, -RD / 2 + 1.05, 0xbec6ce);
+      // Glowing stove burners & flat-top griddle plate + cast-iron skillets & stockpot
+      B('propMetal', 2.6, 0.08, 0.85, -7.2, FLOOR_Y + 0.92, -RD / 2 + 1.05, 0x363b42);
+      for (const [bx, bz] of [[-5.0, -RD / 2 + 0.85], [-4.2, -RD / 2 + 0.85], [-5.0, -RD / 2 + 1.25], [-4.2, -RD / 2 + 1.25]]) {
+        G('emit', cyl(0.18, 0.18, 0.04, bx, FLOOR_Y + 0.94, bz, 0xff6b2b, 12));
+      }
+      G('propMetal', cyl(0.24, 0.22, 0.34, -5.0, FLOOR_Y + 0.97, -RD / 2 + 0.85, 0xd4dce3, 12)); // Stainless stockpot
+      G('propMetal', cyl(0.2, 0.16, 0.09, -4.2, FLOOR_Y + 0.97, -RD / 2 + 1.25, 0x24282e, 12)); // Cast-iron skillet
+      // Dual Deep Fryers with baskets
+      B('propMetal', 1.4, 0.95, 1.05, -2.5, FLOOR_Y, -RD / 2 + 1.05, 0xa8b2bc);
+      B('prop', 0.48, 0.06, 0.56, -2.8, FLOOR_Y + 0.94, -RD / 2 + 1.05, 0xd99b26);
+      B('prop', 0.48, 0.06, 0.56, -2.2, FLOOR_Y + 0.94, -RD / 2 + 1.05, 0xd99b26);
+      // Full-width brushed stainless overhead exhaust hood + warm kitchen task light
+      B('propMetal', 7.8, 0.68, 1.55, -5.6, MEZZ_Y - 0.85, -RD / 2 + 1.15, 0xc8d0d8);
+      B('emit', 7.0, 0.05, 0.22, -5.6, MEZZ_Y - 0.88, -RD / 2 + 1.05, 0xfff5d6);
+      P(7.8, 1.0, 1.2, -5.6, FLOOR_Y, -RD / 2 + 1.05);
+
+      // Center Stainless Prep Island with cutting board, stacked plates & garnish trays
+      B('propMetal', 4.6, 0.9, 1.15, -5.6, FLOOR_Y, -4.3, 0xcad2da);
+      B('intWood', 1.1, 0.06, 0.65, -6.8, FLOOR_Y + 0.9, -4.3, 0xd4a373); // Butcher block cutting board
+      G('prop', cyl(0.22, 0.22, 0.24, -4.4, FLOOR_Y + 0.9, -4.3, 0xf8fafc, 12)); // Stack of white dinner plates
+      G('prop', cyl(0.2, 0.2, 0.18, -3.8, FLOOR_Y + 0.9, -4.3, 0xf8fafc, 12));
+      B('prop', 0.95, 0.12, 0.45, -5.5, FLOOR_Y + 0.9, -4.55, 0x2f855a); // Fresh prep garnish tray
+      P(4.7, 0.95, 1.2, -5.6, FLOOR_Y, -4.3);
+
+      // Twin Commercial Walk-In / Reach-In Stainless Refrigerators & Dishwashing Triple Sink along left kitchen wall
+      B('propMetal', 1.15, 2.28, 2.4, -RW / 2 + 0.95, FLOOR_Y, -7.2, 0xd2dae2);
+      B('propMetal', 0.08, 0.72, 0.08, -RW / 2 + 1.56, FLOOR_Y + 1.05, -6.7, 0x4a5568);
+      B('propMetal', 0.08, 0.72, 0.08, -RW / 2 + 1.56, FLOOR_Y + 1.05, -7.7, 0x4a5568);
+      P(1.2, 2.3, 2.5, -RW / 2 + 0.95, FLOOR_Y, -7.2);
+      // Triple Dishwashing Sink with curved chrome faucet & dish rack
+      B('propMetal', 1.0, 0.92, 2.6, -RW / 2 + 0.9, FLOOR_Y, -3.9, 0xb8c2cc);
+      B('propMetal', 0.06, 0.52, 0.06, -RW / 2 + 0.62, FLOOR_Y + 0.92, -3.9, 0xe2e8f0);
+      B('propMetal', 0.34, 0.06, 0.06, -RW / 2 + 0.76, FLOOR_Y + 1.42, -3.9, 0xe2e8f0);
+      P(1.05, 1.0, 2.7, -RW / 2 + 0.9, FLOOR_Y, -3.9);
+
       mountHangingSign(-5.2, 3.85, 0.35, 4.2, 0.96, label === 'BURGERS' ? 'DINER' : 'BURGERS', 0);
 
       // Restaurant Wait Line Queue with velvet stanchions
       addWaitLine(-4.6, 2.7, 0.32, 0.94, 5, true);
 
-      // 4 Retro Tufted Leather Booths (2 main floor, 2 under-mezzanine) + 2 Mezzanine dining booths
+      // Retro Tufted Leather Booths (main dining hall + upstairs mezzanine)
       diningBooth(4.2, 3.8, FLOOR_Y, 0x9b2626);
       diningBooth(4.2, -0.6, FLOOR_Y, 0x266350);
-      diningBooth(1.6, -6.8, FLOOR_Y, 0x9b2626);
+      diningBooth(3.2, -6.8, FLOOR_Y, 0x9b2626);
       diningBooth(-5.6, -6.8, MEZZ_Y, 0x9b2626);
       diningBooth(1.4, -6.8, MEZZ_Y, 0x266350);
       floorLamp(-9.8, -7.2, MEZZ_Y);
@@ -634,8 +693,11 @@ function buildRoom(c: BCtx, kind: Door['kind'], cx: number, cz: number, id: numb
       plant(10.4, 2.4);
       plant(-10.4, 7.6);
 
+      // Restaurant & Kitchen Staff + Diners
       npcSpots.push({ x: cx - 6.8, z: cz - 0.85, y: FLOOR_Y, yaw: 0, role: 'clerk' });
-      npcSpots.push({ x: cx - 4.0, z: cz - 0.85, y: FLOOR_Y, yaw: 0.1, role: 'server' });
+      npcSpots.push({ x: cx - 3.6, z: cz - 0.85, y: FLOOR_Y, yaw: 0.1, role: 'server' });
+      npcSpots.push({ x: cx - 6.2, z: cz - 6.9, y: FLOOR_Y, yaw: Math.PI, role: 'chef' });
+      npcSpots.push({ x: cx - 3.8, z: cz - 5.9, y: FLOOR_Y, yaw: 0.2, role: 'chef' });
       npcSpots.push({ x: cx + 4.2 - 0.45, z: cz + 3.8 + 0.96, y: FLOOR_Y, yaw: Math.PI, role: 'seated' });
       npcSpots.push({ x: cx + 4.2 + 0.45, z: cz + 3.8 - 0.96, y: FLOOR_Y, yaw: 0, role: 'seated' });
       npcSpots.push({ x: cx + 4.2 - 0.4, z: cz - 0.6 - 0.96, y: FLOOR_Y, yaw: 0, role: 'seated' });
@@ -851,44 +913,100 @@ function buildRoom(c: BCtx, kind: Door['kind'], cx: number, cz: number, id: numb
     }
 
     case 'hospital': {
-      // Modern San Nova Medical Center: Curved teal triage desk, hanging sign on ceiling rods,
-      // 3 privacy-curtained ER patient bays with hospital beds, IV drip stands & glowing ECG monitors!
-      counter(-3.8, 2.8, 8.2, 0, 0x3ca39a);
-      mountHangingSign(-3.8, 3.85, 2.6, 4.6, 1.0, 'HOSPITAL', 0);
-      addWaitLine(-3.8, 4.4, 0.28, 0.96, 4, true);
+      // Modern San Nova Medical Center:
+      // Dedicated Front Hospital Waiting Room (3 linked rows of medical waiting chairs, magazine coffee table,
+      // wall-mounted TV & triage queue display, wheelchair, water cooler, hand-sanitizer dispenser, vending machine),
+      // Glass-screened Triage Check-in Desk with monitors, 3 privacy-curtained ER Exam Bays with hospital beds/IV/ECG,
+      // medical supply cabinets, and full medical staff (doctors, nurses, triage clerk, security guard, waiting patients)!
+      counter(-4.4, 2.6, 8.4, 0, 0x2b8a83);
+      // Protective glass triage sneeze guard + dual check-in monitors
+      B('glass', 7.8, 1.05, 0.08, -4.4, FLOOR_Y + 1.12, 2.15, 0x38bdf8);
+      for (const mx of [-6.4, -2.6]) {
+        B('prop', 0.56, 0.42, 0.06, mx, FLOOR_Y + 1.18, 2.55, 0x1e242b);
+        B('emit', 0.48, 0.34, 0.04, mx, FLOOR_Y + 1.22, 2.59, 0x7dd3fc);
+      }
+      mountHangingSign(-4.4, 3.85, 2.4, 4.6, 1.0, 'HOSPITAL', 0);
+      addWaitLine(-4.6, 4.3, 0.28, 0.96, 4, true);
 
-      // 3 Privacy-Curtained ER Treatment Bays along back-left under mezzanine
+      // --- DEDICATED HOSPITAL WAITING ROOM ZONE (right half: x = +2.2..+11.4, z = +0.4..+8.2) ---
+      // Soft hygienic waiting-room floor mat
+      B('carpet', 9.2, 0.025, 7.6, 6.8, FLOOR_Y, 4.2, 0x457b87);
+      // Helper for linked 4-seat medical waiting room bench rows
+      const waitingRow = (rx: number, rz: number, faceDir: 1 | -1) => {
+        B('propMetal', 4.4, 0.1, 0.14, rx, FLOOR_Y + 0.36, rz, 0x94a3b8); // Horizontal steel beam
+        for (const lx of [-1.9, 1.9]) {
+          B('propMetal', 0.1, 0.38, 0.52, rx + lx, FLOOR_Y, rz, 0x64748b);
+        }
+        for (let s = 0; s < 4; s++) {
+          const sx = rx - 1.65 + s * 1.1;
+          B('carpet2', 0.86, 0.1, 0.54, sx, FLOOR_Y + 0.42, rz, 0x2b6cb0); // Padded blue waiting seat
+          B('carpet2', 0.86, 0.54, 0.1, sx, FLOOR_Y + 0.46, rz - faceDir * 0.24, 0x2b6cb0); // Backrest
+          B('propMetal', 0.06, 0.2, 0.42, sx - 0.46, FLOOR_Y + 0.48, rz, 0x94a3b8); // Armrest
+        }
+        P(4.5, 0.95, 0.65, rx, FLOOR_Y, rz);
+      };
+      waitingRow(6.6, 6.4, -1); // Back waiting row facing TV/triage
+      waitingRow(6.6, 2.0, 1);  // Front waiting row facing magazine table
+      waitingRow(6.6, 0.2, -1); // Back-to-back middle waiting row
+      // Magazine Coffee Table between waiting rows with colorful brochures
+      coffeeTable(6.6, 4.2, 2.4, 0.9);
+      B('prop', 0.36, 0.04, 0.28, 6.0, FLOOR_Y + 0.5, 4.2, 0xe11d48);
+      B('prop', 0.36, 0.04, 0.28, 6.6, FLOOR_Y + 0.5, 4.1, 0x0ea5e9);
+      B('prop', 0.36, 0.04, 0.28, 7.2, FLOOR_Y + 0.5, 4.3, 0x10b981);
+
+      // Wall-mounted Waiting Room TV & Queue Status Screen on right wall
+      B('prop', 0.12, 1.45, 2.6, RW / 2 - 0.32, FLOOR_Y + 1.95, 4.2, 0x111827);
+      B('emit', 0.08, 1.25, 2.38, RW / 2 - 0.38, FLOOR_Y + 2.05, 4.2, 0x38bdf8);
+      // Cold Water Cooler Dispenser + Snack Vending Machine + Wheelchair parked by waiting room entrance
+      B('prop', 0.52, 1.05, 0.52, 11.4, FLOOR_Y, 7.6, 0xf1f5f9);
+      G('glass', cyl(0.2, 0.2, 0.58, 11.4, FLOOR_Y + 1.05, 7.6, 0x38bdf8, 12));
+      vendingMachine(11.3, 1.2);
+      // Wheelchair next to waiting chairs
+      B('propMetal', 0.68, 0.52, 0.68, 2.4, FLOOR_Y + 0.28, 6.2, 0x334155);
+      B('carpet2', 0.62, 0.56, 0.08, 2.4, FLOOR_Y + 0.64, 6.52, 0x1e293b);
+      for (const wx of [-0.38, 0.38]) {
+        G('propMetal', cyl(0.32, 0.32, 0.06, 2.4 + wx, FLOOR_Y + 0.32, 6.25, 0x94a3b8, 14).rotateZ(Math.PI / 2));
+      }
+
+      // --- 3 PRIVACY-CURTAINED ER TREATMENT BAYS & MEDICAL CABINETS (back-left under mezzanine) ---
       for (let i = 0; i < 3; i++) {
-        const bx = -9.2 + i * 3.8;
-        // Hospital bed frame + teal mattress + crisp white pillow
+        const bx = -9.4 + i * 3.8;
         B('propMetal', 1.15, 0.72, 2.2, bx, FLOOR_Y, -7.2, 0xcfd6dc);
         B('carpet2', 1.05, 0.2, 2.08, bx, FLOOR_Y + 0.72, -7.2, 0x8ad4ce);
         B('prop', 0.62, 0.2, 0.45, bx, FLOOR_Y + 0.92, -8.0, 0xffffff);
-        // IV drip stand + ECG vitals monitor
+        // IV drip stand + glowing ECG vitals monitor
         G('propMetal', cyl(0.22, 0.22, 0.04, bx + 0.95, FLOOR_Y, -7.7, 0x9aa4ae, 10));
         G('propMetal', cyl(0.025, 0.025, 1.85, bx + 0.95, FLOOR_Y + 0.04, -7.7, 0xc8d0d8, 8));
         B('propMetal', 0.46, 0.42, 0.22, bx - 0.92, FLOOR_Y + 1.15, -7.9, 0x262c32);
         B('emit', 0.38, 0.28, 0.04, bx - 0.92, FLOOR_Y + 1.22, -7.78, 0x4dff9e);
-        // Privacy divider screen
+        // Privacy divider curtain
         if (i < 2) B('carpet2', 0.08, 2.0, 2.6, bx + 1.9, FLOOR_Y + 0.25, -7.2, 0xa8d8d6);
         P(1.25, 1.0, 2.3, bx, FLOOR_Y, -7.2);
       }
-      // Bright patient waiting lounge on right side
-      sofa(5.6, 5.2, Math.PI, 0x3b8a8a, 3.4);
-      sofa(5.6, 1.6, 0, 0x3b8a8a, 3.4);
-      coffeeTable(5.6, 3.4, 1.8, 0.8);
-      plant(11.0, 7.6);
-      plant(-11.0, 7.8);
-      // Upstairs Doctor Consultation Deck
-      officeDesk(-5.6, -7.6, 0, MEZZ_Y, true);
-      sofa(2.4, -7.6, 0, 0x3b8a8a, 3.0, MEZZ_Y);
+      // Medical supply cabinets & wall red-cross emblem along back wall
+      B('propMetal', 3.4, 2.05, 0.72, 2.4, FLOOR_Y, -RD / 2 + 0.85, 0xe2eef2);
+      B('prop', 0.26, 0.9, 0.06, 2.4, FLOOR_Y + 1.05, -RD / 2 + 1.24, 0xdc2626);
+      B('prop', 0.9, 0.26, 0.06, 2.4, FLOOR_Y + 1.37, -RD / 2 + 1.24, 0xdc2626);
+      P(3.4, 2.1, 0.8, 2.4, FLOOR_Y, -RD / 2 + 0.85);
 
-      npcSpots.push({ x: cx - 5.2, z: cz + 1.5, y: FLOOR_Y, yaw: 0, role: 'clerk' });
-      npcSpots.push({ x: cx - 2.4, z: cz + 1.5, y: FLOOR_Y, yaw: 0, role: 'server' });
-      npcSpots.push({ x: cx + 5.6, z: cz + 5.1, y: FLOOR_Y, yaw: Math.PI, role: 'seated' });
-      npcSpots.push({ x: cx + 5.6, z: cz + 1.7, y: FLOOR_Y, yaw: 0, role: 'seated' });
-      npcSpots.push({ x: cx + 1.8, z: cz + 0.6, y: FLOOR_Y, yaw: 0.4, role: 'guard' });
-      npcSpots.push({ x: cx + 2.4, z: cz - 7.5, y: MEZZ_Y, yaw: 0, role: 'seated' });
+      plant(11.4, 8.6);
+      plant(-11.4, 8.6);
+      // Upstairs Doctor Consultation Deck
+      officeDesk(-5.6, -7.8, 0, MEZZ_Y, true);
+      sofa(2.4, -7.8, 0, 0x3b8a8a, 3.0, MEZZ_Y);
+
+      // Hospital Medical Staff + Waiting Room Patients + Security
+      npcSpots.push({ x: cx - 5.8, z: cz + 1.3, y: FLOOR_Y, yaw: 0, role: 'clerk' });
+      npcSpots.push({ x: cx - 3.0, z: cz + 1.3, y: FLOOR_Y, yaw: 0, role: 'nurse' });
+      npcSpots.push({ x: cx - 5.6, z: cz - 5.1, y: FLOOR_Y, yaw: 0.3, role: 'doctor' });
+      npcSpots.push({ x: cx - 1.6, z: cz - 5.3, y: FLOOR_Y, yaw: -0.4, role: 'nurse' });
+      npcSpots.push({ x: cx - 5.6, z: cz - 6.9, y: MEZZ_Y, yaw: 0, role: 'doctor' });
+      npcSpots.push({ x: cx + 1.4, z: cz + 2.8, y: FLOOR_Y, yaw: 0.5, role: 'guard' });
+      // Seated patients in the Hospital Waiting Room rows
+      npcSpots.push({ x: cx + 5.5, z: cz + 6.3, y: FLOOR_Y, yaw: Math.PI, role: 'seated' });
+      npcSpots.push({ x: cx + 7.7, z: cz + 6.3, y: FLOOR_Y, yaw: Math.PI, role: 'seated' });
+      npcSpots.push({ x: cx + 6.1, z: cz + 2.1, y: FLOOR_Y, yaw: 0, role: 'seated' });
+      npcSpots.push({ x: cx + 2.4, z: cz - 7.7, y: MEZZ_Y, yaw: 0, role: 'seated' });
       break;
     }
 
@@ -994,6 +1112,88 @@ function buildRoom(c: BCtx, kind: Door['kind'], cx: number, cz: number, id: numb
       npcSpots.push({ x: cx - 2.4, z: cz + 1.0, y: FLOOR_Y, yaw: -Math.PI / 2, role: 'server' });
       npcSpots.push({ x: cx + 7.8, z: cz + 7.1, y: FLOOR_Y, yaw: Math.PI, role: 'seated' });
       npcSpots.push({ x: cx - 1.2, z: cz - 7.6, y: MEZZ_Y, yaw: 0.2, role: 'customer' });
+      break;
+    }
+
+    case 'parking': {
+      // Multi-Level Downtown Concrete Parking Garage Interior:
+      // Painted parking stalls + concrete wheel stops on Ground & Upper Deck, hazard-striped concrete columns,
+      // overhead fluorescent tube lights, glass Parking Attendant Booth with barrier arm, automated PAY HERE kiosk,
+      // detailed static parked vehicles, and live parking attendant + security guard + drivers!
+      const parkedCar = (px: number, pz: number, baseY: number, col: number, yaw = 0) => {
+        B('propMetal', 2.02, 0.62, 4.35, px, baseY + 0.24, pz, col, yaw);
+        B('glass', 1.72, 0.48, 2.05, px, baseY + 0.86, pz, 0x1e293b, yaw);
+        B('propMetal', 1.62, 0.08, 1.52, px, baseY + 1.34, pz, col, yaw);
+        // Headlights & taillights
+        B('emit', 1.65, 0.14, 0.08, px, baseY + 0.56, pz + (yaw === 0 ? 2.18 : -2.18), 0xfff4c2);
+        B('emit', 1.65, 0.14, 0.08, px, baseY + 0.56, pz + (yaw === 0 ? -2.18 : 2.18), 0xef4444);
+        for (const sx of [-1.02, 1.02]) for (const sz of [-1.35, 1.35]) {
+          G('prop', cyl(0.34, 0.34, 0.24, px + sx, baseY + 0.34, pz + sz, 0x141619, 12).rotateZ(Math.PI / 2));
+        }
+        if (baseY < 1.0) P(2.3, 1.6, 4.6, px, baseY, pz);
+      };
+
+      // Painted parking bay stall lines + concrete wheel stops (Ground Floor back row + side bays)
+      for (let i = 0; i <= 5; i++) {
+        const sx = -12.8 + i * 4.2;
+        B('prop', 0.14, 0.025, 5.2, sx, FLOOR_Y + 0.005, -7.8, 0xf8fafc);
+        if (i < 5) {
+          B('conc', 1.9, 0.16, 0.24, sx + 2.1, FLOOR_Y, -9.9, 0x9ca3af); // Concrete wheel stop
+        }
+      }
+      // Yellow driving lane centerlines
+      B('prop', 22.0, 0.025, 0.18, -1.5, FLOOR_Y + 0.005, 0.5, 0xfacc15);
+      B('prop', 22.0, 0.025, 0.18, -1.5, FLOOR_Y + 0.005, 1.0, 0xfacc15);
+
+      // Structural concrete columns with yellow/black hazard bumper wraps
+      for (const [colX, colZ] of [[-8.6, -2.5], [0.0, -2.5], [8.4, -2.5], [-8.6, 5.2], [4.2, 5.2]]) {
+        B('conc', 0.95, RH - FLOOR_Y, 0.95, colX, FLOOR_Y, colZ, 0x8e96a0);
+        B('prop', 1.04, 0.95, 1.04, colX, FLOOR_Y + 0.1, colZ, 0xf2b705);
+        B('prop', 1.06, 0.22, 1.06, colX, FLOOR_Y + 0.45, colZ, 0x1e242b);
+        c.world.addBox(cx + colX - 0.56, cx + colX + 0.56, cz + colZ - 0.56, cz + colZ + 0.56, RH);
+      }
+
+      // Linear overhead fluorescent tube fixtures
+      for (const lz of [-6.0, 0.8, 6.2]) {
+        for (const lx of [-8.0, 0.0, 8.0]) {
+          B('propMetal', 2.8, 0.12, 0.28, lx, RH - 0.24, lz, 0x475569);
+          B('emit', 2.6, 0.06, 0.18, lx, RH - 0.3, lz, 0xf0f9ff);
+        }
+      }
+
+      // Glass Parking Attendant Booth + Striped Barrier Gate near entrance (front-left)
+      B('propMetal', 3.4, 2.55, 2.8, -11.4, FLOOR_Y, 7.0, 0x1e3a8a);
+      B('glass', 3.1, 1.2, 2.88, -11.4, FLOOR_Y + 1.08, 7.0, 0x38bdf8);
+      B('prop', 0.56, 0.42, 0.08, -11.4, FLOOR_Y + 1.12, 7.8, 0x111827);
+      B('emit', 0.48, 0.32, 0.04, -11.4, FLOOR_Y + 1.16, 7.84, 0x34d399);
+      B('prop', 4.6, 0.14, 0.14, -7.2, FLOOR_Y + 1.05, 8.2, 0xef4444); // Barrier arm
+      P(3.5, 2.6, 2.9, -11.4, FLOOR_Y, 7.0);
+
+      // Automated Ticket Pay-Here Kiosk on front-right wall
+      B('propMetal', 1.15, 2.1, 0.82, 11.4, FLOOR_Y, 7.4, 0x1e293b);
+      B('emit', 0.78, 0.62, 0.06, 11.4, FLOOR_Y + 1.25, 7.0, 0x38bdf8);
+      P(1.2, 2.1, 0.9, 11.4, FLOOR_Y, 7.4);
+
+      mountHangingSign(0, 4.45, 5.2, 5.0, 1.05, 'PARKING', 0);
+
+      // Detailed Parked Cars in Ground Bays & Upper Mezzanine Deck
+      parkedCar(-10.7, -7.8, FLOOR_Y, 0xd62834, 0);
+      parkedCar(-6.5, -7.8, FLOOR_Y, 0x2563eb, 0);
+      parkedCar(1.9, -7.8, FLOOR_Y, 0xf59e0b, 0);
+      parkedCar(6.1, -7.8, FLOOR_Y, 0xf8fafc, 0);
+      // Upper Mezzanine Parking Bays + 2 Parked Cars upstairs
+      for (let i = 0; i <= 4; i++) {
+        B('prop', 0.14, 0.025, 4.8, -12.0 + i * 4.6, MEZZ_Y + 0.005, -8.8, 0xf8fafc);
+      }
+      parkedCar(-9.7, -8.8, MEZZ_Y, 0x10b981, 0);
+      parkedCar(-0.5, -8.8, MEZZ_Y, 0x06b6d4, 0);
+
+      // Parking Garage Staff (Attendant + Security Guard) & Drivers
+      npcSpots.push({ x: cx - 9.0, z: cz + 6.9, y: FLOOR_Y, yaw: Math.PI / 2, role: 'attendant' });
+      npcSpots.push({ x: cx + 3.6, z: cz + 2.8, y: FLOOR_Y, yaw: -0.5, role: 'guard' });
+      npcSpots.push({ x: cx - 2.4, z: cz - 3.6, y: FLOOR_Y, yaw: 0.4, role: 'customer' });
+      npcSpots.push({ x: cx + 8.6, z: cz + 6.6, y: FLOOR_Y, yaw: -0.8, role: 'customer' });
+      npcSpots.push({ x: cx - 4.8, z: cz - 7.0, y: MEZZ_Y, yaw: 0.2, role: 'attendant' });
       break;
     }
     default:

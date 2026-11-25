@@ -17,7 +17,11 @@ import { Prop, Pickup, PickKind, Grenade, Rocket } from './props';
 import { FX } from './fx';
 import { GameAudio } from './audio';
 import { World, PushOut } from './world';
-import { PLAYER_LOOK, TARGET_LOOK, GunKind, animateHuman, createHuman, gangLook, guardLook, HumanRig, setWeapon, civilianLook, touristLook, upgradeHumanToGlb } from './humans';
+import {
+  PLAYER_LOOK, TARGET_LOOK, GunKind, animateHuman, attendantLook, bankTellerLook, baristaLook, chefLook,
+  civilianLook, createHuman, doctorLook, gangLook, guardLook, HumanRig, nurseLook, serverLook, setWeapon,
+  touristLook, upgradeHumanToGlb,
+} from './humans';
 import { VehicleType, beamMaterial, headMat, tailDim, sirenRed, sirenBlue, paintMat, setVehicleRtx, upgradeVehicleToGlb, repaintVehicleGlb } from './vehicles';
 import { castRay, explode as doExplode, npcShoot as doNpcShoot, playerFire, playerMelee } from './combat';
 import { MapRenderer, buildRoute } from './minimap';
@@ -27,7 +31,8 @@ import { Look } from './humans';
 import { Collider } from './world';
 import { AmbientCandidate, AmbientDialogueController, AmbientSubtitle } from './ambientDialogue';
 import { GLB_CITY_LANDMARKS, cloneBuildingGlb, cloneLandmarkPropGlb, getGlbStatus, isGlbWorldMode, onGlbAssetReady, preloadGlbAssets, setGlbRtx, setGlbWorldMode } from './glbAssets';
-import type { BareHandMove } from './subAnimations';
+import type { BareHandMove, ViolenceWeaponKind } from './subAnimations';
+import type { LiveNpcInitPayload, LiveWorldInitPayload } from './liveVoiceChat';
 import { NpcVoiceEngine, VoiceKind } from './npcVoices';
 import { ANIMATION_COUNT } from './animations';
 import { TrafficManager, getDistrictTrafficMultiplier } from './trafficManager';
@@ -805,6 +810,69 @@ export class Game {
     }
     this.emitHud(true);
   }
+  geminiLiveVoiceActive = false;
+  setGeminiLiveVoiceActive(active: boolean) {
+    this.geminiLiveVoiceActive = active;
+    if (active) {
+      try {
+        this.voices.stop();
+      } catch {
+        // Isolate voice engine
+      }
+    }
+  }
+  getGeminiLiveInit(pedId: number): { npc: LiveNpcInitPayload; world: LiveWorldInitPayload } | null {
+    const ped = this.peds.find((q) => q.id === pedId && !q.dead);
+    if (!ped) return null;
+    const cand = this.buildGeminiCandidate(ped);
+    const world = this.buildGeminiWorldContext();
+    return {
+      npc: {
+        id: cand.id,
+        name: cand.name,
+        role: cand.role,
+        occupation: cand.occupation,
+        personality: cand.personality,
+        mood: cand.mood,
+        dist: cand.dist,
+        indoor: cand.indoor,
+        hostile: cand.hostile,
+        gender: ped.id % 2 === 0 ? 'f' : 'm',
+      },
+      world,
+    };
+  }
+  markGeminiNpcSpeaking(pedId: number, speaking: boolean) {
+    const ped = this.peds.find((q) => q.id === pedId && !q.dead);
+    if (!ped) return;
+    ped.speakingT = speaking ? 4.0 : 0.25;
+  }
+  recordGeminiLiveTurn(pedId: number, from: 'player' | 'npc', text: string) {
+    this.geminiDirector.recordLiveTranscript(pedId, from, text, this.time);
+    const ped = this.peds.find((q) => q.id === pedId && !q.dead);
+    if (ped && from === 'npc') {
+      ped.freeCityLastHint = text;
+      ped.speakingT = Math.max(2.2, text.length * 0.05);
+    }
+    this.emitHud(true);
+  }
+  applyGeminiLiveReaction(pedId: number, reaction: { intent: string; mood: string; thought: string }) {
+    const decision = this.geminiDirector.applyLiveReaction(pedId, reaction.intent, reaction.mood, reaction.thought, this.time);
+    const ped = this.peds.find((q) => q.id === pedId && !q.dead);
+    if (ped) {
+      ped.geminiDecision = decision;
+      if (decision.intent === 'flee') {
+        ped.flee(this, this.player.x, this.player.z, 9);
+      } else if (decision.intent === 'confront' && !ped.mission) {
+        ped.canFightBack = true;
+        ped.state = 'brawl';
+        ped.brawlT = 14;
+      } else if (decision.intent === 'wave') {
+        ped.handsUp = Math.max(ped.handsUp, 1.4);
+      }
+    }
+    this.emitHud(true);
+  }
   async sendGeminiNpcMessage(pedId: number, text: string): Promise<GeminiTalkResult> {
     const ped = this.peds.find((q) => q.id === pedId && !q.dead);
     if (!ped) return { ok: false, error: 'That citizen walked away.' };
@@ -816,7 +884,7 @@ export class Game {
       if (res.reply) {
         ped.freeCityLastHint = res.reply;
         ped.speakingT = Math.max(2.6, res.reply.length * 0.055);
-        if (this.voicesEnabled) {
+        if (this.voicesEnabled && !this.geminiLiveVoiceActive) {
           try {
             this.voices.speak(ped.id, ped.kind as VoiceKind, res.reply, Math.max(1.5, cand.dist), true, Boolean(this.interior));
           } catch {
@@ -1429,6 +1497,24 @@ export class Game {
       } else if (gunfire && p.kind !== 'cop' && d < radius * 0.6) {
         p.aggro = true;
       }
+    }
+  }
+  onViolenceEvent(
+    x: number,
+    z: number,
+    radius: number,
+    weaponKind: ViolenceWeaponKind,
+    byPlayer: boolean,
+    excludePed?: Ped,
+  ) {
+    for (const p of this.peds) {
+      if (p.dead || p === excludePed || p.kind === 'ally') continue;
+      // Keep indoor & outdoor violence isolated to the active space
+      if (Boolean(this.interior) !== p.indoor) continue;
+      const d = Math.hypot(p.x - x, p.z - z);
+      if (d > radius) continue;
+      if (p.state === 'brawl' || (p.hostile && p.aggro)) continue;
+      p.reactToViolence(this, x, z, weaponKind, false, byPlayer);
     }
   }
   alertAround(src: Ped, radius: number) {
@@ -2964,9 +3050,43 @@ export class Game {
     const rng = new Rng(room.id * 97 + 13);
     for (let i = 0; i < room.npcSpots.length; i++) {
       const spot = room.npcSpots[i];
-      const useTourist = (spot.role === 'customer' || spot.role === 'queue' || spot.role === 'seated') && rng.chance(0.35);
-      const look = spot.role === 'guard' ? guardLook(rng) : useTourist ? touristLook(rng) : civilianLook(rng);
-      const p = new Ped(useTourist ? 'tourist' : 'civ', look);
+      const useTourist = (spot.role === 'customer' || spot.role === 'queue' || spot.role === 'seated') && rng.chance(0.32);
+      let look: Look;
+      let pedKind: PedKind = useTourist ? 'tourist' : 'civ';
+      switch (spot.role) {
+        case 'guard':
+          look = guardLook(rng);
+          pedKind = 'guard';
+          break;
+        case 'doctor':
+          look = doctorLook(rng);
+          break;
+        case 'nurse':
+          look = nurseLook(rng);
+          break;
+        case 'chef':
+          look = chefLook(rng);
+          break;
+        case 'server':
+          look = room.kind === 'diner' ? serverLook(rng) : baristaLook(rng);
+          break;
+        case 'attendant':
+          look = attendantLook(rng);
+          break;
+        case 'clerk':
+          look = room.kind === 'bank'
+            ? bankTellerLook(rng)
+            : room.kind === 'hospital'
+              ? nurseLook(rng)
+              : room.kind === 'diner'
+                ? serverLook(rng)
+                : baristaLook(rng);
+          break;
+        default:
+          look = useTourist ? touristLook(rng) : civilianLook(rng);
+          break;
+      }
+      const p = new Ped(pedKind, look);
       p.indoor = true;
       p.indoorRole = spot.role;
       p.indoorHomeX = spot.x;
@@ -2982,8 +3102,14 @@ export class Game {
       p.place(spot.x, spot.z);
       p.rig.root.position.set(p.x, p.y, p.z);
       p.rig.root.rotation.set(0, p.yaw, 0);
-      if (spot.role === 'guard') p.arm('pistol');
-      else p.arm(null);
+      if (spot.role === 'guard') {
+        p.hp = p.maxHp = 85;
+        p.dmg = 7;
+        p.accuracy = 0.9;
+        p.arm('pistol');
+      } else {
+        p.arm(null);
+      }
       upgradeHumanToGlb(p.rig);
       this.addPed(p);
     }

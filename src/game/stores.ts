@@ -380,6 +380,7 @@ const RAW_STORES: readonly RawEntry[] = [
   ['ROUTE 66 TRUCK STOP', 'Fuel', 'airport', 'diner', 'shop'],
   ['DESERT MIRAGE DINER', 'Diner', 'airport', 'diner', 'diner'],
   ['SUNSET SKYDIVING', 'Aviation', 'airport', 'neon', 'office'],
+  ['PARKING', 'Parking', 'downtown', 'retail', 'garage'],
 ];
 
 const PALETTE: Record<StoreStyle, { bg: string[]; fg: string[]; accent: string[] }> = {
@@ -424,6 +425,7 @@ export const STORES: readonly StoreDef[] = RAW_STORES.map((entry, idx) => {
   else if (name === 'HOSPITAL') { fg = '#ff5a5a'; accent = '#ffffff'; }
   else if (name === 'BANK') { fg = '#ffe066'; accent = '#d4af37'; }
   else if (name === 'AMMO') { fg = '#ff4848'; accent = '#ffd23d'; }
+  else if (name === 'PARKING') { fg = '#38bdf8'; accent = '#facc15'; }
   return {
     id: idx,
     name,
