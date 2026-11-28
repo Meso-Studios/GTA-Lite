@@ -22,6 +22,18 @@ export interface RayTraceUniforms {
   uRtxStrength: { value: number };
   uIsNight: { value: number };
   uWetness: { value: number };
+  uMotionBlur: { value: number };
+  uBlurVec: { value: THREE.Vector2 };
+  uGrayscale: { value: number };
+  uSlomoVignette: { value: number };
+}
+
+export interface RayTracePostFX {
+  motionBlur?: number;
+  blurX?: number;
+  blurY?: number;
+  grayscale?: number;
+  slomoVignette?: number;
 }
 
 const RAYTRACE_VERT = /* glsl */ `
@@ -46,6 +58,10 @@ uniform float uFar;
 uniform float uRtxStrength;
 uniform float uIsNight;
 uniform float uWetness;
+uniform float uMotionBlur;
+uniform vec2 uBlurVec;
+uniform float uGrayscale;
+uniform float uSlomoVignette;
 
 varying vec2 vUv;
 
@@ -91,21 +107,72 @@ float hash12(vec2 p) {
   return fract((p3.x + p3.y) * p3.z);
 }
 
+vec3 applyCinematicPost(vec3 col, vec2 uv) {
+  vec3 outCol = col;
+
+  // Directional velocity / camera-turn motion blur (7-tap Gaussian weighted)
+  if (uMotionBlur > 0.005) {
+    float vecLen = length(uBlurVec);
+    if (vecLen > 0.0004) {
+      vec2 stepUv = uBlurVec * clamp(uMotionBlur, 0.0, 1.0);
+      vec3 acc = outCol * 0.28;
+      float wSum = 0.28;
+      for (int i = -3; i <= 3; i++) {
+        if (i == 0) continue;
+        float fi = float(i) / 3.0;
+        float w = exp(-fi * fi * 2.2) * 0.14;
+        vec2 suv = clamp(uv + stepUv * fi, vec2(0.002), vec2(0.998));
+        acc += texture2D(tDiffuse, suv).rgb * w;
+        wSum += w;
+      }
+      outCol = mix(outCol, acc / wSum, clamp(uMotionBlur, 0.0, 0.92));
+    }
+  }
+
+  // Subtle realistic optical sun glare when facing the daytime sun (warm atmospheric halo, zero plastic wash)
+  if (uIsNight < 0.65 && uSunDirView.z < -0.15) {
+    vec2 sunUv = projectToUv(uSunDirView * 120.0);
+    if (sunUv.x > -0.35 && sunUv.x < 1.35 && sunUv.y > -0.35 && sunUv.y < 1.35) {
+      vec2 d = (uv - sunUv) * vec2(uResolution.x / max(uResolution.y, 1.0), 1.0);
+      float sunDist = length(d);
+      float halo = exp(-sunDist * 4.4) * 0.11 + exp(-sunDist * 14.0) * 0.08;
+      float sunDepth = readDepth(clamp(sunUv, vec2(0.01), vec2(0.99)));
+      float vis = smoothstep(0.992, 0.9995, sunDepth) * (1.0 - uIsNight * 0.85);
+      outCol += vec3(1.0, 0.92, 0.78) * halo * vis;
+    }
+  }
+
+  // 30ft+ Pistol Headshot Slomo Monochrome Grayscale + Dramatic Vignette
+  if (uGrayscale > 0.005) {
+    float g = clamp(uGrayscale, 0.0, 1.0);
+    float luma = dot(outCol, vec3(0.299, 0.587, 0.114));
+    // Crisp noir S-curve contrast during killcam so silhouettes pop dramatically
+    float noir = clamp((luma - 0.48) * 1.18 + 0.49, 0.0, 1.35);
+    vec3 mono = vec3(noir * 0.97, noir * 0.99, noir * 1.02);
+    outCol = mix(outCol, mono, g);
+    vec2 v = uv * 2.0 - 1.0;
+    float vigAmt = clamp(dot(v, v) * 0.34 * uSlomoVignette, 0.0, 0.52);
+    outCol *= (1.0 - vigAmt);
+  }
+
+  return max(outCol, vec3(0.0));
+}
+
 void main() {
   vec4 baseSample = texture2D(tDiffuse, vUv);
   vec3 col = baseSample.rgb;
   float depth = readDepth(vUv);
 
-  // Bypass sky / far horizon completely so sky stays 100% vivid & crisp
+  // Bypass RTX shading on sky / far horizon or when RTX is disabled, while still running motion blur & killcam grayscale
   if (depth >= 0.9996 || uRtxStrength <= 0.01) {
-    gl_FragColor = vec4(col, 1.0);
+    gl_FragColor = vec4(applyCinematicPost(col, vUv), 1.0);
     return;
   }
 
   vec3 P = viewPosFromDepth(vUv, depth);
   float viewDist = -P.z;
   if (viewDist > 190.0) {
-    gl_FragColor = vec4(col, 1.0);
+    gl_FragColor = vec4(applyCinematicPost(col, vUv), 1.0);
     return;
   }
 
@@ -147,11 +214,11 @@ void main() {
       float occ = nd * rangeAtten;
       aoAccum += occ;
       vec3 sCol = texture2D(tDiffuse, suv).rgb;
-      giAccum += sCol * occ * 0.65;
+      giAccum += sCol * occ * 0.58;
     }
   }
   float ao = 1.0 - clamp((aoAccum / float(AO_SAMPLES)) * 0.85, 0.0, 0.46) * distFade * uRtxStrength;
-  vec3 giBounce = (giAccum / float(AO_SAMPLES)) * 0.42 * distFade * uRtxStrength;
+  vec3 giBounce = (giAccum / float(AO_SAMPLES)) * 0.36 * distFade * uRtxStrength;
 
   // -------------------------------------------------------------------------
   // 2. SCREEN-SPACE RAY-MARCHED SUN CONTACT SHADOWS (SSRT)
@@ -178,36 +245,29 @@ void main() {
       rayStep *= 1.12;
     }
     float shadowFade = (1.0 - smoothstep(45.0, 95.0, viewDist)) * (1.0 - uIsNight * 0.85);
-    contactShadow = 1.0 - occHit * 0.36 * shadowFade * uRtxStrength;
+    contactShadow = 1.0 - occHit * 0.32 * shadowFade * uRtxStrength;
   }
 
   // -------------------------------------------------------------------------
-  // 3. SCREEN-SPACE RAY-MARCHED REFLECTIONS (SSR) + BINARY REFINEMENT
+  // 3. SCREEN-SPACE RAY-MARCHED REFLECTIONS (SSR) — PHYSICALLY RESTRAINED
   // -------------------------------------------------------------------------
   vec3 reflCol = vec3(0.0);
   float reflMask = 0.0;
   vec3 R = reflect(-V, N);
-  // Only trace rays moving away from behind the camera
-  if (R.z < -0.02 && viewDist < 120.0) {
-    // Schlick Fresnel — grazing surfaces, car clearcoat, glass & damp streets catch crisp reflections
-    float fresnel = 0.04 + 0.96 * pow(1.0 - NdotV, 4.0);
-    // Estimate material gloss heuristically from luminance contrast + grazing angle + road wetness
-    float luma = dot(col, vec3(0.299, 0.587, 0.114));
-    float upwardness = smoothstep(0.55, 0.92, N.y);
-    float surfaceGloss = clamp(
-      fresnel * 0.95 + upwardness * (0.14 + uWetness * 0.34) + smoothstep(0.65, 1.2, luma) * 0.12,
-      0.0,
-      0.72
-    );
+  // Only trace screen-space reflections on genuinely wet/rain surfaces (zero glassy sheen on dry matte floors/walls/roads)
+  if (uWetness > 0.16 && R.z < -0.02 && viewDist < 95.0) {
+    float fresnel = pow(1.0 - NdotV, 5.0);
+    float upwardness = smoothstep(0.84, 0.98, N.y);
+    float surfaceGloss = clamp(upwardness * uWetness * (0.14 + fresnel * 0.18), 0.0, 0.20);
 
-    if (surfaceGloss > 0.08) {
-      float stride = clamp(viewDist * 0.028, 0.35, 1.85);
+    if (surfaceGloss > 0.05) {
+      float stride = clamp(viewDist * 0.03, 0.35, 1.85);
       vec3 marchP = P + N * 0.08 + R * (stride * (0.35 + jitter * 0.65));
       vec3 prevP = P;
       bool hit = false;
       vec2 hitUv = vec2(0.0);
 
-      for (int i = 0; i < 16; i++) {
+      for (int i = 0; i < 12; i++) {
         vec2 muv = projectToUv(marchP);
         if (muv.x < 0.005 || muv.x > 0.995 || muv.y < 0.005 || muv.y > 0.995) break;
         float md = readDepth(muv);
@@ -216,10 +276,9 @@ void main() {
           float deltaZ = surfP.z - marchP.z;
           float thickness = stride * 1.45 + 0.25;
           if (deltaZ > 0.0 && deltaZ < thickness) {
-            // 4-step binary search refinement for razor-sharp reflection lock
             vec3 lo = prevP;
             vec3 hi = marchP;
-            for (int b = 0; b < 4; b++) {
+            for (int b = 0; b < 3; b++) {
               vec3 mid = (lo + hi) * 0.5;
               vec2 buv = projectToUv(mid);
               float bd = readDepth(buv);
@@ -234,43 +293,49 @@ void main() {
         }
         prevP = marchP;
         marchP += R * stride;
-        stride *= 1.14;
+        stride *= 1.15;
       }
 
       if (hit) {
         vec2 edge = smoothstep(vec2(0.0), vec2(0.1), hitUv) * (1.0 - smoothstep(vec2(0.9), vec2(1.0), hitUv));
         float edgeFade = edge.x * edge.y;
-        float rFade = (1.0 - smoothstep(55.0, 120.0, viewDist)) * edgeFade;
-        reflCol = texture2D(tDiffuse, hitUv).rgb;
-        // Clamp specular fireflies cleanly
-        reflCol = min(reflCol, vec3(2.2));
-        reflMask = clamp(surfaceGloss * (0.42 + uWetness * 0.30 + uIsNight * 0.18) * rFade * uRtxStrength, 0.0, 0.62);
+        float rFade = (1.0 - smoothstep(45.0, 95.0, viewDist)) * edgeFade;
+        reflCol = min(texture2D(tDiffuse, hitUv).rgb, vec3(1.25));
+        reflMask = clamp(surfaceGloss * rFade * uRtxStrength, 0.0, 0.20);
       }
     }
   }
 
   // -------------------------------------------------------------------------
-  // 4. COMPOSE REAL RAY-TRACED LIGHTING + CINEMATIC VIBRANCY & AERIAL DEPTH
+  // 4. COMPOSE NATURAL NON-SHINY ARCHITECTURAL LIGHTING
   // -------------------------------------------------------------------------
-  vec3 lit = col * ao * contactShadow + giBounce * (0.58 + 0.42 * col);
+  float softAo = mix(0.82, 1.0, ao);
+  float softContact = mix(0.84, 1.0, contactShadow);
+  vec3 lit = col * softAo * softContact + giBounce * (0.42 + 0.30 * col);
   lit = mix(lit, reflCol, reflMask);
 
-  // Subtle sunlit atmospheric aerial glow on distant skyscrapers (enhances depth without grey washout)
-  float aerial = smoothstep(85.0, 620.0, viewDist) * (1.0 - uIsNight * 0.65) * 0.12 * uRtxStrength;
-  vec3 sunScatter = mix(vec3(0.42, 0.68, 0.94), vec3(1.0, 0.72, 0.46), clamp(dot(normalize(P), uSunDirView) * 0.5 + 0.5, 0.0, 1.0));
-  lit = mix(lit, lit + sunScatter * 0.38, aerial);
+  // Subtle sunlit atmospheric perspective on distant skyline
+  float aerial = smoothstep(160.0, 820.0, viewDist) * (1.0 - uIsNight * 0.72) * 0.05 * uRtxStrength;
+  vec3 sunScatter = mix(vec3(0.56, 0.76, 0.96), vec3(1.0, 0.86, 0.68), clamp(dot(normalize(P), uSunDirView) * 0.5 + 0.5, 0.0, 1.0));
+  lit = mix(lit, lit + sunScatter * 0.16, aerial);
 
-  // Rich filmic vibrancy & crisp S-curve micro-contrast (deep grounded shadows, luminous highlights)
+  // Clean grounded color balance (zero glossy washout)
   float outLuma = dot(lit, vec3(0.2126, 0.7152, 0.0722));
-  lit = mix(vec3(outLuma), lit, 1.11);
-  lit = lit * (0.985 + 0.075 * smoothstep(0.14, 0.84, outLuma));
-  // Subtle crisp vignette framing at extreme edges
+  lit = mix(vec3(outLuma), lit, 1.04);
   vec2 vig = vUv * 2.0 - 1.0;
-  lit *= 1.0 - dot(vig, vig) * 0.045;
+  lit *= 1.0 - dot(vig, vig) * 0.015;
 
-  gl_FragColor = vec4(max(lit, vec3(0.0)), 1.0);
+  gl_FragColor = vec4(applyCinematicPost(lit, vUv), 1.0);
 }
 `;
+
+export const RTX_LIGHTING_LIMITS = {
+  maxDryReflectionBlend: 0.0,
+  maxWetReflectionBlend: 0.20,
+  filmicSaturation: 1.04,
+  dayExposure: 1.08,
+  indoorEnvIntensity: 0.16,
+} as const;
 
 export class RayTracePipeline {
   private rt: THREE.WebGLRenderTarget;
@@ -309,7 +374,11 @@ export class RayTracePipeline {
       uFar: { value: 1800 },
       uRtxStrength: { value: 1.0 },
       uIsNight: { value: 0.0 },
-      uWetness: { value: 0.22 },
+      uWetness: { value: 0.0 },
+      uMotionBlur: { value: 0.0 },
+      uBlurVec: { value: new THREE.Vector2(0, 0) },
+      uGrayscale: { value: 0.0 },
+      uSlomoVignette: { value: 0.0 },
     };
 
     this.mat = new THREE.ShaderMaterial({
@@ -343,6 +412,7 @@ export class RayTracePipeline {
     isNightFactor: number,
     wetness: number,
     strength = 1.0,
+    fx?: RayTracePostFX,
   ): void {
     // 1. Render full 3D scene + hardware depth texture into offscreen HalfFloat target
     const prevTarget = renderer.getRenderTarget();
@@ -350,7 +420,7 @@ export class RayTracePipeline {
     renderer.clear(true, true, false);
     renderer.render(scene, camera);
 
-    // 2. Update screen-space ray-tracing uniforms from live camera + sun
+    // 2. Update screen-space ray-tracing + motion blur + killcam grayscale uniforms
     this.uniforms.uProj.value.copy(camera.projectionMatrix);
     this.uniforms.uInvProj.value.copy(camera.projectionMatrixInverse);
     this.uniforms.uNear.value = camera.near;
@@ -358,12 +428,16 @@ export class RayTracePipeline {
     this.uniforms.uIsNight.value = isNightFactor;
     this.uniforms.uWetness.value = wetness;
     this.uniforms.uRtxStrength.value = strength;
+    this.uniforms.uMotionBlur.value = fx?.motionBlur ?? 0;
+    this.uniforms.uBlurVec.value.set(fx?.blurX ?? 0, fx?.blurY ?? 0);
+    this.uniforms.uGrayscale.value = fx?.grayscale ?? 0;
+    this.uniforms.uSlomoVignette.value = fx?.slomoVignette ?? 0;
 
     this._sunWorld.copy(sunPosition).normalize();
     this._normalMat.setFromMatrix4(camera.matrixWorldInverse);
     this.uniforms.uSunDirView.value.copy(this._sunWorld).applyMatrix3(this._normalMat).normalize();
 
-    // 3. Execute Screen-Space Ray-Tracing pass directly to screen framebuffer
+    // 3. Execute Screen-Space Ray-Tracing + Cinematic Post pass directly to screen framebuffer
     renderer.setRenderTarget(prevTarget);
     renderer.render(this.quadScene, this.quadCam);
   }

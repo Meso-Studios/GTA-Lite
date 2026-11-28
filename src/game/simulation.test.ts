@@ -30,11 +30,27 @@ import {
   BARE_HAND_SEQUENCE,
   createMotionAnimState,
   evaluateBareHandPose,
+  evaluateOrganicMotionOverlay,
+  evaluateViolenceReaction,
   shouldNpcFightBack,
   stepMotionSubAnim,
 } from './subAnimations';
 import { ROOM_SPECS } from './interiors';
 import { STORES, STORE_COUNT, getStoreByIndex, getStoreIndexByName } from './stores';
+import {
+  PISTOL_HEADSHOT_MIN_METERS,
+  computeAimAssist,
+  createRecoilState,
+  createSlomoKillcamState,
+  registerPlayerShot,
+  shouldTriggerPistolHeadshotSlomo,
+  stepRecoilRecovery,
+  stepSlomoKillcam,
+  triggerPistolHeadshotSlomo,
+} from './aimAssist';
+import { SIDE_QUESTS, SideQuestManager } from './sideQuests';
+import { createGrassTuftGeometry, isGrassEligible } from './grassField';
+import { getResolutionForFidelity, microtextures } from './microtextures';
 import { MISSIONS } from './missions';
 import {
   GeminiNpcDirector,
@@ -119,7 +135,22 @@ import {
 } from './animations';
 import { buildTtsApiUrl, computeVoiceVolume, selectVoiceProfile } from './npcVoices';
 import { computeAmbienceTargets, computeNaturalVoiceVolume } from './soundMix';
-import { computeWaitLineSlots, interiorFloorHeight } from './interiorMath';
+import { computeWaitLineSlots, interiorFloorHeight, sampleEscalatorConveyance } from './interiorMath';
+import {
+  InteriorPersistenceStore,
+  MAX_IMPACTS_PER_BUILDING,
+  makeBuildingKey,
+  type SavedIndoorPed,
+} from './interiorPersistence';
+import {
+  base64ToFloat32Pcm,
+  buildGeminiLiveWsUrl,
+  computeMicLevel,
+  downsampleFloat32ToInt16Pcm,
+  int16ToBase64,
+  pickLiveVoiceForNpc,
+} from './liveVoiceChat';
+import { RTX_LIGHTING_LIMITS } from './raytracePass';
 import {
   computeTimeOfDayFactor,
   computeTrafficDensity,
@@ -688,7 +719,10 @@ test('interiorFloorHeight supports walkable stairs & mezzanine balconies while k
   const layout = {
     baseY: 0.26,
     stairs: [{ x0: 8.4, x1: 11.4, z0: -4.2, z1: 0.6, y0: 0.26, y1: 2.72, axis: 'z' as const, dir: -1 as const }],
+    escalators: [],
     mezzanines: [{ x0: -11.8, x1: 11.8, z0: -8.8, z1: -4.2, y: 2.72 }],
+    basements: [],
+    cutouts: [],
   };
 
   // Ground floor main hall
@@ -975,17 +1009,26 @@ test('bare-hand fighting system evaluates 6 distinct smooth moves, boxing guard 
   assert.ok(brawlers >= 50 && brawlers <= 95, `Expected ~36% civilian brawler ratio (50..95/200), got ${brawlers}`);
 });
 
-test('all 9 interior kinds define unique handcrafted ROOM_SPECS footprints and architectural parameters', () => {
+test('all 12 interior kinds (including casino & dealership) define unique handcrafted ROOM_SPECS footprints, human-scaled ceilings, escalators, and basements', () => {
   const kinds = Object.keys(ROOM_SPECS) as (keyof typeof ROOM_SPECS)[];
-  assert.equal(kinds.length, 9);
+  assert.equal(kinds.length, 12);
+  assert.ok(kinds.includes('parking'), 'ROOM_SPECS must include downtown parking garage interior');
+  assert.ok(kinds.includes('casino'), 'ROOM_SPECS must include casino interior');
+  assert.ok(kinds.includes('dealership'), 'ROOM_SPECS must include car dealership interior');
   const shapes = new Set<string>();
+  let escalatorCount = 0;
+  let basementCount = 0;
   for (const k of kinds) {
     const s = ROOM_SPECS[k];
-    assert.ok(s.w >= 18 && s.d >= 16 && s.h >= 5.0, `Invalid dimensions for ${k}`);
-    assert.ok(s.mezzY > 2.4 && s.mezzY < s.h - 2.0, `Invalid mezzanine height for ${k}`);
+    assert.ok(s.w >= 20 && s.d >= 17 && s.h >= 3.2 && s.h <= 6.5, `Invalid human-scaled dimensions for ${k}: ${s.w}x${s.d}x${s.h}`);
+    assert.ok(s.mezzY >= 2.4 && s.mezzY < s.h, `Invalid mezzanine/floor height for ${k}`);
+    if (s.hasEscalator) escalatorCount++;
+    if (s.hasBasement) basementCount++;
     shapes.add(`${s.w}x${s.d}x${s.h}:${s.floorMat}:${s.stairSide}`);
   }
-  assert.ok(shapes.size >= 8, `Expected distinct architectural layouts across interiors, got ${shapes.size}/9`);
+  assert.ok(shapes.size >= 11, `Expected distinct architectural layouts across interiors, got ${shapes.size}/12`);
+  assert.ok(escalatorCount >= 5, `Expected >= 5 buildings with working escalators, got ${escalatorCount}`);
+  assert.ok(basementCount >= 6, `Expected >= 6 buildings with subterranean basements, got ${basementCount}`);
 });
 
 test('expanded suburban districts and 6 rural highway gas stations sit on flat terrain with proper district names', () => {
@@ -1363,11 +1406,293 @@ test('optional Gemini AI NPC director prioritizes nearby citizens, sanitizes JSO
 
   // Verify server-side Gemini capability metadata & zero client-side @google/genai imports
   const root = process.cwd();
-  const meta = JSON.parse(fs.readFileSync(path.join(root, 'metadata.json'), 'utf8')) as { majorCapabilities?: string[] };
+  const meta = JSON.parse(fs.readFileSync(path.join(root, 'metadata.json'), 'utf8')) as {
+    majorCapabilities?: string[];
+    requestFramePermissions?: string[];
+  };
   assert.ok(meta.majorCapabilities?.includes('MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API'));
+  assert.ok(meta.requestFramePermissions?.includes('microphone'), 'metadata.json must request microphone permission for Live Voice Chat');
   const clientCode = fs.readFileSync(path.join(root, 'src', 'game', 'geminiNpc.ts'), 'utf8');
   assert.ok(!/from\s+['"]@google\/genai['"]/.test(clientCode), 'Client code must never import @google/genai');
 });
+
+test('Gemini Live Voice Chat audio math downsamples mobile 48kHz to 16kHz PCM, round-trips base64, and maps NPC voices', () => {
+  // 48kHz -> 16kHz downsampling (3:1 ratio, typical iOS Safari / Android Chrome mic)
+  const src = new Float32Array(4800);
+  for (let i = 0; i < src.length; i++) {
+    src[i] = Math.sin((2 * Math.PI * 440 * i) / 48000) * 0.65;
+  }
+  const pcm16 = downsampleFloat32ToInt16Pcm(src, 48000, 16000);
+  assert.equal(pcm16.length, 1600);
+  assert.ok(computeMicLevel(src) > 0.5, 'Sine wave should produce active mic meter level');
+  assert.equal(computeMicLevel(new Float32Array(256)), 0, 'Silence must produce 0 mic level');
+
+  // Base64 PCM round-trip preserves signal fidelity
+  const b64 = int16ToBase64(pcm16);
+  assert.ok(b64.length > 100);
+  const decoded = base64ToFloat32Pcm(b64);
+  assert.equal(decoded.length, pcm16.length);
+  assert.ok(Math.abs(decoded[12] - pcm16[12] / 32768) < 1e-4);
+
+  // Voice selection & WebSocket URL helper
+  const femVoice = pickLiveVoiceForNpc(7, 'civ', 'f');
+  assert.ok(femVoice === 'Kore' || femVoice === 'Zephyr');
+  const copVoice = pickLiveVoiceForNpc(9, 'cop', 'm');
+  assert.ok(copVoice === 'Fenrir' || copVoice === 'Charon');
+  assert.equal(buildGeminiLiveWsUrl({ protocol: 'https:', host: 'sannova.example' }), 'wss://sannova.example/api/gemini-live');
+  assert.equal(buildGeminiLiveWsUrl({ protocol: 'http:', host: 'localhost:3000' }), 'ws://localhost:3000/api/gemini-live');
+});
+
+test('evaluateViolenceReaction makes armed staff/cops engage, civilians flee gunfire, and gritty witnesses fight back', () => {
+  // Guards & cops engage violence with firearms
+  assert.equal(
+    evaluateViolenceReaction({ pedId: 1, kind: 'guard', indoor: true, indoorRole: 'guard', weaponKind: 'fists', isVictim: false, dist: 6 }),
+    'attack_gun',
+  );
+  assert.equal(
+    evaluateViolenceReaction({ pedId: 2, kind: 'cop', indoor: false, weaponKind: 'gun', isVictim: false, dist: 15 }),
+    'attack_gun',
+  );
+
+  // Gunfire makes hospital patients / civilians flee (or cower if badly wounded indoors)
+  assert.equal(
+    evaluateViolenceReaction({ pedId: 12, kind: 'civ', indoor: true, indoorRole: 'patient', weaponKind: 'gun', isVictim: false, dist: 8, hpRatio: 1 }),
+    'flee',
+  );
+  assert.equal(
+    evaluateViolenceReaction({ pedId: 12, kind: 'civ', indoor: true, indoorRole: 'patient', weaponKind: 'gun', isVictim: true, dist: 4, hpRatio: 0.25 }),
+    'cower',
+  );
+
+  // Punched diner chefs often brawl back while most unarmed witnesses flee
+  let chefBrawls = 0;
+  for (let id = 1; id <= 40; id++) {
+    if (evaluateViolenceReaction({ pedId: id, kind: 'civ', indoor: true, indoorRole: 'chef', weaponKind: 'fists', isVictim: true, dist: 2 }) === 'brawl') {
+      chefBrawls++;
+    }
+  }
+  assert.ok(chefBrawls >= 16 && chefBrawls <= 35, `Expected ~65% chef brawl retaliation, got ${chefBrawls}/40`);
+});
+
+test('InteriorPersistenceStore preserves dead bodies, wounded NPCs, door angles, and impacts per building entrance without respawning', () => {
+  const store = new InteriorPersistenceStore();
+  const hospA = makeBuildingKey({ x: 120.4, z: -85.2, kind: 'hospital' });
+  const hospB = makeBuildingKey({ x: -240.1, z: 310.7, kind: 'hospital' });
+  assert.notEqual(hospA, hospB, 'Distinct buildings of the same kind must have separate persistence keys');
+
+  const samplePed: SavedIndoorPed = {
+    kind: 'civ',
+    role: 'doctor',
+    look: {
+      gender: 'm', skin: 0xdca57a, hair: 0x2b1d14, hairStyle: 'short',
+      top: 0xf4f7fa, topStyle: 'jacket', bottom: 0x385872, bottomStyle: 'suit',
+      shoe: 0xe6ecf2, build: 1.0, height: 1.0, beard: false, glasses: true,
+    },
+    x: 4.2, y: 0.26, z: -2.5, yaw: 1.1,
+    hp: 0, maxHp: 60, dead: true, rotX: -Math.PI / 2, restX: -Math.PI / 2,
+    hostile: false, aggro: false, weapon: null, dmg: 0, accuracy: 0,
+    state: 'dead', panicT: 0, brawlT: 0, handsUp: 0,
+    indoorHomeX: 4.2, indoorHomeZ: -2.5, indoorBaseYaw: 0, lastHint: 'doctor',
+  };
+
+  store.saveBuilding(hospA, [samplePed], { hall_left: 1.48 }, 42.5);
+  store.addImpact(hospA, { kind: 'bullet', x: 2.1, y: 1.4, z: -4.0, nx: 0, ny: 0, nz: 1, radius: 0.08 });
+  store.addImpact(hospA, { kind: 'blood', x: 4.2, y: 0.26, z: -2.5, nx: 0, ny: 1, nz: 0, radius: 0.65 });
+
+  const restored = store.get(hospA);
+  assert.ok(restored);
+  assert.equal(restored!.peds.length, 1);
+  assert.equal(restored!.peds[0].dead, true, 'Dead NPC must stay dead on re-entry');
+  assert.equal(restored!.doorAngles.hall_left, 1.48, 'Interior door open angle must persist');
+  assert.equal(restored!.impacts.length, 2, 'Bullet hole and blood splatter must persist');
+  assert.equal(store.has(hospB), false, 'Other buildings must remain untouched');
+
+  // Verify bounded ring buffer cap for impacts
+  for (let i = 0; i < MAX_IMPACTS_PER_BUILDING + 25; i++) {
+    store.addImpact(hospA, { kind: 'scorch', x: i * 0.1, y: 0.26, z: 0, nx: 0, ny: 1, nz: 0, radius: 0.5 });
+  }
+  assert.equal(store.getImpacts(hospA).length, MAX_IMPACTS_PER_BUILDING);
+});
+
+test('multi-floor basements, stairwell cutouts, moving escalators, and natural non-glassy RTX limits behave accurately', () => {
+  const layout = {
+    baseY: 0.26,
+    stairs: [
+      { x0: -9.5, x1: -7.1, z0: -4.0, z1: 1.2, y0: -3.14, y1: 0.26, axis: 'z' as const, dir: 1 as const },
+    ],
+    escalators: [
+      { x0: 6.2, x1: 7.4, z0: -4.2, z1: 1.2, y0: 0.26, y1: 2.86, axis: 'z' as const, dir: -1 as const, speed: 1.35, travelDir: 1 as const },
+      { x0: 7.7, x1: 8.9, z0: -4.2, z1: 1.2, y0: 0.26, y1: 2.86, axis: 'z' as const, dir: -1 as const, speed: 1.35, travelDir: -1 as const },
+    ],
+    mezzanines: [{ x0: -12, x1: 12, z0: -9, z1: -4.2, y: 2.86 }],
+    basements: [{ x0: -11, x1: 11, z0: -8, z1: 8, y: -3.14 }],
+    cutouts: [{ x0: -9.6, x1: -7.0, z0: -4.1, z1: 1.3 }],
+  };
+
+  // Walking on basement floor stays at -3.14 (never snaps back up to ground floor)
+  assert.equal(interiorFloorHeight(layout, 0, 0, -3.14), -3.14);
+  // Mid-basement stairs climbs halfway from -3.14 to 0.26
+  const midBase = interiorFloorHeight(layout, -8.3, -1.4, -1.4);
+  assert.ok(Math.abs(midBase - (-1.44)) < 0.08, `Expected mid basement stair height ~-1.44, got ${midBase}`);
+  // Walking on ground floor above basement stays on ground floor (0.26)
+  assert.equal(interiorFloorHeight(layout, 2, 2, 0.26), 0.26);
+
+  // Escalator conveyance carries player up (-Z) on up-lane and down (+Z) on down-lane
+  const upLane = sampleEscalatorConveyance(layout, 6.8, -1.5, 1.56);
+  assert.equal(upLane.onEscalator, true);
+  assert.ok(upLane.vz < -1.2, `Ascending escalator must convey toward -Z, got vz=${upLane.vz}`);
+  const downLane = sampleEscalatorConveyance(layout, 8.3, -1.5, 1.56);
+  assert.equal(downLane.onEscalator, true);
+  assert.ok(downLane.vz > 1.2, `Descending escalator must convey toward +Z, got vz=${downLane.vz}`);
+
+  // Non-glassy natural RTX lighting caps
+  assert.ok(RTX_LIGHTING_LIMITS.maxDryReflectionBlend <= 0.18, 'Dry SSR blend must stay subtle and non-glassy');
+  assert.ok(RTX_LIGHTING_LIMITS.maxWetReflectionBlend <= 0.32, 'Wet SSR blend must stay physically realistic');
+  assert.ok(RTX_LIGHTING_LIMITS.filmicSaturation <= 1.06, 'Filmic saturation must avoid oversaturated plastic sheen');
+  assert.ok(RTX_LIGHTING_LIMITS.indoorEnvIntensity <= 0.32, 'Indoor environment reflections must stay matte and grounded');
+});
+
+test('car physics sensitivity slider scales steering responsiveness cleanly from 0.25x to 2.0x', () => {
+  const runTurn = (sensitivity: number) => {
+    const st = createSteeringState();
+    let maxSteer = 0;
+    let maxOmega = 0;
+    for (let i = 0; i < 20; i++) {
+      const res = stepRealisticSteering(
+        st,
+        {
+          rawSteer: 0.75,
+          speedFwd: 16,
+          speedLat: 0,
+          maxSteerRad: 0.56,
+          wheelBase: 2.7,
+          baseGrip: 7.5,
+          handbrake: false,
+          sandFactor: 0,
+          isPlayer: true,
+          sensitivity,
+        },
+        0.025,
+      );
+      maxSteer = Math.max(maxSteer, Math.abs(res.steerAngle));
+      maxOmega = Math.max(maxOmega, Math.abs(res.omega));
+    }
+    return { maxSteer, maxOmega };
+  };
+  const low = runTurn(0.25);
+  const mid = runTurn(1.0);
+  const high = runTurn(2.0);
+  assert.ok(low.maxSteer < mid.maxSteer && mid.maxSteer < high.maxSteer, 'Higher sensitivity must increase steer authority');
+  assert.ok(low.maxOmega < mid.maxOmega && mid.maxOmega < high.maxOmega, 'Higher sensitivity must increase yaw response');
+});
+
+test('realistic aim-assist magnetizes shots toward head/chest, keeps first-shot precision crisp, and auto-recovers recoil', () => {
+  const target = [{ id: 7, x: 0.35, y: 0, z: 18, heightScale: 1, hostile: true }];
+  const res = computeAimAssist(0, 1.55, 0, 0, 0, 1, target, true, false, 90);
+  assert.equal(res.locked, true, 'Target within ADS cone must lock');
+  assert.equal(res.targetId, 7);
+  assert.ok(res.dx > 0.008, 'Shot vector should gently steer toward off-center target');
+
+  const rec = createRecoilState();
+  const s1 = registerPlayerShot(rec, 0.02, true, false);
+  const s2 = registerPlayerShot(rec, 0.02, true, false);
+  assert.ok(s1.spreadMul < s2.spreadMul, 'First tap shot must be tighter than rapid follow-up');
+  assert.ok(rec.accumPitch > 0);
+  let recovered = 0;
+  for (let i = 0; i < 30; i++) recovered += stepRecoilRecovery(rec, 0.05);
+  assert.ok(recovered > 0.015 && rec.accumPitch < 0.002, 'Recoil must smoothly auto-recover back to origin');
+});
+
+test('30-foot+ pistol headshot triggers slomo grayscale killcam and ramps cleanly back to 1.0x color', () => {
+  assert.equal(shouldTriggerPistolHeadshotSlomo('pistol', true, PISTOL_HEADSHOT_MIN_METERS + 0.5), true);
+  assert.equal(shouldTriggerPistolHeadshotSlomo('silenced', true, 14.0), true);
+  assert.equal(shouldTriggerPistolHeadshotSlomo('pistol', true, 6.0), false, 'Under 30ft should not trigger longshot slomo');
+  assert.equal(shouldTriggerPistolHeadshotSlomo('pistol', false, 18.0), false, 'Body shot should not trigger headshot slomo');
+  assert.equal(shouldTriggerPistolHeadshotSlomo('rifle', true, 25.0), false, 'Rifle should not trigger pistol headshot slomo');
+
+  const st = createSlomoKillcamState();
+  triggerPistolHeadshotSlomo(st, 12.2);
+  assert.equal(st.active, true);
+  assert.equal(st.distanceFeet, 40);
+  assert.ok(st.timeScale <= 0.25 && st.grayscale >= 0.9, 'Peak killcam must be slow-mo & grayscale');
+  for (let i = 0; i < 6; i++) stepSlomoKillcam(st, 0.1);
+  assert.equal(st.active, true);
+  assert.ok(st.grayscale > 0.85, 'Mid-killcam plateau must hold monochrome look');
+  for (let i = 0; i < 25; i++) stepSlomoKillcam(st, 0.1);
+  assert.equal(st.active, false);
+  assert.equal(st.timeScale, 1.0);
+  assert.equal(st.grayscale, 0.0);
+});
+
+test('PBR microtexture fidelity slider maps cleanly across 64px / 128px / 256px tiers and clamps bounds', () => {
+  assert.equal(getResolutionForFidelity(0.4), 64);
+  assert.equal(getResolutionForFidelity(1.0), 128);
+  assert.equal(getResolutionForFidelity(1.8), 256);
+  microtextures.setFidelity(1.75);
+  assert.equal(microtextures.getResolution(), 256);
+  microtextures.setFidelity(0.35);
+  assert.equal(microtextures.getResolution(), 64);
+  microtextures.setFidelity(1.0);
+  assert.equal(microtextures.getResolution(), 128);
+});
+
+test('evaluateOrganicMotionOverlay produces realistic finite breathing, pelvic shift, spine counter-twist, and turn head stabilization', () => {
+  const idle = evaluateOrganicMotionOverlay({
+    clockSec: 1.2, speed: 0, stridePhase: 0, turnRate: 0, aiming: false, recoilKick: 0, airborne: false, seedOffset: 0.3,
+  });
+  const runTurn = evaluateOrganicMotionOverlay({
+    clockSec: 1.2, speed: 5.2, stridePhase: 0.9, turnRate: 2.4, aiming: false, recoilKick: 0, airborne: false, seedOffset: 0.3,
+  });
+  const firing = evaluateOrganicMotionOverlay({
+    clockSec: 1.2, speed: 0.2, stridePhase: 0, turnRate: 0, aiming: true, recoilKick: 0.85, airborne: false, seedOffset: 0.3,
+  });
+  for (const v of [...Object.values(idle), ...Object.values(runTurn), ...Object.values(firing)]) {
+    assert.ok(Number.isFinite(v), 'Organic motion overlay outputs must always be finite');
+  }
+  assert.ok(Math.abs(runTurn.pelvisShiftX) > Math.abs(idle.pelvisShiftX), 'Running must increase lateral pelvic weight shift');
+  assert.ok(runTurn.headStabilizeYaw > 0.1, 'Turning must elicit vestibulo-ocular head anticipation');
+  assert.ok(firing.recoilArmKickX < -0.15 && firing.recoilLeanBack < -0.05, 'Firing recoil must kick weapon arm & torso back');
+});
+
+test('SideQuestManager provides 18 unique side quests across 7 categories including casino, dealership, and marksman quests', () => {
+  assert.ok(SIDE_QUESTS.length >= 18, `Expected at least 18 side quests, got ${SIDE_QUESTS.length}`);
+  const ids = new Set(SIDE_QUESTS.map((q) => q.id));
+  assert.equal(ids.size, SIDE_QUESTS.length, 'All side quest IDs must be unique');
+  const cats = new Set(SIDE_QUESTS.map((q) => q.category));
+  for (const req of ['casino', 'dealership', 'marksman', 'vigilante', 'courier', 'motorsport', 'rescue']) {
+    assert.ok(cats.has(req as any), `Missing side quest category: ${req}`);
+  }
+  const mgr = new SideQuestManager();
+  const q1 = mgr.accept('sq_casino_vip');
+  assert.ok(q1);
+  assert.equal(mgr.getSnapshot().active?.id, 'sq_casino_vip');
+  const stepDone = mgr.onPlayerTick(q1!.targetX, q1!.targetZ, 0, 'casino');
+  assert.equal(stepDone.completed?.id, 'sq_casino_vip');
+  assert.equal(mgr.isCompleted('sq_casino_vip'), true);
+
+  const qMark = mgr.accept('sq_marksman_30ft');
+  assert.ok(qMark);
+  const longDone = mgr.onPistolLongshotHeadshot();
+  assert.equal(longDone.completed?.id, 'sq_marksman_30ft');
+});
+
+test('3D grass field builds multi-segment tapered curved blades with vertex colors and excludes roads, beaches, and ocean', () => {
+  const tuft = createGrassTuftGeometry();
+  const pos = tuft.getAttribute('position');
+  const col = tuft.getAttribute('color');
+  assert.ok(pos && pos.count >= 35, `Expected multi-blade curved tuft vertices (>=35), got ${pos?.count}`);
+  assert.ok(col && col.count === pos.count, 'Grass tuft must include root-to-tip vertex colors');
+  let maxY = 0;
+  for (let i = 0; i < pos.count; i++) maxY = Math.max(maxY, pos.getY(i));
+  assert.ok(maxY >= 0.34 && maxY <= 0.6, `Expected realistic grass blade height (~0.42m), got ${maxY}`);
+  tuft.dispose();
+
+  // Central Park grass lot should be eligible; ocean & outer highway should be excluded
+  assert.equal(isGrassEligible(1400, 0), false, 'Ocean must never spawn grass');
+  assert.equal(isGrassEligible(0, -1400), false, 'North rural highway pavement must not spawn grass');
+});
+
+
 
 
 

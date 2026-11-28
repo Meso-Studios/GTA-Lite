@@ -1,7 +1,24 @@
 // Main game engine: renderer, loop, player, world simulation, HUD data.
 import * as THREE from 'three';
-import { RayTracePipeline } from './raytracePass';
+import { RayTracePipeline, type RayTracePostFX } from './raytracePass';
 import { buildRtxEnvironments, RtxEnvPack } from './rtxEnv';
+import {
+  type AimTargetCandidate,
+  type RecoilState,
+  type SlomoKillcamState,
+  computeAimAssist,
+  createRecoilState,
+  createSlomoKillcamState,
+  stepRecoilRecovery,
+  stepSlomoKillcam,
+  triggerPistolHeadshotSlomo,
+} from './aimAssist';
+import {
+  SIDE_QUESTS,
+  type SideQuestDef,
+  type SideQuestHudSummary,
+  SideQuestManager,
+} from './sideQuests';
 import {
   BOUNDS, DECK, HALF, MovementState, NB, Rng, WEAPONS, WEAPON_ORDER, WEAPON_SHOP_ORDER, WeaponId,
   applySandFootPhysics, blockCenter, clamp, createMovementState, dampAngle, districtNameAt, groundHeight,
@@ -9,7 +26,13 @@ import {
 } from './config';
 import { buildCity, CityData } from './city';
 import { Room, roomForDoor } from './interiors';
-import { interiorFloorHeight } from './interiorMath';
+import { InteriorEscalatorSpec, InteriorSwingDoorSpec, interiorFloorHeight, sampleEscalatorConveyance } from './interiorMath';
+import {
+  InteriorPersistenceStore,
+  SavedIndoorImpact,
+  SavedIndoorPed,
+  makeBuildingKey,
+} from './interiorPersistence';
 import type { Door } from './buildings';
 import { Vehicle } from './vehicle';
 import { Ped, PedKind } from './ped';
@@ -103,7 +126,7 @@ export interface HudState {
   speed: number | null; vehicleName: string | null; vehicleHp: number | null; radio: string | null;
   packages: [number, number];
   finder: { on: boolean; dist: number; angle: number } | null;
-  aiming: boolean; crosshair: boolean; hurt: number; fps: number; mapOpen: boolean; paused: boolean; locked: boolean; scope: boolean; allies: number; recruitable: number; grenades: number; indoor: string | null;
+  aiming: boolean; crosshair: boolean; hurt: number; fps: number; mapOpen: boolean; paused: boolean; locked: boolean; scope: boolean; scopeZoom: number; scopeRangeM: number | null; scopeBreath: number; scopeHoldingBreath: boolean; allies: number; recruitable: number; grenades: number; indoor: string | null;
   nextMission: string | null;
   crouching: boolean; sliding: boolean; district: string; surface: string; sandGrip: boolean; coords: [number, number];
   aircraft: { altitude: number; airspeed: number; throttle: number; stalling: boolean; onGround: boolean } | null;
@@ -146,6 +169,26 @@ export interface HudState {
     thought: string;
     history: GeminiTalkMessage[];
   } | null;
+  carSensitivity: number;
+  motionBlurEnabled: boolean;
+  motionBlurIntensity: number;
+  microFidelity: number;
+  microResolution: number;
+  aimLock: {
+    locked: boolean;
+    headLocked: boolean;
+    hitmarkerT: number;
+    hitmarkerHead: boolean;
+    spreadPx: number;
+  };
+  slomo: {
+    active: boolean;
+    grayscale: number;
+    distFeet: number;
+    label: string;
+    timeScale: number;
+  };
+  sideQuests: SideQuestHudSummary;
 }
 export interface GameEvents {
   onHud(h: HudState): void;
@@ -241,6 +284,18 @@ export class Game {
   voicesEnabled = true;
   hdGlbMode = isGlbWorldMode();
   microtexturesEnabled = true;
+  microFidelity = 1.0;
+  carSensitivity = 1.0;
+  motionBlurEnabled = false;
+  motionBlurIntensity = 0.55;
+  recoilState: RecoilState = createRecoilState();
+  slomoKillcam: SlomoKillcamState = createSlomoKillcamState();
+  sideQuests = new SideQuestManager();
+  aimLock = { locked: false, headLocked: false, hitmarkerT: 0, hitmarkerHead: false, spreadPx: 8 };
+  private prevCamYaw = 0;
+  private prevCamPitch = 0;
+  private blurVecX = 0;
+  private blurVecY = 0;
   experimentalBodyLogic = false;
   geminiNpcsEnabled = false;
   geminiDirector = new GeminiNpcDirector();
@@ -394,10 +449,10 @@ export class Game {
       this.rayTrace = new RayTracePipeline(w, h, pr);
     }
 
-    // Ultra-realistic 4-light physically balanced outdoor GI + rim rig
-    this.hemi = new THREE.HemisphereLight(0xc2dcff, 0x6f614f, 0.88);
+    // Physically grounded 4-light outdoor GI + soft rim rig
+    this.hemi = new THREE.HemisphereLight(0xc2dcff, 0x6f614f, 0.82);
     this.scene.add(this.hemi);
-    this.sun = new THREE.DirectionalLight(0xfff5e4, 3.15);
+    this.sun = new THREE.DirectionalLight(0xfff5e4, 2.75);
     this.sun.castShadow = shadowsOn;
     this.sun.shadow.mapSize.set(Q.shadowSize, Q.shadowSize);
     const sc = this.sun.shadow.camera;
@@ -406,16 +461,14 @@ export class Game {
     this.sun.shadow.normalBias = 0.03;
     this.sun.shadow.radius = 2.2;
     this.scene.add(this.sun, this.sun.target);
-    // Cool sky / warm ground bounce fill light
-    this.bounceLight = new THREE.DirectionalLight(0x7cc4ff, 0.56);
+    this.bounceLight = new THREE.DirectionalLight(0x7cc4ff, 0.34);
     this.scene.add(this.bounceLight, this.bounceLight.target);
-    // Subtle high-angle rim light to sculpt GLB car creases, silhouettes & wet clearcoat
-    this.rimLight = new THREE.DirectionalLight(0xffe6cc, 0.32);
+    this.rimLight = new THREE.DirectionalLight(0xffe6cc, 0.18);
     this.scene.add(this.rimLight, this.rimLight.target);
-    // Dual opposite-side elevated neon street bounce GI at dusk/night (soft wide wash, zero hotspot burn)
     this.neonLight = new THREE.PointLight(0xff4da2, 0, 74, 1.35);
     this.neonLight2 = new THREE.PointLight(0x28d8f8, 0, 74, 1.35);
     this.scene.add(this.neonLight, this.neonLight2);
+    this.scene.add(this.indoorDynamicGroup, this.indoorDecalsGroup);
     for (let i = 0; i < 2; i++) {
       const s = new THREE.SpotLight(0xfff0cf, 0, 75, 0.5, 0.6, 1.4);
       this.scene.add(s, s.target);
@@ -452,8 +505,8 @@ export class Game {
       console.warn('[SanNova] WebGL context lost — pausing heavy GLB upgrades');
     });
     this.glbUnsub = onGlbAssetReady(() => this.syncGlbAssets());
-    for (let i = 0; i < 6; i++) {
-      const l = new THREE.PointLight(0xffe8c4, 0, 26, 1.65);
+    for (let i = 0; i < 12; i++) {
+      const l = new THREE.PointLight(0xfff5e6, 0, 24, 1.0);
       this.scene.add(l);
       this.intLights.push(l);
     }
@@ -620,6 +673,11 @@ export class Game {
   };
   onWheel = (e: WheelEvent) => {
     if (this.state !== 'playing' || this.player.vehicle || this.phone.open || this.bankOpen || this.geminiTalkPedId !== null) return;
+    if (this.scope) {
+      this.scopeZoom = e.deltaY < 0 ? 8 : 4;
+      this.audio.beep(this.scopeZoom === 8 ? 1020 : 760, 0.05);
+      return;
+    }
     this.cycleWeapon(e.deltaY > 0 ? 1 : -1);
   };
   onCtx = (e: Event) => e.preventDefault();
@@ -695,6 +753,91 @@ export class Game {
     this.city.setMicrotextures(enabled);
     microtextures.setEnabled(enabled);
     this.staticDirty = true;
+    this.emitHud(true);
+  }
+  setMicroFidelity(fidelity: number) {
+    this.microFidelity = clamp(fidelity, 0.25, 2.0);
+    microtextures.setFidelity(this.microFidelity);
+    this.staticDirty = true;
+    this.emitHud(true);
+  }
+  setCarSensitivity(sensitivity: number) {
+    this.carSensitivity = clamp(sensitivity, 0.25, 2.0);
+    this.emitHud(true);
+  }
+  setMotionBlurEnabled(enabled: boolean) {
+    this.motionBlurEnabled = enabled;
+    this.staticDirty = true;
+    this.emitHud(true);
+  }
+  setMotionBlurIntensity(intensity: number) {
+    this.motionBlurIntensity = clamp(intensity, 0.0, 1.0);
+    this.staticDirty = true;
+    this.emitHud(true);
+  }
+  onPlayerHitFeedback(head: boolean) {
+    this.aimLock.hitmarkerT = head ? 0.34 : 0.22;
+    this.aimLock.hitmarkerHead = head;
+    this.audio.beep(head ? 1180 : 680, head ? 0.07 : 0.045);
+  }
+  triggerPistolHeadshotSlomo(distMeters: number) {
+    triggerPistolHeadshotSlomo(this.slomoKillcam, distMeters);
+    this.audio.beep(98, 0.42);
+    this.ev.onToast(`${this.slomoKillcam.label}!`, 'good');
+    this.handleSideQuestStep(this.sideQuests.onPistolLongshotHeadshot());
+    this.staticDirty = true;
+    this.emitHud(true);
+  }
+  onPlayerKilledPed(x: number, z: number) {
+    this.handleSideQuestStep(this.sideQuests.onEnemyEliminated(x, z));
+  }
+  private handleSideQuestStep(res: { completed?: SideQuestDef; progressChanged?: boolean }) {
+    if (res.completed) {
+      this.player.money += res.completed.reward;
+      this.audio.missionPass();
+      this.ev.onToast(`SIDE QUEST COMPLETE: ${res.completed.title} (+$${res.completed.reward.toLocaleString()})`, 'good');
+      this.waypoint = null;
+      this.emitHud(true);
+    } else if (res.progressChanged) {
+      const act = this.sideQuests.getSnapshot().active;
+      if (act) this.ev.onToast(`${act.title}: ${act.progress}/${act.requiredCount}`, 'info');
+      this.emitHud(true);
+    }
+  }
+  acceptSideQuest(id: string) {
+    const def = this.sideQuests.accept(id);
+    if (!def) return;
+    this.waypoint = { x: def.targetX, z: def.targetZ };
+    if (def.spawnEnemies && def.spawnEnemies > 0) {
+      const rng = new Rng(def.id.length * 913 + Math.round(def.targetX));
+      for (let i = 0; i < def.spawnEnemies; i++) {
+        const ang = (i / def.spawnEnemies) * Math.PI * 2;
+        const ex = def.targetX + Math.cos(ang) * (5 + i * 2.2);
+        const ez = def.targetZ + Math.sin(ang) * (5 + i * 2.2);
+        const ped = new Ped('gang', gangLook(rng, 0x991b1b));
+        ped.hostile = true;
+        ped.aggro = true;
+        ped.arm(i % 2 === 0 ? 'pistol' : 'smg');
+        ped.place(ex, ez);
+        upgradeHumanToGlb(ped.rig);
+        this.addPed(ped);
+      }
+    }
+    if (def.spawnVehicle) {
+      doSpawnVehicle(this, def.spawnVehicle, def.targetX + 5.5, def.targetZ + 4, 0, {
+        mode: 'idle',
+        paint: 0xe11d48,
+        mission: true,
+      });
+    }
+    this.audio.beep(640, 0.08);
+    this.ev.onToast(`Side Quest Started: ${def.title} — ${def.objectiveText}`, 'good');
+    this.emitHud(true);
+  }
+  cancelSideQuest() {
+    this.sideQuests.cancel();
+    this.waypoint = null;
+    this.ev.onToast('Active side quest cancelled', 'info');
     this.emitHud(true);
   }
   setExperimentalBodyLogic(enabled: boolean) {
@@ -1563,7 +1706,9 @@ export class Game {
     const p = this.player;
     const h = this.city.places.hospital ?? { x: -342, z: -183 };
     for (let i = this.peds.length - 1; i >= 0; i--) if (this.peds[i].tag === 'playerbody') this.removePed(this.peds[i]);
-    if (this.interior) { this.interior = null; this.world.boundsOff = false; this.intLights.forEach((l) => (l.intensity = 0)); for (let i = this.peds.length - 1; i >= 0; i--) if (this.peds[i].indoor) this.removePed(this.peds[i]); }
+    if (this.interior) {
+      this.saveAndCleanupInterior();
+    }
     const fee = Math.min(p.money, Math.floor(p.money * 0.1) + 100);
     p.money -= fee;
     p.hp = 100; p.armor = 0; p.alive = true;
@@ -1720,12 +1865,15 @@ export class Game {
       }
       return;
     }
+    const rawDt = dt;
+    stepSlomoKillcam(this.slomoKillcam, rawDt);
     if (this.state === 'dead') {
       this.deadT += dt;
       this.timeScale = lerp(this.timeScale, 0.3, 0.1);
       if (this.deadT > 4.2) this.respawn();
     }
-    dt *= this.timeScale;
+    const effectiveScale = this.state === 'dead' ? this.timeScale : this.slomoKillcam.timeScale;
+    dt *= effectiveScale;
     this.dt = dt;
     this.time += dt;
     if (this.interior) this.insideT += dt;
@@ -1744,9 +1892,21 @@ export class Game {
   };
 
   render() {
-    if (this.rtxEnabled && this.rayTrace && !this.isSoftwareGl) {
+    const usePost =
+      this.rayTrace &&
+      !this.isSoftwareGl &&
+      (this.rtxEnabled || this.motionBlurEnabled || this.slomoKillcam.grayscale > 0.01);
+    if (usePost && this.rayTrace) {
       this._sunPosTmp.copy(this.sun.position).sub(this.sun.target.position);
-      const wetness = this.interior ? 0.14 : (this.night > 0.4 ? 0.34 : 0.2);
+      // Restrained wetness so dry streets & building interiors stay naturally matte instead of glossy glass
+      const wetness = this.interior ? 0.02 : (this.night > 0.4 ? 0.12 : 0.03);
+      const fx: RayTracePostFX = {
+        motionBlur: this.motionBlurEnabled ? this.motionBlurIntensity : 0,
+        blurX: this.blurVecX,
+        blurY: this.blurVecY,
+        grayscale: this.slomoKillcam.grayscale,
+        slomoVignette: this.slomoKillcam.vignette,
+      };
       this.rayTrace.render(
         this.renderer,
         this.scene,
@@ -1754,7 +1914,8 @@ export class Game {
         this._sunPosTmp,
         this.night,
         wetness,
-        1.0,
+        this.rtxEnabled ? 1.0 : 0.0,
+        fx,
       );
     } else {
       this.renderer.render(this.scene, this.camera);
@@ -1776,6 +1937,9 @@ export class Game {
     }
     if (this.phone.activeCall) {
       this.phone.activeCall.elapsedSec += dt;
+    }
+    if (this.aimLock.hitmarkerT > 0) {
+      this.aimLock.hitmarkerT = Math.max(0, this.aimLock.hitmarkerT - dt);
     }
     p.hurtT = Math.max(0, p.hurtT - dt * 1.4);
     // toggles (suppressed while typing in smartphone, bank modal, or Gemini NPC talk)
@@ -1819,8 +1983,10 @@ export class Game {
       streamParked(this, dt);
       streamPeds(this, dt);
       streamCrowds(this, dt);
-      updatePolice(this, dt);
+    } else {
+      this.updateIndoorDynamics(dt);
     }
+    updatePolice(this, dt);
     for (const gr of this.grenadeList.slice()) {
       gr.update(dt, this);
       if (gr.done) { this.scene.remove(gr.mesh); this.grenadeList.splice(this.grenadeList.indexOf(gr), 1); }
@@ -1833,6 +1999,14 @@ export class Game {
     this.allies = this.allies.filter((a) => this.peds.includes(a));
     this.updateWanted(dt);
     this.updateMissions(dt);
+    this.handleSideQuestStep(
+      this.sideQuests.onPlayerTick(
+        p.x,
+        p.z,
+        p.vehicle ? Math.abs(p.vehicle.fwd) : 0,
+        this.interior ? this.interior.room.kind : null,
+      ),
+    );
     this.updateSub(dt);
     this.updateFinder(dt);
     this.updateRoute(dt);
@@ -2031,68 +2205,84 @@ export class Game {
     U.night.value = this.night;
     U.time.value = this.time;
     (this.scene.fog as THREE.Fog).color.copy(hor).lerp(top, 0.08).multiplyScalar(0.95);
-    this.hemi.color.set(0x283c6b).lerp(new THREE.Color(0xbce0ff), day).lerp(new THREE.Color(0xffb48a), dusk * 0.34);
-    this.hemi.groundColor.set(0x12151f).lerp(new THREE.Color(0x7c6952), day);
-    this.hemi.intensity = (this.isSoftwareGl ? 0.44 : 0.34) + day * (this.isSoftwareGl ? 0.54 : 0.56);
-    const useSun = elev > 0.02;
-    const dir = useSun ? sunDir : sunDir.clone().negate();
-    const cx = this.camX, cz = this.camZ;
-    this.sun.position.set(cx + dir.x * 220, dir.y * 220 + 20, cz + dir.z * 220);
-    this.sun.target.position.set(cx, 0, cz);
-    this.sun.color.copy(useSun ? sunC : new THREE.Color(0x94b4ff));
-    this.sun.intensity = useSun ? day * (this.rtxEnabled ? 3.7 : 3.05) * (0.42 + 0.58 * smooth(0, 0.35, elev)) : this.night * (this.rtxEnabled ? 0.72 : 0.48);
-    // Tighten sun shadow frustum when RTX is enabled for crisper contact shadows
-    if (this.rtxShadowTight !== this.rtxEnabled) {
-      this.rtxShadowTight = this.rtxEnabled;
-      const sc = this.sun.shadow.camera;
-      const span = this.rtxEnabled ? 64 : 96;
-      sc.left = -span; sc.right = span; sc.top = span; sc.bottom = -span;
-      sc.updateProjectionMatrix();
-      this.sun.shadow.bias = this.rtxEnabled ? -0.00022 : -0.00048;
-      this.sun.shadow.normalBias = this.rtxEnabled ? 0.026 : 0.05;
-      this.sun.shadow.radius = this.rtxEnabled ? 2.0 : 3.0;
-    }
-    // Dynamic HDR PMREM environment selection (Day / Golden-Hour Sunset / Vice Neon Night / Flat)
-    const targetEnv = !this.rtxEnabled
-      ? this.rtxEnvs.flat
-      : dusk > 0.34 && this.night < 0.72
-        ? this.rtxEnvs.sunset
-        : this.night > 0.45
-          ? this.rtxEnvs.night
-          : this.rtxEnvs.day;
-    if (this.scene.environment !== targetEnv) {
-      this.scene.environment = targetEnv;
-    }
-    // Multi-bounce sky/golden GI fill + crisp silhouette rim sculpting
-    this.bounceLight.position.set(cx - dir.x * 160, 48, cz - dir.z * 160);
-    this.bounceLight.target.position.set(cx, 0, cz);
-    this.bounceLight.color.set(0x3ec4ff).lerp(new THREE.Color(0xff9852), dusk * 0.74 + (1 - this.night) * 0.24);
-    this.bounceLight.intensity = this.rtxEnabled ? (0.48 + day * 0.44 + dusk * 0.46) : 0.14;
-    this.rimLight.position.set(cx - dir.z * 120, 92, cz + dir.x * 120);
-    this.rimLight.target.position.set(cx, 0, cz);
-    this.rimLight.color.set(0xffe4c4).lerp(new THREE.Color(0x62b4ff), this.night * 0.8);
-    this.rimLight.intensity = this.rtxEnabled ? (0.34 + dusk * 0.38 + this.night * 0.22) : 0.08;
-    if (this.rtxEnabled && !this.interior) {
-      const neonPhase = (Math.sin(this.time * 0.35 + this.player.x * 0.018) + 1) * 0.5;
-      const sx = Math.cos(this.camYaw), sz = -Math.sin(this.camYaw);
-      // Elevated soft warm coral/magenta storefront bounce (casts realistic tint without blowing out asphalt)
-      this.neonLight.color.set(0xff5298).lerp(new THREE.Color(0xff8e4a), dusk * 0.65 + neonPhase * 0.25);
-      this.neonLight.position.set(this.player.x + sx * 17, this.player.y + 9.5, this.player.z + sz * 17);
-      this.neonLight.intensity = this.night * 3.2 + dusk * 0.7;
-      // Elevated cool cyan/amber opposite storefront bounce
-      this.neonLight2.color.set(0x2cd8ff).lerp(new THREE.Color(0xffb868), dusk * 0.55 + (1 - neonPhase) * 0.25);
-      this.neonLight2.position.set(this.player.x - sx * 17, this.player.y + 9.5, this.player.z - sz * 17);
-      this.neonLight2.intensity = this.night * 2.8 + dusk * 0.6;
-    } else {
+    if (this.interior) {
+      // Bright, airy, well-balanced architectural interior illumination (crisp contrast without blowing out white walls)
+      this.hemi.color.setHex(0xf4f8ff);
+      this.hemi.groundColor.setHex(0xc8bba8);
+      this.hemi.intensity = 1.15;
+      this.sun.position.set(this.interior.room.cx + 42, 34, this.interior.room.cz + 32);
+      this.sun.target.position.set(this.interior.room.cx, 0, this.interior.room.cz);
+      this.sun.color.setHex(0xfff6e8);
+      this.sun.intensity = 1.32;
+      this.bounceLight.position.set(this.interior.room.cx - 38, 22, this.interior.room.cz - 28);
+      this.bounceLight.target.position.set(this.interior.room.cx, 0, this.interior.room.cz);
+      this.bounceLight.color.setHex(0xedf2fa);
+      this.bounceLight.intensity = 0.50;
+      this.rimLight.intensity = 0.25;
       this.neonLight.intensity = 0;
       this.neonLight2.intensity = 0;
+      this.renderer.toneMappingExposure = 1.08;
+      (this.scene as any).environmentIntensity = 0.16;
+    } else {
+      this.hemi.color.set(0x3a5288).lerp(new THREE.Color(0xd8ecff), day).lerp(new THREE.Color(0xffc098), dusk * 0.32);
+      this.hemi.groundColor.set(0x1c2230).lerp(new THREE.Color(0x9a8974), day);
+      this.hemi.intensity = (this.isSoftwareGl ? 0.62 : 0.52) + day * (this.isSoftwareGl ? 0.96 : 0.98);
+      const useSun = elev > 0.02;
+      const dir = useSun ? sunDir : sunDir.clone().negate();
+      const cx = this.camX, cz = this.camZ;
+      this.sun.position.set(cx + dir.x * 220, dir.y * 220 + 20, cz + dir.z * 220);
+      this.sun.target.position.set(cx, 0, cz);
+      this.sun.color.copy(useSun ? sunC : new THREE.Color(0xa6c4ff));
+      this.sun.intensity = useSun ? day * (this.rtxEnabled ? 3.05 : 2.85) * (0.48 + 0.52 * smooth(0, 0.35, elev)) : this.night * (this.rtxEnabled ? 0.68 : 0.52);
+      // Tighten sun shadow frustum when RTX is enabled for crisper contact shadows
+      if (this.rtxShadowTight !== this.rtxEnabled) {
+        this.rtxShadowTight = this.rtxEnabled;
+        const sc = this.sun.shadow.camera;
+        const span = this.rtxEnabled ? 64 : 96;
+        sc.left = -span; sc.right = span; sc.top = span; sc.bottom = -span;
+        sc.updateProjectionMatrix();
+        this.sun.shadow.bias = this.rtxEnabled ? -0.00022 : -0.00048;
+        this.sun.shadow.normalBias = this.rtxEnabled ? 0.026 : 0.05;
+        this.sun.shadow.radius = this.rtxEnabled ? 2.0 : 3.0;
+      }
+      // Dynamic HDR PMREM environment selection (Day / Golden-Hour Sunset / Night / Flat)
+      const targetEnv = !this.rtxEnabled
+        ? this.rtxEnvs.flat
+        : dusk > 0.34 && this.night < 0.72
+          ? this.rtxEnvs.sunset
+          : this.night > 0.45
+            ? this.rtxEnvs.night
+            : this.rtxEnvs.day;
+      if (this.scene.environment !== targetEnv) {
+        this.scene.environment = targetEnv;
+      }
+      // Natural multi-bounce sky/ground GI fill (non-shiny architectural balance)
+      this.bounceLight.position.set(cx - dir.x * 160, 48, cz - dir.z * 160);
+      this.bounceLight.target.position.set(cx, 0, cz);
+      this.bounceLight.color.set(0x88c8f2).lerp(new THREE.Color(0xf6b888), dusk * 0.65 + (1 - this.night) * 0.22);
+      this.bounceLight.intensity = this.rtxEnabled ? (0.42 + day * 0.38 + dusk * 0.28) : 0.30;
+      this.rimLight.position.set(cx - dir.z * 120, 92, cz + dir.x * 120);
+      this.rimLight.target.position.set(cx, 0, cz);
+      this.rimLight.color.set(0xfff0dd).lerp(new THREE.Color(0x7cb8f0), this.night * 0.8);
+      this.rimLight.intensity = this.rtxEnabled ? (0.18 + dusk * 0.20 + this.night * 0.14) : 0.12;
+      if (this.rtxEnabled) {
+        const neonPhase = (Math.sin(this.time * 0.35 + this.player.x * 0.018) + 1) * 0.5;
+        const sx = Math.cos(this.camYaw), sz = -Math.sin(this.camYaw);
+        this.neonLight.color.set(0xf05c9a).lerp(new THREE.Color(0xf29658), dusk * 0.65 + neonPhase * 0.25);
+        this.neonLight.position.set(this.player.x + sx * 17, this.player.y + 9.5, this.player.z + sz * 17);
+        this.neonLight.intensity = this.night * 2.1 + dusk * 0.4;
+        this.neonLight2.color.set(0x3cc8e8).lerp(new THREE.Color(0xf2ba74), dusk * 0.55 + (1 - neonPhase) * 0.25);
+        this.neonLight2.position.set(this.player.x - sx * 17, this.player.y + 9.5, this.player.z - sz * 17);
+        this.neonLight2.intensity = this.night * 1.9 + dusk * 0.36;
+      } else {
+        this.neonLight.intensity = 0;
+        this.neonLight2.intensity = 0;
+      }
+      this.renderer.toneMappingExposure = lerp(this.rtxEnabled ? 1.06 : 1.04, this.rtxEnabled ? 1.12 : 1.08, day);
+      (this.scene as any).environmentIntensity = this.rtxEnabled
+        ? (0.14 + day * 0.16 + dusk * 0.10 + this.night * 0.14)
+        : (0.10 + day * 0.14);
     }
-    if (!this.interior) {
-      this.renderer.toneMappingExposure = lerp(this.rtxEnabled ? 1.18 : 1.06, this.rtxEnabled ? 1.12 : 1.02, day);
-    }
-    (this.scene as any).environmentIntensity = this.rtxEnabled
-      ? (0.38 + day * 0.82 + dusk * 0.18 + this.night * 0.38)
-      : (0.16 + day * 0.45);
     this.city.setNight(this.night);
     headMat.emissiveIntensity = 0.2 + this.night * 2.2;
     tailDim.emissiveIntensity = 0.18 + this.night * 0.95;
@@ -2125,11 +2315,28 @@ export class Game {
     // weapon keys (1-9, 0, -, =, Q/Z cycle)
     const slotCodes = ['Digit1', 'Digit2', 'Digit3', 'Digit4', 'Digit5', 'Digit6', 'Digit7', 'Digit8', 'Digit9', 'Digit0', 'Minus', 'Equal'];
     slotCodes.forEach((code, i) => { if (k.pressed.has(code) && WEAPON_ORDER[i]) this.selectWeapon(WEAPON_ORDER[i]); });
-    if (k.pressed.has('KeyQ')) this.cycleWeapon(1);
+    if (k.pressed.has('KeyQ')) {
+      if (this.scope) {
+        this.scopeZoom = this.scopeZoom === 4 ? 8 : 4;
+        this.audio.beep(this.scopeZoom === 8 ? 1020 : 760, 0.05);
+      } else {
+        this.cycleWeapon(1);
+      }
+    }
     if (k.pressed.has('KeyZ')) this.cycleWeapon(-1);
     const meleeW = isMeleeWeapon(p.weapon);
     if (this.scope && (meleeW || !!p.vehicle)) this.scope = false;
     const aiming = (k.aim || this.touch.aim || this.playerFiring || this.scope) && !meleeW;
+
+    // Realistic scope breath-hold stamina & gentle figure-8 breathing sway
+    const holdBreathInput = this.scope && (k.keys.has('ShiftLeft') || k.keys.has('ShiftRight'));
+    if (holdBreathInput && this.scopeBreath > 0.04) {
+      this.scopeHoldingBreath = true;
+      this.scopeBreath = Math.max(0, this.scopeBreath - dt * 0.24);
+    } else {
+      this.scopeHoldingBreath = false;
+      this.scopeBreath = Math.min(1, this.scopeBreath + dt * 0.18);
+    }
 
     // camera look
     this.lookInput(dt);
@@ -2140,7 +2347,7 @@ export class Game {
     const ml = Math.hypot(mx, mz);
     if (ml > 1) { mx /= ml; mz /= ml; }
 
-    const sprint = k.keys.has('ShiftLeft') || k.keys.has('ShiftRight') || this.touch.sprint;
+    const sprint = !this.scope && (k.keys.has('ShiftLeft') || k.keys.has('ShiftRight') || this.touch.sprint);
     const crouch = k.keys.has('ControlLeft') || k.keys.has('KeyC') || this.touch.crouch;
     const crouchPressed = k.pressed.has('ControlLeft') || k.pressed.has('KeyC');
     const gh = this.groundAt(p.x, p.z, p.y);
@@ -2184,7 +2391,17 @@ export class Game {
       }
     }
 
-    p.x += p.vx * dt; p.z += p.vz * dt;
+    // Apply moving indoor escalator conveyance smoothly!
+    let escVx = 0, escVz = 0;
+    if (this.interior) {
+      const esc = sampleEscalatorConveyance(this.interior.room.elevation, p.x, p.z, p.y);
+      if (esc.onEscalator) {
+        escVx = esc.vx;
+        escVz = esc.vz;
+      }
+    }
+
+    p.x += (p.vx + escVx) * dt; p.z += (p.vz + escVz) * dt;
     this.world.resolve(p.x, p.z, 0.4, p.y, _po);
     if (_po.hit) { p.x = _po.x; p.z = _po.z; }
     // vehicles block the player
@@ -2270,10 +2487,11 @@ export class Game {
 
   lookInput(dt: number) {
     const k = this.input;
-    const sens = 0.0024 * (this.scope ? 0.32 : 1);
+    const zoomScale = this.scope ? (this.scopeZoom >= 8 ? 0.20 : 0.36) : 1;
+    const sens = 0.0044 * zoomScale;
     if (this.touch.lookDx || this.touch.lookDy) {
-      this.camYaw -= this.touch.lookDx * sens * 1.45;
-      this.camPitch = clamp(this.camPitch + this.touch.lookDy * sens * 1.25, -0.55, 1.3);
+      this.camYaw -= this.touch.lookDx * sens * 1.15;
+      this.camPitch = clamp(this.camPitch + this.touch.lookDy * sens * 1.0, -0.55, 1.3);
       this.touch.lookDx = 0;
       this.touch.lookDy = 0;
     }
@@ -2334,6 +2552,56 @@ export class Game {
           this.openBankModal('bank', bId, bName);
           return;
         }
+      }
+      if (room.kind === 'casino' && preferBankOrEvent) {
+        const wager = 250;
+        if (p.money < wager) {
+          this.ev.onToast('Need $250 cash to play High-Stakes Casino Tables!', 'warn');
+        } else {
+          p.money -= wager;
+          const roll = Math.random();
+          if (roll > 0.88) {
+            const win = 1800;
+            p.money += win;
+            this.audio.missionPass();
+            this.ev.onToast(`ROYAL JACKPOT! You hit 00 on Roulette (+$${win.toLocaleString()})`, 'good');
+          } else if (roll > 0.44) {
+            const win = 600;
+            p.money += win;
+            this.audio.cash();
+            this.ev.onToast(`BLACKJACK WIN! Dealer busts (+$${win.toLocaleString()})`, 'good');
+          } else {
+            this.audio.beep(220, 0.12);
+            this.ev.onToast('House wins this hand (-$250). Press E to spin again!', 'info');
+          }
+          this.emitHud(true);
+        }
+        return;
+      }
+      if (room.kind === 'dealership' && preferBankOrEvent) {
+        const price = 2500;
+        const paid = p.money >= price;
+        if (paid) p.money -= price;
+        const back = { ...this.interior.back };
+        this.exitInterior();
+        const fx = Math.sin(back.yaw), fz = Math.cos(back.yaw);
+        const car = doSpawnVehicle(
+          this,
+          'sports',
+          back.x + fx * 6.5,
+          back.z + fz * 6.5,
+          back.yaw + Math.PI / 2,
+          { mode: 'idle', paint: paid ? 0xd97706 : 0x2563eb, allowHeroSite: true },
+        );
+        this.audio.cash();
+        this.ev.onToast(
+          paid
+            ? `Purchased ${car.spec.name} (-$2,500) — parked right outside the showroom!`
+            : `Complimentary VIP Test-Drive: ${car.spec.name} waiting right outside!`,
+          'good',
+        );
+        this.emitHud(true);
+        return;
       }
       if (room.kind === 'gun' && Math.hypot(p.x - (room.cx - 4.8), p.z - (room.cz + 1.0)) < 5.5 && p.y < 1.6) { this.shop(); return; }
       if (this.insideT > 0.8) {
@@ -2734,10 +3002,19 @@ export class Game {
   }
   searching = false;
   scope = false;
+  scopeZoom: 4 | 8 = 4;
+  scopeBreath = 1.0;
+  scopeHoldingBreath = false;
+  scopeRangeM: number | null = null;
   grenadeList: Grenade[] = [];
   rocketList: Rocket[] = [];
   rooms: Room[] = [];
-  interior: { room: Room; back: { x: number; z: number; yaw: number }; name: string } | null = null;
+  interior: { room: Room; back: { x: number; z: number; yaw: number }; name: string; doorKey: string } | null = null;
+  interiorStore = new InteriorPersistenceStore();
+  indoorDynamicGroup = new THREE.Group();
+  indoorDecalsGroup = new THREE.Group();
+  private activeSwingDoors: { spec: InteriorSwingDoorSpec; pivot: THREE.Group; angle: number }[] = [];
+  private activeEscalators: { spec: InteriorEscalatorSpec; steps: THREE.Mesh[]; phase: number }[] = [];
   insideT = 0;
   intLights: THREE.PointLight[] = [];
   allies: Ped[] = [];
@@ -2853,8 +3130,10 @@ export class Game {
       if (Math.hypot(this.waypoint.x - this.playerX, this.waypoint.z - this.playerZ) < 18) { this.waypoint = null; target = null; }
     }
     if (!target) {
+      const sq = this.sideQuests.getActive();
       const gl = this.goals.find((q) => q.kind !== 'enemy');
       if (gl) target = gl;
+      else if (sq) target = { x: sq.targetX, z: sq.targetZ };
       else {
         const gv = this.missionGivers()[0];
         if (gv) target = gv;
@@ -2865,6 +3144,10 @@ export class Game {
   updateMarkers() {
     const list: { x: number; z: number; r: number; color: number; beam: boolean }[] = [];
     for (const g of this.missionGivers()) list.push({ x: g.x, z: g.z, r: 1.6, color: 0xffd23d, beam: true });
+    const activeSq = this.sideQuests.getActive();
+    if (activeSq && !this.interior) {
+      list.push({ x: activeSq.targetX, z: activeSq.targetZ, r: 2.0, color: 0x38bdf8, beam: true });
+    }
     for (const g of this.goals) {
       const col = g.kind === 'enemy' ? 0xff4040 : g.kind === 'vehicle' ? 0x3dd6ff : 0xffd23d;
       if (g.kind === 'enemy') continue;
@@ -2874,8 +3157,11 @@ export class Game {
     for (const a of this.allies) if (!a.dead && !a.recruited && Math.hypot(a.x - this.playerX, a.z - this.playerZ) < 120) list.push({ x: a.x, z: a.z, r: 1.5, color: 0x4ade80, beam: false });
     if (!this.interior) for (const d of this.city.doors) {
       if (list.length > 9) break;
-      if (d.kind !== 'shop' && d.kind !== 'diner' && d.kind !== 'bank' && d.kind !== 'hospital' && d.kind !== 'police') continue;
-      if (Math.hypot(d.x - this.playerX, d.z - this.playerZ) < 26) list.push({ x: d.x, z: d.z, r: 1.1, color: 0x7fd6c8, beam: false });
+      if (d.kind !== 'shop' && d.kind !== 'diner' && d.kind !== 'bank' && d.kind !== 'hospital' && d.kind !== 'police' && d.kind !== 'casino' && d.kind !== 'dealership') continue;
+      if (Math.hypot(d.x - this.playerX, d.z - this.playerZ) < 32) {
+        const col = d.kind === 'casino' ? 0xf59e0b : d.kind === 'dealership' ? 0x38bdf8 : 0x7fd6c8;
+        list.push({ x: d.x, z: d.z, r: 1.15, color: col, beam: false });
+      }
     }
     this.markers.forEach((m, i) => {
       const d = list[i];
@@ -2953,9 +3239,15 @@ export class Game {
           ? 14.5 + pv.spec.L * 0.45 + Math.min(8, pv.speed * 0.08)
           : 6.2 + pv.spec.L * 0.4 + Math.min(4, pv.speed * 0.07)
         : aiming
-          ? 2.7
-          : 4.7;
+          ? 2.4
+          : this.interior
+            ? 3.05
+            : 4.7;
     this.camDist += (tgtDist - this.camDist) * (snap ? 1 : 1 - Math.exp(-6 * dt));
+    if (!snap && dt > 0.0001) {
+      const recDown = stepRecoilRecovery(this.recoilState, dt);
+      if (recDown > 0) this.camPitch = clamp(this.camPitch + recDown, -1.0, 1.15);
+    }
     const cosP = Math.cos(this.camPitch), sinP = Math.sin(this.camPitch);
     const fx = Math.sin(this.camYaw), fz = Math.cos(this.camYaw);
     let tx: number, ty: number, tz: number;
@@ -2966,27 +3258,106 @@ export class Game {
     tx += rx * shoulder; tz += rz * shoulder;
     let d = this.camDist;
     if (!pv?.spec.isAircraft) {
-      for (let t = 0.6; t <= d; t += 0.35) {
+      const stepT = this.interior ? 0.2 : 0.35;
+      for (let t = 0.55; t <= d; t += stepT) {
         const x = tx - fx * cosP * t, y = ty + sinP * t, z = tz - fz * cosP * t;
-        if (y < 0.35 || this.world.solidAt(x, y, z)) { d = Math.max(0.8, t - 0.45); break; }
+        if (y < 0.35 || this.world.solidAt(x, y, z)) { d = Math.max(0.95, t - 0.35); break; }
       }
     }
     let cx = tx - fx * cosP * d, cy = ty + sinP * d, cz = tz - fz * cosP * d;
     cy = Math.max(cy, 0.4 + this.groundAt(cx, cz, p.y));
-    if (this.interior) cy = Math.min(cy, this.interior.room.h - 0.35);
+    if (this.interior) {
+      const ceilClamp = p.y < -1.0 ? -0.45 : this.interior.room.h - 0.34;
+      cy = Math.min(cy, ceilClamp);
+    }
     if (this.shakeAmt > 0.001) {
       cx += (Math.random() - 0.5) * this.shakeAmt * 0.6;
       cy += (Math.random() - 0.5) * this.shakeAmt * 0.6;
       cz += (Math.random() - 0.5) * this.shakeAmt * 0.6;
       this.shakeAmt *= Math.exp(-6 * dt);
     }
+    // Realistic optical scope figure-8 breathing sway (steadied when holding Shift) + live raycast rangefinder
+    let effYaw = this.camYaw;
+    let effPitch = this.camPitch;
+    if (this.scope) {
+      const swayAmp = this.scopeHoldingBreath ? 0.0005 : (p.move.crouching ? 0.0024 : 0.0044);
+      effYaw += Math.sin(this.time * 1.45) * swayAmp;
+      effPitch += Math.sin(this.time * 2.9) * swayAmp * 0.72 - this.recoilT * 0.012;
+    }
+    const eCosP = Math.cos(effPitch), eSinP = Math.sin(effPitch);
+    const eFx = Math.sin(effYaw), eFz = Math.cos(effYaw);
     this.camera.position.set(cx, cy, cz);
-    this.camDir.set(fx * cosP, -sinP, fz * cosP);
+    this.camDir.set(eFx * eCosP, -eSinP, eFz * eCosP);
     this.camera.lookAt(cx + this.camDir.x * 10, cy + this.camDir.y * 10, cz + this.camDir.z * 10);
+
+    // Live smart reticle target-lock detection + subtle ADS magnetism for effortless, realistic aiming
+    if (!pv && !isMeleeWeapon(p.weapon) && p.alive && !this.phone.open && !this.bankOpen) {
+      const wDef = WEAPONS[p.weapon];
+      const t0Aim = Math.max(0, (p.x - cx) * this.camDir.x + (p.y + 1.5 - cy) * this.camDir.y + (p.z - cz) * this.camDir.z);
+      const aox = cx + this.camDir.x * t0Aim;
+      const aoy = cy + this.camDir.y * t0Aim;
+      const aoz = cz + this.camDir.z * t0Aim;
+      const cands: AimTargetCandidate[] = [];
+      for (const ped of this.peds) {
+        if (ped.dead) continue;
+        const dxp = ped.x - aox, dzp = ped.z - aoz;
+        if (dxp * dxp + dzp * dzp > wDef.range * wDef.range) continue;
+        cands.push({
+          id: ped.id,
+          x: ped.x,
+          y: ped.y,
+          z: ped.z,
+          heightScale: ped.rig.root.scale.y,
+          hostile: ped.hostile || ped.kind === 'gang' || ped.kind === 'cop' || ped.kind === 'guard',
+        });
+      }
+      const aimPrev = computeAimAssist(aox, aoy, aoz, this.camDir.x, this.camDir.y, this.camDir.z, cands, aiming, this.scope, wDef.range);
+      this.aimLock.locked = aimPrev.locked;
+      this.aimLock.headLocked = aimPrev.headLocked;
+      const baseGap = aiming ? 4.5 : 8.5;
+      this.aimLock.spreadPx = Math.round(clamp(baseGap + this.recoilState.bloom * 12 + Math.min(6, Math.hypot(p.vx, p.vz) * 0.7), 3.5, 24));
+      if (aimPrev.locked && (this.input.aim || this.touch.aim) && !snap && dt > 0.0001) {
+        const pull = Math.min(0.28, dt * 3.4);
+        this.camYaw += aimPrev.pullYaw * pull;
+        this.camPitch = clamp(this.camPitch + aimPrev.pullPitch * pull, -1.0, 1.15);
+      }
+    } else {
+      this.aimLock.locked = false;
+      this.aimLock.headLocked = false;
+      this.aimLock.spreadPx = 8;
+    }
+
+    // Directional camera & speed motion-blur vector for optional motion blur post-FX
+    if (snap || dt <= 0.0001) {
+      this.prevCamYaw = this.camYaw;
+      this.prevCamPitch = this.camPitch;
+      this.blurVecX = 0;
+      this.blurVecY = 0;
+    } else {
+      let dYaw = this.camYaw - this.prevCamYaw;
+      while (dYaw > Math.PI) dYaw -= Math.PI * 2;
+      while (dYaw < -Math.PI) dYaw += Math.PI * 2;
+      const dPitch = this.camPitch - this.prevCamPitch;
+      this.prevCamYaw = this.camYaw;
+      this.prevCamPitch = this.camPitch;
+      const spdNorm = pv ? clamp(Math.abs(pv.fwd) / 42, 0, 1) : clamp(Math.hypot(p.vx, p.vz) / 14, 0, 0.35);
+      const tgtBx = clamp(-dYaw * 0.42 + (pv ? pv.steerAng * spdNorm * 0.025 : 0), -0.055, 0.055);
+      const tgtBy = clamp(dPitch * 0.38 + spdNorm * 0.014, -0.045, 0.045);
+      const sm = 1 - Math.exp(-16 * dt);
+      this.blurVecX += (tgtBx - this.blurVecX) * sm;
+      this.blurVecY += (tgtBy - this.blurVecY) * sm;
+    }
+
+    if (this.scope) {
+      const h = castRay(this, cx, cy, cz, this.camDir.x, this.camDir.y, this.camDir.z, 520, p.vehicle, null);
+      this.scopeRangeM = h.kind !== 'none' ? Math.max(1, Math.round(h.t)) : null;
+    } else {
+      this.scopeRangeM = null;
+    }
     this.camX = cx; this.camZ = cz;
     const onFootSprint = !pv && !aiming && Math.hypot(p.vx, p.vz) > 6.8;
     const targetFov = this.scope
-      ? 21
+      ? (this.scopeZoom >= 8 ? 8.0 : 14.5)
       : aiming
         ? 48
         : pv
@@ -2997,7 +3368,7 @@ export class Game {
             ? 68
             : 62;
     if (Math.abs(this.camera.fov - targetFov) > 0.05) {
-      this.camera.fov += (targetFov - this.camera.fov) * (snap ? 1 : 1 - Math.exp(-7 * dt));
+      this.camera.fov += (targetFov - this.camera.fov) * (snap ? 1 : 1 - Math.exp(-8 * dt));
       this.camera.updateProjectionMatrix();
     }
     this.camera.updateMatrixWorld();
@@ -3005,7 +3376,7 @@ export class Game {
     this.frustum.setFromProjectionMatrix(this.projM);
   }
 
-  // =============================================================== interiors
+  // =============================================================== interiors (Persistent + Doors + Escalators + Decals)
   doorNear(): { door: Door; d: number } | null {
     let best: { door: Door; d: number } | null = null;
     for (const d of this.city.doors) {
@@ -3014,11 +3385,161 @@ export class Game {
     }
     return best;
   }
+
+  recordIndoorImpact(impact: SavedIndoorImpact) {
+    if (!this.interior) return;
+    this.interiorStore.addImpact(this.interior.doorKey, impact);
+    this.spawnIndoorImpactMesh(impact);
+  }
+
+  private spawnIndoorImpactMesh(imp: SavedIndoorImpact) {
+    const color = imp.kind === 'blood' ? 0x6b0b0b : imp.kind === 'scorch' ? 0x18181b : 0x1c1e22;
+    const isFloor = Math.abs(imp.ny) > 0.6;
+    const geo = new THREE.CircleGeometry(imp.radius, imp.kind === 'bullet' ? 8 : 14);
+    const mat = new THREE.MeshStandardMaterial({
+      color,
+      roughness: imp.kind === 'blood' ? 0.35 : 0.94,
+      metalness: 0.02,
+      transparent: true,
+      opacity: imp.kind === 'blood' ? 0.86 : 0.82,
+      polygonOffset: true,
+      polygonOffsetFactor: -3,
+      side: THREE.DoubleSide,
+    });
+    const m = new THREE.Mesh(geo, mat);
+    if (isFloor) {
+      m.rotation.x = -Math.PI / 2;
+      m.position.set(imp.x, imp.y + 0.012, imp.z);
+    } else {
+      m.position.set(imp.x + imp.nx * 0.015, imp.y, imp.z + imp.nz * 0.015);
+      m.lookAt(imp.x + imp.nx, imp.y + imp.ny, imp.z + imp.nz);
+    }
+    this.indoorDecalsGroup.add(m);
+  }
+
+  private clearGroup(g: THREE.Group) {
+    while (g.children.length > 0) {
+      const child = g.children[g.children.length - 1];
+      g.remove(child);
+      child.traverse((o) => {
+        const mesh = o as THREE.Mesh;
+        if (mesh.isMesh) {
+          mesh.geometry?.dispose();
+          const m = mesh.material;
+          if (Array.isArray(m)) m.forEach((mm) => mm.dispose());
+          else m?.dispose();
+        }
+      });
+    }
+  }
+
+  private buildIndoorDynamicElements(room: Room, savedDoorAngles?: Record<string, number>) {
+    this.clearGroup(this.indoorDynamicGroup);
+    this.activeSwingDoors = [];
+    this.activeEscalators = [];
+
+    // 1. Real Articulated Hinged Opening Interior Doors
+    for (const d of room.swingDoors) {
+      const pivot = new THREE.Group();
+      pivot.position.set(d.hingeX, d.y, d.hingeZ);
+      const leafCol = d.style === 'steel' ? 0x9aa4b0 : d.style === 'glass' ? 0x4b7e96 : 0x7c5332;
+      const leafMat = new THREE.MeshStandardMaterial({
+        color: leafCol,
+        roughness: d.style === 'glass' ? 0.18 : d.style === 'steel' ? 0.42 : 0.62,
+        metalness: d.style === 'steel' ? 0.55 : 0.08,
+        transparent: d.style === 'glass',
+        opacity: d.style === 'glass' ? 0.52 : 1.0,
+      });
+      const leaf = new THREE.Mesh(new THREE.BoxGeometry(d.width, d.height, 0.075), leafMat);
+      leaf.position.set(d.width / 2, d.height / 2, 0);
+      pivot.add(leaf);
+      // Brushed brass/steel lever handle on both sides of the door leaf
+      const handleMat = new THREE.MeshStandardMaterial({ color: 0xd8b44c, roughness: 0.3, metalness: 0.78 });
+      const handle = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.04, 0.18), handleMat);
+      handle.position.set(d.width - 0.16, 1.02, 0);
+      pivot.add(handle);
+      // Porthole window on steel kitchen/security doors
+      if (d.style === 'steel') {
+        const portMat = new THREE.MeshStandardMaterial({ color: 0x264454, roughness: 0.15, transparent: true, opacity: 0.65 });
+        const port = new THREE.Mesh(new THREE.BoxGeometry(0.38, 0.44, 0.09), portMat);
+        port.position.set(d.width * 0.52, d.height * 0.68, 0);
+        pivot.add(port);
+      }
+      const startAngle = savedDoorAngles?.[d.id] ?? 0;
+      pivot.rotation.y = d.closedYaw + startAngle;
+      this.indoorDynamicGroup.add(pivot);
+      this.activeSwingDoors.push({ spec: d, pivot, angle: startAngle });
+    }
+
+    // 2. Live Animated Moving Escalator Steps
+    const stepMat = new THREE.MeshStandardMaterial({ color: 0x3b424c, roughness: 0.55, metalness: 0.58 });
+    const nosingMat = new THREE.MeshStandardMaterial({ color: 0xf2b705, roughness: 0.5, metalness: 0.1 });
+    for (const esc of room.elevation.escalators) {
+      const stepCount = 12;
+      const w = Math.max(0.5, esc.x1 - esc.x0 - 0.06);
+      const stepRun = (esc.z1 - esc.z0) / stepCount;
+      const steps: THREE.Mesh[] = [];
+      for (let i = 0; i < stepCount; i++) {
+        const g = new THREE.BoxGeometry(w, 0.09, stepRun * 0.88);
+        const m = new THREE.Mesh(g, stepMat.clone());
+        const edge = new THREE.Mesh(new THREE.BoxGeometry(w - 0.04, 0.025, 0.055), nosingMat.clone());
+        edge.position.set(0, 0.048, stepRun * 0.36);
+        m.add(edge);
+        this.indoorDynamicGroup.add(m);
+        steps.push(m);
+      }
+      this.activeEscalators.push({ spec: esc, steps, phase: 0 });
+    }
+    stepMat.dispose();
+    nosingMat.dispose();
+  }
+
+  private updateIndoorDynamics(dt: number) {
+    if (!this.interior) return;
+    // Animate Hinged Opening Interior Doors whenever player or live indoor NPCs/cops approach
+    for (const door of this.activeSwingDoors) {
+      const d = door.spec;
+      const midX = d.hingeX + Math.cos(d.closedYaw) * (d.width * 0.5);
+      const midZ = d.hingeZ - Math.sin(d.closedYaw) * (d.width * 0.5);
+      let nearActor = Math.hypot(this.player.x - midX, this.player.z - midZ) < 2.35 && Math.abs(this.player.y - d.y) < 2.0;
+      if (!nearActor) {
+        for (const p of this.peds) {
+          if (p.indoor && !p.dead && Math.abs(p.y - d.y) < 2.0 && Math.hypot(p.x - midX, p.z - midZ) < 2.2) {
+            nearActor = true;
+            break;
+          }
+        }
+      }
+      const targetAngle = nearActor ? d.openDir * 1.46 : 0;
+      door.angle += (targetAngle - door.angle) * Math.min(1, dt * 6.8);
+      door.pivot.rotation.y = d.closedYaw + door.angle;
+    }
+
+    // Animate Moving Escalator Treads smoothly along their flight path
+    for (const esc of this.activeEscalators) {
+      const s = esc.spec;
+      const len = Math.max(0.5, s.z1 - s.z0);
+      esc.phase = (esc.phase + dt * (s.speed / len) * s.travelDir) % 1;
+      if (esc.phase < 0) esc.phase += 1;
+      const cx = (s.x0 + s.x1) * 0.5;
+      const n = esc.steps.length;
+      for (let i = 0; i < n; i++) {
+        let t = (i / n + esc.phase) % 1;
+        if (t < 0) t += 1;
+        // t = 0 is bottom (z1, y0), t = 1 is top (z0, y1) when dir === -1
+        const z = s.dir === -1 ? s.z1 - t * (s.z1 - s.z0) : s.z0 + t * (s.z1 - s.z0);
+        const y = s.y0 + t * (s.y1 - s.y0);
+        esc.steps[i].position.set(cx, y + 0.03, z);
+      }
+    }
+  }
+
   enterInterior(door: Door) {
     if (this.player.vehicle) return;
     const room = roomForDoor(door, this.rooms);
+    const doorKey = makeBuildingKey(door);
     const back = { x: door.x, z: door.z, yaw: door.yaw };
-    this.interior = { room, back, name: door.name };
+    this.interior = { room, back, name: door.name, doorKey };
     this.insideT = 0;
     const baseY = room.elevation.baseY;
     this.player.x = room.spawn.x;
@@ -3030,22 +3551,74 @@ export class Game {
     this.world.boundsOff = true;
     this.scope = false;
     this.player.rig.root.visible = true;
-    const tint = room.warmTint ?? 0xffe4bc;
+    const tint = room.warmTint ?? 0xfff4e2;
     this.intLights.forEach((l, i) => {
       const pos = room.pendantLights[i];
       if (pos) {
         l.position.set(pos[0], pos[1], pos[2]);
         l.color.setHex(tint);
-        l.intensity = i < 4 ? 12.5 : 10.0;
+        l.intensity = i < 6 ? 12.0 : 9.0;
       } else {
         l.intensity = 0;
       }
     });
-    this.renderer.toneMappingExposure = 1.02;
-    this.spawnRoomNpcs(room);
+    this.renderer.toneMappingExposure = 1.08;
+    const saved = this.interiorStore.get(doorKey);
+    this.buildIndoorDynamicElements(room, saved?.doorAngles);
+    this.clearGroup(this.indoorDecalsGroup);
+    if (saved) {
+      for (const imp of saved.impacts) this.spawnIndoorImpactMesh(imp);
+      this.restoreRoomNpcs(saved.peds);
+    } else {
+      this.spawnRoomNpcs(room);
+    }
     this.audio.door();
     this.ev.onToast(`Entering ${door.name}`, 'info');
+    this.emitHud(true);
   }
+
+  private restoreRoomNpcs(savedPeds: SavedIndoorPed[]) {
+    for (const sp of savedPeds) {
+      const p = new Ped(sp.kind, { ...sp.look });
+      p.indoor = true;
+      p.indoorRole = sp.role;
+      p.indoorHomeX = sp.indoorHomeX;
+      p.indoorHomeZ = sp.indoorHomeZ;
+      p.indoorBaseYaw = sp.indoorBaseYaw;
+      p.mission = true;
+      p.x = sp.x;
+      p.y = sp.y;
+      p.z = sp.z;
+      p.yaw = sp.yaw;
+      p.hp = sp.hp;
+      p.maxHp = sp.maxHp;
+      p.hostile = sp.hostile;
+      p.aggro = sp.aggro;
+      p.dmg = sp.dmg;
+      p.accuracy = sp.accuracy;
+      p.state = sp.state as Ped['state'];
+      p.panicT = sp.panicT;
+      p.brawlT = sp.brawlT;
+      p.handsUp = sp.handsUp;
+      p.freeCityLastHint = sp.lastHint;
+      p.arm(sp.weapon as GunKind | null);
+      p.place(sp.x, sp.z);
+      if (sp.dead) {
+        p.dead = true;
+        p.rotX = sp.rotX;
+        p.restX = sp.restX;
+        p.deadT = 10;
+        p.rig.root.position.set(p.x, p.y + 0.18, p.z);
+        p.rig.root.rotation.set(p.restX || Math.PI / 2, p.yaw, 0);
+      } else {
+        p.rig.root.position.set(p.x, p.y, p.z);
+        p.rig.root.rotation.set(0, p.yaw, 0);
+      }
+      upgradeHumanToGlb(p.rig);
+      this.addPed(p);
+    }
+  }
+
   spawnRoomNpcs(room: Room) {
     const rng = new Rng(room.id * 97 + 13);
     for (let i = 0; i < room.npcSpots.length; i++) {
@@ -3114,9 +3687,58 @@ export class Game {
       this.addPed(p);
     }
   }
+
+  private saveAndCleanupInterior() {
+    if (!this.interior) return;
+    const savedPeds: SavedIndoorPed[] = [];
+    for (const p of this.peds) {
+      if (!p.indoor || p.tag === 'playerbody') continue;
+      savedPeds.push({
+        kind: p.kind,
+        role: p.indoorRole,
+        look: { ...(p.look ?? p.rig.look) },
+        x: p.x,
+        y: p.y,
+        z: p.z,
+        yaw: p.yaw,
+        hp: p.hp,
+        maxHp: p.maxHp,
+        dead: p.dead,
+        rotX: p.rotX,
+        restX: p.restX || Math.PI / 2,
+        hostile: p.hostile,
+        aggro: p.aggro,
+        weapon: p.weapon,
+        dmg: p.dmg,
+        accuracy: p.accuracy,
+        state: p.state,
+        panicT: p.panicT,
+        brawlT: p.brawlT,
+        handsUp: p.handsUp,
+        indoorHomeX: p.indoorHomeX,
+        indoorHomeZ: p.indoorHomeZ,
+        indoorBaseYaw: p.indoorBaseYaw,
+        lastHint: p.freeCityLastHint ?? '',
+      });
+    }
+    const doorAngles: Record<string, number> = {};
+    for (const d of this.activeSwingDoors) doorAngles[d.spec.id] = d.angle;
+    this.interiorStore.saveBuilding(this.interior.doorKey, savedPeds, doorAngles, this.time);
+
+    this.interior = null;
+    this.world.boundsOff = false;
+    this.intLights.forEach((l) => (l.intensity = 0));
+    this.clearGroup(this.indoorDynamicGroup);
+    this.clearGroup(this.indoorDecalsGroup);
+    this.activeSwingDoors = [];
+    this.activeEscalators = [];
+    for (let i = this.peds.length - 1; i >= 0; i--) if (this.peds[i].indoor) this.removePed(this.peds[i]);
+  }
+
   exitInterior() {
     if (!this.interior) return;
     const b = this.interior.back;
+    this.saveAndCleanupInterior();
     const nx = Math.sin(b.yaw), nz = Math.cos(b.yaw);
     this.player.x = b.x + nx * 1.6; this.player.z = b.z + nz * 1.6;
     this.player.y = groundHeight(this.player.x, this.player.z);
@@ -3124,10 +3746,6 @@ export class Game {
     this.player.vx = 0; this.player.vz = 0;
     this.player.yaw = b.yaw + Math.PI;
     this.camYaw = this.player.yaw;
-    this.interior = null;
-    this.world.boundsOff = false;
-    this.intLights.forEach((l) => (l.intensity = 0));
-    for (let i = this.peds.length - 1; i >= 0; i--) if (this.peds[i].indoor) this.removePed(this.peds[i]);
     this.audio.door();
     this.ev.onToast('Back outside', 'info');
   }
@@ -3255,6 +3873,8 @@ export class Game {
         if (nearTeller) return 'Press E — NovaBank Teller (Deposit / Withdraw / Rob Bank)';
         if (nearAtm) return 'Press E — NovaBank Lobby ATM';
       }
+      if (room.kind === 'casino') return 'Press E — Play High-Stakes Roulette / Blackjack ($250)';
+      if (room.kind === 'dealership') return 'Press E — Buy / Test-Drive Showroom Supercar ($2,500)';
       if (room.kind === 'gun' && Math.hypot(p.x - (room.cx - 4.8), p.z - (room.cz + 1.0)) < 5.5 && p.y < 1.6) return 'Press F — Buy weapons / ammo';
       if (this.insideT > 0.8) {
         for (const ex of room.exits) {
@@ -3372,6 +3992,10 @@ export class Game {
       aiming: !pv && (this.input.aim || this.touch.aim || this.scope),
       crosshair: !pv && !isMeleeWeapon(p.weapon) && p.alive && !this.scope && !this.phone.open && !this.bankOpen,
       scope: this.scope,
+      scopeZoom: this.scopeZoom,
+      scopeRangeM: this.scopeRangeM,
+      scopeBreath: Math.round(this.scopeBreath * 100),
+      scopeHoldingBreath: this.scopeHoldingBreath,
       allies: this.allies.filter((a) => a.recruited && !a.dead).length,
       recruitable: this.allies.filter((a) => !a.recruited && !a.dead).length,
       grenades: p.ammo.grenade,
@@ -3447,8 +4071,23 @@ export class Game {
           history: [...this.geminiDirector.getHistory(target.id)],
         };
       })(),
+      carSensitivity: this.carSensitivity,
+      motionBlurEnabled: this.motionBlurEnabled,
+      motionBlurIntensity: this.motionBlurIntensity,
+      microFidelity: this.microFidelity,
+      microResolution: microtextures.getResolution(),
+      aimLock: { ...this.aimLock },
+      slomo: {
+        active: this.slomoKillcam.active,
+        grayscale: this.slomoKillcam.grayscale,
+        distFeet: this.slomoKillcam.distanceFeet,
+        label: this.slomoKillcam.label,
+        timeScale: this.slomoKillcam.timeScale,
+      },
+      sideQuests: this.sideQuests.getSnapshot(),
     });
   }
 }
+void SIDE_QUESTS;
 void HALF; void BOUNDS; void doNpcShoot; void castRay; void doDeploy; void TARGET_LOOK;
 export type { Collider };

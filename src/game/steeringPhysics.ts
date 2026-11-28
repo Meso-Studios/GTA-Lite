@@ -12,6 +12,8 @@ export interface SteeringInput {
   handbrake: boolean;
   sandFactor: number;   // 0..1 loose sand
   isPlayer: boolean;
+  /** Player steering sensitivity multiplier (0.25..2.0, default 1.0) */
+  sensitivity?: number;
 }
 
 export interface SteeringState {
@@ -42,6 +44,7 @@ export function stepRealisticSteering(
 ): SteeringResult {
   const absV = Math.abs(inp.speedFwd);
   const raw = clampVal(inp.rawSteer, -1, 1);
+  const sens = inp.isPlayer ? clampVal(inp.sensitivity ?? 1.0, 0.25, 2.0) : 1.0;
 
   // 1. Progressive keyboard turn-in vs crisp caster self-centering when released.
   // At highway speed (>18 m/s), turn-in is calmer so tapping A/D never jerks the car off-road.
@@ -54,33 +57,35 @@ export function stepRealisticSteering(
     inputRate = 9.5;
   } else if (centering) {
     // Self-aligning caster torque returns wheel smoothly to center
-    inputRate = 6.2 + Math.min(4.5, absV * 0.14);
+    inputRate = (6.2 + Math.min(4.5, absV * 0.14)) * (0.72 + sens * 0.28);
   } else if (counterSteering) {
     // Quick response when catching a slide
-    inputRate = 7.8;
+    inputRate = 7.8 * (0.6 + sens * 0.48);
   } else {
-    // Calm, weighty turn-in scaled by speed
-    inputRate = 4.6 * speedCalm + 1.2;
+    // Calm, weighty turn-in scaled by speed and player car physics sensitivity
+    inputRate = (4.6 * speedCalm + 1.2) * (0.45 + sens * 0.65);
   }
   state.smoothInput += (raw - state.smoothInput) * (1 - Math.exp(-inputRate * dt));
 
   // Non-linear steering curve gives fine precision near center and full lock when held
-  const curved = Math.sign(state.smoothInput) * Math.pow(Math.abs(state.smoothInput), inp.isPlayer ? 1.32 : 1.0);
+  const curveExp = inp.isPlayer ? clampVal(1.52 - sens * 0.26, 1.0, 1.55) : 1.0;
+  const curved = Math.sign(state.smoothInput) * Math.pow(Math.abs(state.smoothInput), curveExp);
 
   // 2. Strong speed-sensitive lock attenuation (full lock in parking lots, calm precision at 120 km/h)
-  const lowSpeedLock = inp.maxSteerRad * (inp.isPlayer ? 0.86 : 1.0);
+  const sensLockMul = inp.isPlayer ? clampVal(0.68 + sens * 0.34, 0.72, 1.28) : 1.0;
+  const lowSpeedLock = inp.maxSteerRad * (inp.isPlayer ? 0.86 * sensLockMul : 1.0);
   const speedTaper = 1 / (1 + Math.pow(absV / 11.5, 1.68));
   const handbrakeBonus = inp.handbrake && absV > 5 ? 1.22 : 1.0;
-  const effectiveLock = clampVal(lowSpeedLock * speedTaper * handbrakeBonus, 0.055, inp.maxSteerRad);
+  const effectiveLock = clampVal(lowSpeedLock * speedTaper * handbrakeBonus, 0.05, inp.maxSteerRad * 1.18);
 
   const targetAngle = curved * effectiveLock;
-  const rackSpeed = inp.isPlayer ? 8.0 : 10.5;
+  const rackSpeed = inp.isPlayer ? 8.0 * (0.55 + sens * 0.48) : 10.5;
   state.steerAngle += (targetAngle - state.steerAngle) * (1 - Math.exp(-rackSpeed * dt));
 
   // 3. Ackermann kinematic yaw rate with realistic tire saturation & speed-capped yaw ceiling
   const rawOmega = (inp.speedFwd * Math.tan(state.steerAngle)) / Math.max(1.8, inp.wheelBase);
   // Subtle understeer saturation at high speed so car doesn't pivot like a tank
-  const highSpeedYawCap = clampVal(2.15 / (1 + absV * 0.032), 0.72, 2.05);
+  const highSpeedYawCap = clampVal((2.15 * (0.82 + sens * 0.2)) / (1 + absV * 0.032), 0.72, 2.35);
   let targetOmega = clampVal(rawOmega, -highSpeedYawCap, highSpeedYawCap);
 
   if (inp.handbrake && absV > 6.5) {
@@ -96,7 +101,7 @@ export function stepRealisticSteering(
     targetOmega += stabDamp;
   }
 
-  const yawResponse = inp.handbrake ? 4.4 : inp.isPlayer ? 7.2 : 9.2;
+  const yawResponse = inp.handbrake ? 4.4 : inp.isPlayer ? 7.2 * (0.65 + sens * 0.38) : 9.2;
   state.omega += (targetOmega - state.omega) * (1 - Math.exp(-yawResponse * dt));
 
   // 4. Progressive Pacejka-lite lateral grip

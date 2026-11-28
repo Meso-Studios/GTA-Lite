@@ -2,7 +2,7 @@
 // Pure data & lookup module (zero Three.js dependencies) so tests & textures share one source of truth.
 
 export type StoreStyle = 'deco' | 'neon' | 'bodega' | 'luxury' | 'retail' | 'diner';
-export type StoreDoorKind = 'shop' | 'diner' | 'office' | 'apartment' | 'gun' | 'garage' | 'bank';
+export type StoreDoorKind = 'shop' | 'diner' | 'office' | 'apartment' | 'gun' | 'garage' | 'bank' | 'casino' | 'dealership';
 
 export interface StoreDef {
   readonly id: number;
@@ -381,6 +381,10 @@ const RAW_STORES: readonly RawEntry[] = [
   ['DESERT MIRAGE DINER', 'Diner', 'airport', 'diner', 'diner'],
   ['SUNSET SKYDIVING', 'Aviation', 'airport', 'neon', 'office'],
   ['PARKING', 'Parking', 'downtown', 'retail', 'garage'],
+  ['ROYAL PALMS CASINO', 'Casino', 'ocean', 'luxury', 'casino'],
+  ['GOLDEN SANDS CASINO', 'Casino', 'strip', 'deco', 'casino'],
+  ['APEX MOTORS', 'Dealership', 'downtown', 'luxury', 'dealership'],
+  ['NOVA AUTO GALLERY', 'Dealership', 'strip', 'retail', 'dealership'],
 ];
 
 const PALETTE: Record<StoreStyle, { bg: string[]; fg: string[]; accent: string[] }> = {
@@ -426,6 +430,8 @@ export const STORES: readonly StoreDef[] = RAW_STORES.map((entry, idx) => {
   else if (name === 'BANK') { fg = '#ffe066'; accent = '#d4af37'; }
   else if (name === 'AMMO') { fg = '#ff4848'; accent = '#ffd23d'; }
   else if (name === 'PARKING') { fg = '#38bdf8'; accent = '#facc15'; }
+  else if (name === 'ROYAL PALMS CASINO' || name === 'GOLDEN SANDS CASINO') { fg = '#fde047'; accent = '#10b981'; }
+  else if (name === 'APEX MOTORS' || name === 'NOVA AUTO GALLERY') { fg = '#f8fafc'; accent = '#ef4444'; }
   return {
     id: idx,
     name,

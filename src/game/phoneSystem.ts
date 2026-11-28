@@ -3,7 +3,7 @@
  * 100% deterministic/contextual non-AI logic — zero external LLM APIs.
  */
 
-export type PhoneAppId = 'home' | 'messages' | 'contacts' | 'camera' | 'snapnova' | 'bank' | 'missions' | 'settings';
+export type PhoneAppId = 'home' | 'messages' | 'contacts' | 'camera' | 'snapnova' | 'bank' | 'missions' | 'quests' | 'settings';
 
 export type CallActionType =
   | 'mechanic_deliver_car'

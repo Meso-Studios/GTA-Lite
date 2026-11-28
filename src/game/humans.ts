@@ -19,6 +19,7 @@ import {
   type MotionAnimState,
   createMotionAnimState,
   evaluateBareHandPose,
+  evaluateOrganicMotionOverlay,
   stepMotionSubAnim,
 } from './subAnimations';
 import {
@@ -1387,6 +1388,34 @@ export function animateHuman(r: HumanRig, dt: number, a: AnimIn) {
       T.elR += sub.elR;
     }
     if (sub.springBoost > 0) rate = Math.max(rate, 16 + sub.springBoost * 10);
+
+    // Biomechanical secondary-motion overlay: organic breathing, pelvic lateral weight-shift,
+    // spine/pelvis counter-rotation, vestibulo-ocular head stabilization, heel-strike knee bend & recoil kick
+    const organic = evaluateOrganicMotionOverlay({
+      clockSec: animClock,
+      speed: sp,
+      stridePhase: r.phase,
+      turnRate: a.turnRate ?? 0,
+      aiming: a.aim > 0.35,
+      recoilKick: a.recoil ?? 0,
+      airborne: !!a.airborne,
+      seedOffset: r.entitySeed * 0.73,
+    });
+    T.hipsY += organic.chestBreathY;
+    T.hipsX += organic.pelvisShiftX;
+    T.bank += organic.pelvisRollZ;
+    T.twist += organic.spineCounterTwistY;
+    T.headY += organic.headStabilizeYaw;
+    T.knL = Math.max(0.02, T.knL + organic.heelStrikeKneeL);
+    T.knR = Math.max(0.02, T.knR + organic.heelStrikeKneeR);
+    if (holding && a.aim > 0.35) {
+      T.lean += organic.recoilLeanBack;
+      T.aRx += organic.recoilArmKickX;
+      T.aLx += organic.recoilArmKickX * 0.72;
+    } else if (!holding && a.punch <= 0 && guardW < 0.05) {
+      T.aLx += organic.shoulderDropL;
+      T.aRx += organic.shoulderDropR;
+    }
 
     // Smooth bare-hand boxing guard & varied strikes (left jab, right cross, left/right hooks, uppercut, haymaker)
     if (!holding && (a.punch > 0 || guardW > 0.02) && !a.panic) {

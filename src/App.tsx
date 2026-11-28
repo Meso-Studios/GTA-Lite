@@ -107,6 +107,10 @@ export default function App() {
   const [voicesEnabled, setVoicesEnabled] = useState<boolean>(true);
   const [hdGlbMode, setHdGlbMode] = useState<boolean>(true);
   const [microtexturesEnabled, setMicrotexturesEnabled] = useState<boolean>(true);
+  const [microFidelity, setMicroFidelity] = useState<number>(1.0);
+  const [carSensitivity, setCarSensitivity] = useState<number>(1.0);
+  const [motionBlurEnabled, setMotionBlurEnabled] = useState<boolean>(false);
+  const [motionBlurIntensity, setMotionBlurIntensity] = useState<number>(0.55);
   const [experimentalBodyLogic, setExperimentalBodyLogic] = useState<boolean>(false);
   const [geminiNpcsEnabled, setGeminiNpcsEnabled] = useState<boolean>(false);
   const [hud, setHud] = useState<HudState | null>(null);
@@ -144,6 +148,10 @@ export default function App() {
         g.setVoicesEnabled(voicesEnabled);
         g.setHdGlbMode(hdGlbMode);
         g.setMicrotexturesEnabled(microtexturesEnabled);
+        g.setMicroFidelity(microFidelity);
+        g.setCarSensitivity(carSensitivity);
+        g.setMotionBlurEnabled(motionBlurEnabled);
+        g.setMotionBlurIntensity(motionBlurIntensity);
         g.setExperimentalBodyLogic(experimentalBodyLogic);
         g.setGeminiNpcsEnabled(geminiNpcsEnabled);
         g.setVoiceVolume(volume / 100);
@@ -159,7 +167,7 @@ export default function App() {
         setPhase('title');
       }
     }, 60);
-  }, [quality, mobileMode, rtxEnabled, goreEnabled, voicesEnabled, hdGlbMode, microtexturesEnabled, experimentalBodyLogic, geminiNpcsEnabled, volume]);
+  }, [quality, mobileMode, rtxEnabled, goreEnabled, voicesEnabled, hdGlbMode, microtexturesEnabled, microFidelity, carSensitivity, motionBlurEnabled, motionBlurIntensity, experimentalBodyLogic, geminiNpcsEnabled, volume]);
 
   // Support ?autostart=1 and Enter/Space to start on title screen
   useEffect(() => {
@@ -233,6 +241,11 @@ export default function App() {
     setMicrotexturesEnabled(next);
     g?.setMicrotexturesEnabled(next);
   };
+  const toggleMotionBlur = () => {
+    const next = !(hud?.motionBlurEnabled ?? motionBlurEnabled);
+    setMotionBlurEnabled(next);
+    g?.setMotionBlurEnabled(next);
+  };
   const toggleExperimentalBodyLogic = () => {
     const next = !(hud?.experimentalBodyLogic ?? experimentalBodyLogic);
     setExperimentalBodyLogic(next);
@@ -253,48 +266,158 @@ export default function App() {
   const isMobileHud = Boolean(hud?.mobileMode);
   const bannerColors = { wasted: 'text-red-600', passed: 'text-amber-300', failed: 'text-red-500' } as const;
 
+  const slomoGray = hud?.slomo.grayscale ?? 0;
+
   return (
     <div className="relative h-full w-full overflow-hidden bg-black text-white">
-      <div ref={mountRef} className="absolute inset-0" />
+      <div
+        ref={mountRef}
+        className="absolute inset-0"
+        style={
+          slomoGray > 0.01
+            ? { filter: `grayscale(${slomoGray.toFixed(3)}) contrast(${(1 + slomoGray * 0.16).toFixed(3)})` }
+            : undefined
+        }
+      />
 
       {/* ------------------------------------------------------------ HUD */}
       <div className={`pointer-events-none absolute inset-0 ${phase === 'playing' ? '' : 'hidden'}`}>
-        {/* hurt vignette */}
-        <div className="absolute inset-0" style={{ boxShadow: `inset 0 0 ${120 + (hud?.hurt ?? 0) * 140}px rgba(190,0,0,${Math.min(0.85, (hud?.hurt ?? 0) * 0.9 + ((hud?.hp ?? 100) < 25 ? 0.25 : 0))})` }} />
-        {hud && hud.hp > 0 && hud.hp < 100 && hud.hp <= 25 && <div className="absolute inset-0 animate-pulse bg-red-900/10" />}
-
-        {/* crosshair */}
-        {hud?.crosshair && (
-          <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
-            <div className={`rounded-full border-2 transition-all ${hud.aiming ? 'h-7 w-7 border-white/90' : 'h-4 w-4 border-white/50'}`}>
-              <div className="absolute left-1/2 top-1/2 h-1 w-1 -translate-x-1/2 -translate-y-1/2 rounded-full bg-red-500" />
+        {/* 30ft+ Pistol Headshot Slomo Grayscale Cinematic Overlay */}
+        {hud && hud.slomo.active && (
+          <div data-testid="slomo-headshot-overlay" className="pointer-events-none absolute inset-0 z-20">
+            <div
+              className="absolute inset-0"
+              style={{
+                boxShadow: `inset 0 0 ${Math.round(130 + slomoGray * 120)}px rgba(0,0,0,${(slomoGray * 0.78).toFixed(2)})`,
+              }}
+            />
+            <div className="absolute inset-x-0 top-0 h-10 bg-black/85" />
+            <div className="absolute inset-x-0 bottom-0 h-10 bg-black/85" />
+            <div className="absolute left-1/2 top-14 -translate-x-1/2 rounded border border-white/40 bg-black/85 px-5 py-1.5 text-center shadow-2xl">
+              <div className="gta-font text-lg tracking-[0.28em] text-white">
+                {hud.slomo.label || `LONGSHOT HEADSHOT · ${hud.slomo.distFeet} FT`}
+              </div>
+              <div className="text-[10px] font-bold uppercase tracking-[0.34em] text-zinc-300">
+                PISTOL PRECISION KILLCAM · {hud.slomo.timeScale.toFixed(2)}× SLOW-MO
+              </div>
             </div>
           </div>
         )}
 
-        {/* sniper scope overlay */}
+        {/* hurt vignette */}
+        <div className="absolute inset-0" style={{ boxShadow: `inset 0 0 ${120 + (hud?.hurt ?? 0) * 140}px rgba(190,0,0,${Math.min(0.85, (hud?.hurt ?? 0) * 0.9 + ((hud?.hp ?? 100) < 25 ? 0.25 : 0))})` }} />
+        {hud && hud.hp > 0 && hud.hp < 100 && hud.hp <= 25 && <div className="absolute inset-0 animate-pulse bg-red-900/10" />}
+
+        {/* Smart Dynamic Aim-Assist Crosshair & Hitmarker */}
+        {hud?.crosshair && (() => {
+          const gap = hud.aimLock.spreadPx;
+          const tickLen = hud.aiming ? 8 : 6;
+          const col = hud.aimLock.headLocked
+            ? '#f43f5e'
+            : hud.aimLock.locked
+              ? '#fbbf24'
+              : '#ffffff';
+          const hitOn = hud.aimLock.hitmarkerT > 0;
+          return (
+            <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2" data-testid="smart-crosshair">
+              {/* Top / Bottom / Left / Right dynamic spread ticks */}
+              <div
+                className="absolute left-1/2 -translate-x-1/2 transition-all duration-75"
+                style={{ bottom: `${gap}px`, width: 2, height: tickLen, backgroundColor: col, boxShadow: '0 0 3px rgba(0,0,0,0.9)' }}
+              />
+              <div
+                className="absolute left-1/2 -translate-x-1/2 transition-all duration-75"
+                style={{ top: `${gap}px`, width: 2, height: tickLen, backgroundColor: col, boxShadow: '0 0 3px rgba(0,0,0,0.9)' }}
+              />
+              <div
+                className="absolute top-1/2 -translate-y-1/2 transition-all duration-75"
+                style={{ right: `${gap}px`, height: 2, width: tickLen, backgroundColor: col, boxShadow: '0 0 3px rgba(0,0,0,0.9)' }}
+              />
+              <div
+                className="absolute top-1/2 -translate-y-1/2 transition-all duration-75"
+                style={{ left: `${gap}px`, height: 2, width: tickLen, backgroundColor: col, boxShadow: '0 0 3px rgba(0,0,0,0.9)' }}
+              />
+              {/* Precision center dot (diamond highlight on headshot lock) */}
+              <div
+                className={`h-1.5 w-1.5 transition-all duration-75 ${hud.aimLock.headLocked ? 'rotate-45 scale-125' : 'rounded-full'}`}
+                style={{ backgroundColor: hud.aimLock.headLocked ? '#f43f5e' : hud.aimLock.locked ? '#fbbf24' : '#ef4444', boxShadow: '0 0 4px rgba(0,0,0,0.95)' }}
+              />
+              {/* Crisp X Hitmarker */}
+              {hitOn && (
+                <svg viewBox="0 0 28 28" className="absolute left-1/2 top-1/2 h-7 w-7 -translate-x-1/2 -translate-y-1/2">
+                  <line x1="4" y1="4" x2="10" y2="10" stroke={hud.aimLock.hitmarkerHead ? '#f43f5e' : '#ffffff'} strokeWidth="2.2" />
+                  <line x1="24" y1="4" x2="18" y2="10" stroke={hud.aimLock.hitmarkerHead ? '#f43f5e' : '#ffffff'} strokeWidth="2.2" />
+                  <line x1="4" y1="24" x2="10" y2="18" stroke={hud.aimLock.hitmarkerHead ? '#f43f5e' : '#ffffff'} strokeWidth="2.2" />
+                  <line x1="24" y1="24" x2="18" y2="18" stroke={hud.aimLock.hitmarkerHead ? '#f43f5e' : '#ffffff'} strokeWidth="2.2" />
+                </svg>
+              )}
+            </div>
+          );
+        })()}
+
+        {/* Realistic Tactical FFP Mil-Dot Optical Scope */}
         {hud?.scope && (
-          <div className="absolute inset-0 flex items-center justify-center">
-            <div className="relative h-[min(78vh,86vw)] w-[min(78vh,86vw)] rounded-full border-[14px] border-black shadow-[0_0_0_9999px_rgba(0,0,0,0.97),inset_0_0_90px_rgba(0,0,0,0.95),inset_0_0_18px_rgba(120,220,255,0.25)]">
-              <div className="absolute inset-0 rounded-full" style={{ background: 'radial-gradient(circle at 50% 42%, rgba(150,215,245,0.06), rgba(6,14,20,0.55) 72%, rgba(0,0,0,0.95) 100%)' }} />
-              <div className="absolute left-1/2 top-0 h-full w-px -translate-x-1/2 bg-black/70" />
-              <div className="absolute left-0 top-1/2 h-px w-full -translate-y-1/2 bg-black/70" />
-              <div className="absolute left-1/2 top-1/2 h-0.5 w-[46%] -translate-x-1/2 -translate-y-1/2 bg-emerald-300/10" />
-              {[12, 24, 36, 48].map((o) => (
-                <div key={o} className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
-                  <div className="absolute h-1.5 w-1.5 rounded-full bg-black/80" style={{ transform: `translate(${o}px, ${o * 0.45}px)` }} />
-                  <div className="absolute h-1.5 w-1.5 rounded-full bg-black/80" style={{ transform: `translate(${-o}px, ${o * 0.45}px)` }} />
-                  <div className="absolute h-1.5 w-1.5 rounded-full bg-black/80" style={{ transform: `translate(${o * 0.45}px, ${o}px)` }} />
-                  <div className="absolute h-1.5 w-1.5 rounded-full bg-black/80" style={{ transform: `translate(${o * 0.45}px, ${-o}px)` }} />
-                </div>
-              ))}
-              <div className="absolute left-1/2 top-1/2 h-16 w-16 -translate-x-1/2 -translate-y-1/2 rounded-full border border-emerald-300/25" />
-              <div className="absolute left-1/2 top-1/2 h-2 w-2 -translate-x-1/2 -translate-y-1/2 rounded-full bg-red-500" />
-              <div className="absolute bottom-[14%] left-1/2 -translate-x-1/2 whitespace-nowrap rounded bg-black/75 px-3 py-1 text-[11px] tracking-[0.3em] text-emerald-300">
-                {hud.weapon.toUpperCase()} · ZOOM 6.0× · RANGE 520m
+          <div className="absolute inset-0 flex items-center justify-center overflow-hidden">
+            <div className="relative h-[min(84vh,88vw)] w-[min(84vh,88vw)] rounded-full border-[18px] border-[#050608] shadow-[0_0_0_9999px_rgba(2,3,5,0.985),inset_0_0_110px_rgba(0,0,0,0.94),inset_0_0_24px_rgba(0,0,0,0.98)]">
+              {/* Subtle realistic optical glass eye-relief vignette & edge anti-reflective coating */}
+              <div
+                className="absolute inset-0 rounded-full"
+                style={{
+                  background:
+                    'radial-gradient(circle at 50% 50%, rgba(0,0,0,0) 54%, rgba(4,8,12,0.34) 76%, rgba(0,0,0,0.88) 95%, rgba(0,0,0,0.98) 100%)',
+                }}
+              />
+              {/* Precision etched SVG First-Focal-Plane Mil-Dot Reticle */}
+              <svg viewBox="0 0 400 400" className="absolute inset-0 h-full w-full">
+                {/* Heavy outer duplex posts */}
+                <line x1="0" y1="200" x2="112" y2="200" stroke="#080a0c" strokeWidth="3.2" />
+                <line x1="288" y1="200" x2="400" y2="200" stroke="#080a0c" strokeWidth="3.2" />
+                <line x1="200" y1="0" x2="200" y2="112" stroke="#080a0c" strokeWidth="3.2" />
+                <line x1="200" y1="288" x2="200" y2="400" stroke="#080a0c" strokeWidth="3.2" />
+                {/* Ultra-fine etched central glass crosshair */}
+                <line x1="112" y1="200" x2="288" y2="200" stroke="#0b0d10" strokeWidth="0.9" strokeOpacity="0.92" />
+                <line x1="200" y1="112" x2="200" y2="288" stroke="#0b0d10" strokeWidth="0.9" strokeOpacity="0.92" />
+                {/* Calibrated Mil-Dot elevation & windage hash marks */}
+                {[-72, -54, -36, -18, 18, 36, 54, 72].map((off) => (
+                  <g key={`m-${off}`}>
+                    <circle cx={200 + off} cy={200} r="1.5" fill="#080a0c" />
+                    <line x1={200 + off} y1={196} x2={200 + off} y2={204} stroke="#080a0c" strokeWidth="0.85" />
+                    <circle cx={200} cy={200 + off} r="1.5" fill="#080a0c" />
+                    <line
+                      x1={200 - (off > 0 ? 5 + off * 0.14 : 4)}
+                      y1={200 + off}
+                      x2={200 + (off > 0 ? 5 + off * 0.14 : 4)}
+                      y2={200 + off}
+                      stroke="#080a0c"
+                      strokeWidth="0.9"
+                    />
+                  </g>
+                ))}
+                {/* Illuminated fiber-optic center aiming dot */}
+                <circle cx="200" cy="200" r="1.8" fill={hud.scopeHoldingBreath ? '#34d399' : '#ef4444'} />
+                {/* Subtle outer optical ring bevel */}
+                <circle cx="200" cy="200" r="196" fill="none" stroke="rgba(160,185,205,0.12)" strokeWidth="1" />
+              </svg>
+
+              {/* Digital Rangefinder & Optical Telemetry inside lower rim */}
+              <div className="absolute bottom-[10%] left-1/2 flex -translate-x-1/2 items-center gap-3 whitespace-nowrap rounded border border-emerald-400/25 bg-black/80 px-4 py-1 font-mono text-[11px] tracking-[0.16em] text-emerald-300/95">
+                <span>{hud.scopeZoom.toFixed(1)}× FFP</span>
+                <span className="text-emerald-500/40">|</span>
+                <span>DIST {hud.scopeRangeM !== null ? `${hud.scopeRangeM}m` : '---'}</span>
+                <span className="text-emerald-500/40">|</span>
+                <span className="flex items-center gap-1.5">
+                  <span>{hud.scopeHoldingBreath ? 'STEADY' : 'BREATH'}</span>
+                  <span className="inline-block h-1.5 w-12 overflow-hidden rounded-sm bg-emerald-950">
+                    <span
+                      className={`block h-full ${hud.scopeHoldingBreath ? 'bg-emerald-400' : 'bg-amber-300/80'}`}
+                      style={{ width: `${hud.scopeBreath}%` }}
+                    />
+                  </span>
+                </span>
               </div>
-              <div className="absolute right-[16%] top-1/2 -translate-y-1/2 rotate-90 text-[10px] tracking-[0.4em] text-emerald-300/70">BREATH HOLD · G RELEASE</div>
-              <div className="absolute left-1/2 top-[16%] -translate-x-1/2 text-[10px] tracking-[0.4em] text-emerald-300/70">SAN NOVA MARKSMAN OPTIC</div>
+              <div className="absolute left-1/2 top-[9%] -translate-x-1/2 font-mono text-[9px] tracking-[0.26em] text-white/50">
+                WHEEL / Q: ZOOM 4×–8× · SHIFT: HOLD BREATH · G: EXIT
+              </div>
             </div>
           </div>
         )}
@@ -364,6 +487,30 @@ export default function App() {
                   <div className="text-xs text-white/75">Follow the pink GPS line or open Phone → Contracts.</div>
                 </div>
               )
+            )}
+
+            {/* Active Side Quest Tracker */}
+            {hud.sideQuests.active && (
+              <div
+                data-testid="side-quest-hud"
+                className="mt-2.5 rounded-md border-l-4 border-indigo-400 bg-black/80 px-3.5 py-2.5"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[10px] font-black uppercase tracking-[0.24em] text-indigo-300">
+                    SIDE QUEST · {hud.sideQuests.active.category}
+                  </span>
+                  <span className="rounded bg-emerald-600/85 px-1.5 py-0.5 text-[10px] font-extrabold text-white">
+                    +${hud.sideQuests.active.reward.toLocaleString()}
+                  </span>
+                </div>
+                <div className="mt-0.5 text-sm font-extrabold text-white">{hud.sideQuests.active.title}</div>
+                <div className="text-xs leading-snug text-white/80">{hud.sideQuests.active.objectiveText}</div>
+                {hud.sideQuests.active.requiredCount > 1 && (
+                  <div className="mt-1 text-[10px] font-bold text-sky-300">
+                    Progress: {hud.sideQuests.active.progress} / {hud.sideQuests.active.requiredCount}
+                  </div>
+                )}
+              </div>
             )}
 
             {/* Random World Event Tracker */}
@@ -536,7 +683,7 @@ export default function App() {
         )}
 
         {hud?.indoor && (
-          <div className={`absolute left-1/2 -translate-x-1/2 rounded-full border border-teal-300/50 bg-black/85 px-4 py-1 text-[11px] font-bold tracking-[0.3em] text-teal-200 ${isMobileHud ? 'top-[198px]' : 'top-3'}`}>
+          <div className={`absolute left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full border border-teal-300/50 bg-black/85 px-4 py-1 text-[11px] font-bold tracking-[0.3em] text-teal-200 ${isMobileHud ? 'top-[198px]' : 'top-[132px] sm:top-3'}`}>
             INTERIOR · {hud.indoor}
           </div>
         )}
@@ -829,6 +976,25 @@ export default function App() {
 
               <button
                 type="button"
+                data-toggle-motion-blur="true"
+                onClick={toggleMotionBlur}
+                className={`flex items-center justify-between rounded-lg border px-4 py-3 text-left transition ${
+                  hud.motionBlurEnabled
+                    ? 'border-violet-400 bg-violet-500/20 text-violet-200'
+                    : 'border-white/15 bg-white/5 text-white/85 hover:bg-white/10'
+                }`}
+              >
+                <div>
+                  <div className="text-xs font-extrabold tracking-widest">MOTION BLUR</div>
+                  <div className="text-[11px] text-white/60">Optional camera & speed blur ({Math.round(hud.motionBlurIntensity * 100)}%)</div>
+                </div>
+                <span className={`rounded px-2 py-0.5 text-xs font-black ${hud.motionBlurEnabled ? 'bg-violet-400 text-black' : 'bg-white/15 text-white/70'}`}>
+                  {hud.motionBlurEnabled ? 'ON' : 'OFF'}
+                </span>
+              </button>
+
+              <button
+                type="button"
                 data-toggle-beta-body="true"
                 onClick={toggleExperimentalBodyLogic}
                 className={`flex items-center justify-between rounded-lg border px-4 py-3 text-left transition sm:col-span-2 lg:col-span-3 ${
@@ -898,6 +1064,63 @@ export default function App() {
                   <input type="range" min={0} max={23.9} step={0.1} defaultValue={g?.hour ?? 9.4} onChange={(e) => { if (g) g.hour = +e.target.value; }} className="w-full accent-amber-400" />
                 </div>
                 <div>
+                  <div className="mb-1 text-xs font-bold tracking-[0.26em] text-amber-300">
+                    CAR PHYSICS SENSITIVITY · {hud.carSensitivity.toFixed(2)}×
+                  </div>
+                  <input
+                    type="range"
+                    data-slider-car-sens="true"
+                    min={0.25}
+                    max={2.0}
+                    step={0.05}
+                    value={hud.carSensitivity}
+                    onChange={(e) => {
+                      const v = +e.target.value;
+                      setCarSensitivity(v);
+                      g?.setCarSensitivity(v);
+                    }}
+                    className="w-full accent-amber-400"
+                  />
+                </div>
+                <div>
+                  <div className="mb-1 text-xs font-bold tracking-[0.26em] text-violet-300">
+                    MOTION BLUR INTENSITY · {Math.round(hud.motionBlurIntensity * 100)}% {hud.motionBlurEnabled ? '(ON)' : '(OFF)'}
+                  </div>
+                  <input
+                    type="range"
+                    data-slider-motion-blur="true"
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    value={hud.motionBlurIntensity}
+                    onChange={(e) => {
+                      const v = +e.target.value;
+                      setMotionBlurIntensity(v);
+                      g?.setMotionBlurIntensity(v);
+                    }}
+                    className="w-full accent-violet-400"
+                  />
+                </div>
+                <div>
+                  <div className="mb-1 text-xs font-bold tracking-[0.26em] text-sky-300">
+                    PBR MICROTEXTURE FIDELITY · {Math.round(hud.microFidelity * 100)}% ({hud.microResolution}px)
+                  </div>
+                  <input
+                    type="range"
+                    data-slider-micro-fidelity="true"
+                    min={0.25}
+                    max={2.0}
+                    step={0.05}
+                    value={hud.microFidelity}
+                    onChange={(e) => {
+                      const v = +e.target.value;
+                      setMicroFidelity(v);
+                      g?.setMicroFidelity(v);
+                    }}
+                    className="w-full accent-sky-400"
+                  />
+                </div>
+                <div>
                   <div className="mb-1 text-xs font-bold tracking-[0.3em] text-white/50">VOLUME · {volume}%</div>
                   <input
                     type="range"
@@ -914,7 +1137,7 @@ export default function App() {
                   />
                 </div>
                 <div className="rounded-lg bg-white/5 p-3 text-xs leading-relaxed text-white/75">
-                  <b className="text-white">Tips:</b> Head east to <b>San Nova International Airport</b> (✈ on map) to pilot prop planes, private jets & seaplanes. Explore <b>328 Leonida stores</b> across Ocean Beach Art Deco, Little Havana, Wynwood Arts & Strip Plazas, test <b>4-wheel car suspension</b> over dunes, or toggle <b>Mobile Mode</b> & <b>Simulated RTX</b> anytime.
+                  <b className="text-white">Tips:</b> Visit <b>Royal Palms Casino</b> & <b>Apex Motors Dealership</b>, open Phone → <b>Side Quests</b> for 18 new quests, or land a <b>30ft+ pistol headshot</b> for cinematic slow-mo grayscale!
                 </div>
               </div>
             </div>

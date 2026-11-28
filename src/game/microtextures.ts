@@ -236,8 +236,17 @@ const CITY_MAT_PROFILE: Record<string, { kind: MicroSurfaceKind; rx: number; ry:
   roof: { kind: 'asphalt', rx: 5, ry: 5, scale: 0.75 },
 };
 
+/** Maps microtexture fidelity (0.25..2.0) to a power-of-two procedural normal/roughness texture resolution tier. */
+export function getResolutionForFidelity(fidelity: number): 64 | 128 | 256 {
+  if (fidelity < 0.6) return 64;
+  if (fidelity > 1.35) return 256;
+  return 128;
+}
+
 export class PbrMicrotextureSystem {
   private enabled = true;
+  private fidelity = 1.0; // 0.25..2.0 slider
+  private texResolution: 64 | 128 | 256 = 128;
   private texCache = new Map<MicroSurfaceKind, { normal: THREE.DataTexture; rough: THREE.DataTexture }>();
   private repeatedCache = new Map<string, THREE.DataTexture>();
   private entries = new Map<THREE.MeshStandardMaterial, RegisteredMat>();
@@ -245,7 +254,7 @@ export class PbrMicrotextureSystem {
   private getTextures(kind: MicroSurfaceKind) {
     let pair = this.texCache.get(kind);
     if (!pair) {
-      const { normalData, roughData, size } = buildMicroMaps(kind, 128);
+      const { normalData, roughData, size } = buildMicroMaps(kind, this.texResolution);
       const makeTex = (data: Uint8Array) => {
         const tex = new THREE.DataTexture(data, size, size, THREE.RGBAFormat);
         tex.colorSpace = THREE.NoColorSpace;
@@ -264,7 +273,7 @@ export class PbrMicrotextureSystem {
   }
 
   private cloneRepeated(src: THREE.DataTexture, tag: string, rx: number, ry: number): THREE.DataTexture {
-    const key = `${tag}_${rx}_${ry}`;
+    const key = `${tag}_${this.texResolution}_${rx}_${ry}`;
     const existing = this.repeatedCache.get(key);
     if (existing) return existing;
     const t = src.clone();
@@ -375,19 +384,36 @@ export class PbrMicrotextureSystem {
     }
 
     const pair = this.getTextures(kind);
+    const effScale = Math.min(1.65, scale * this.fidelity);
+    const tileBoost = this.fidelity > 1.35 ? 1.25 : this.fidelity < 0.6 ? 0.85 : 1.0;
+    const erx = Math.max(1, Math.round(rx * tileBoost * 2) / 2);
+    const ery = Math.max(1, Math.round(ry * tileBoost * 2) / 2);
+
     if (kind === 'car_flake' && phys.isMeshPhysicalMaterial) {
-      phys.clearcoatNormalMap = this.cloneRepeated(pair.normal, `${kind}_norm`, rx, ry);
-      phys.clearcoatNormalScale.set(scale, scale);
+      phys.clearcoatNormalMap = this.cloneRepeated(pair.normal, `${kind}_norm`, erx, ery);
+      phys.clearcoatNormalScale.set(effScale, effScale);
     } else {
       if (!backup.normalMap) {
-        mat.normalMap = this.cloneRepeated(pair.normal, `${kind}_norm`, rx, ry);
-        mat.normalScale.set(scale, scale);
+        mat.normalMap = this.cloneRepeated(pair.normal, `${kind}_norm`, erx, ery);
+        mat.normalScale.set(effScale, effScale);
       }
       if (!backup.roughnessMap) {
-        mat.roughnessMap = this.cloneRepeated(pair.rough, `${kind}_rough`, rx, ry);
+        mat.roughnessMap = this.cloneRepeated(pair.rough, `${kind}_rough`, erx, ery);
       }
     }
     mat.needsUpdate = true;
+  }
+
+  private clearTextureCache(): void {
+    for (const pair of this.texCache.values()) {
+      pair.normal.dispose();
+      pair.rough.dispose();
+    }
+    for (const tex of this.repeatedCache.values()) {
+      tex.dispose();
+    }
+    this.texCache.clear();
+    this.repeatedCache.clear();
   }
 
   unregisterMaterial(mat: THREE.Material | null | undefined): void {
@@ -407,6 +433,29 @@ export class PbrMicrotextureSystem {
 
   isEnabled(): boolean {
     return this.enabled;
+  }
+
+  getFidelity(): number {
+    return this.fidelity;
+  }
+
+  getResolution(): 64 | 128 | 256 {
+    return this.texResolution;
+  }
+
+  setFidelity(fidelity: number): void {
+    const clamped = Math.min(2.0, Math.max(0.25, fidelity));
+    const nextRes = getResolutionForFidelity(clamped);
+    this.fidelity = clamped;
+    if (nextRes !== this.texResolution) {
+      this.texResolution = nextRes;
+      this.clearTextureCache();
+    }
+    if (this.enabled) {
+      for (const entry of this.entries.values()) {
+        this.applyEntry(entry, true);
+      }
+    }
   }
 
   setEnabled(enabled: boolean): void {

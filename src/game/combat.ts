@@ -3,6 +3,12 @@ import * as THREE from 'three';
 import { WEAPONS, clamp, isMeleeWeapon } from './config';
 import { muzzleWorld } from './humans';
 import { BARE_HAND_MOVES, BARE_HAND_SEQUENCE } from './subAnimations';
+import {
+  type AimTargetCandidate,
+  computeAimAssist,
+  registerPlayerShot,
+  shouldTriggerPistolHeadshotSlomo,
+} from './aimAssist';
 import type { Game } from './Game';
 import type { Ped } from './ped';
 import type { Prop } from './props';
@@ -89,10 +95,21 @@ export function applyHit(
 ) {
   const x = ox + dx * h.t, y = oy + dy * h.t, z = oz + dz * h.t;
   switch (h.kind) {
-    case 'ped':
+    case 'ped': {
+      const wasDead = h.ped!.dead;
       h.ped!.hit(g, dmg, dx, dz, byPlayer, h.head, { shotgun });
+      if (byPlayer) {
+        g.onPlayerHitFeedback(Boolean(h.head));
+        if (shouldTriggerPistolHeadshotSlomo(g.player.weapon, Boolean(h.head), h.t)) {
+          g.triggerPistolHeadshotSlomo(h.t);
+        }
+        if (!wasDead && h.ped!.dead) {
+          g.onPlayerKilledPed(h.ped!.x, h.ped!.z);
+        }
+      }
       if (h.ped!.dead) { h.ped!.rvx += dx * 2; h.ped!.rvz += dz * 2; }
       break;
+    }
     case 'veh':
       h.veh!.damage(dmg * 0.7, g, byPlayer);
       for (let i = 0; i < 3; i++) g.fx.spark(x, y, z, -dx, 0.4, -dz);
@@ -107,9 +124,15 @@ export function applyHit(
     case 'static':
       g.fx.spark(x, y, z, -dx, 0.2, -dz);
       g.fx.dust(x, y, z);
+      if (g.interior) {
+        g.recordIndoorImpact({ kind: 'bullet', x, y, z, nx: -dx, ny: -dy, nz: -dz, radius: 0.14 });
+      }
       break;
     case 'ground':
       g.fx.dust(x, y + 0.1, z);
+      if (g.interior) {
+        g.recordIndoorImpact({ kind: 'bullet', x, y: y + 0.02, z, nx: 0, ny: 1, nz: 0, radius: 0.15 });
+      }
       break;
     default: break;
   }
@@ -163,11 +186,35 @@ export function playerFire(g: Game) {
   const mz = muzzleWorld(p.rig, _m);
   const mx = mz.x, my = mz.y, mzz = mz.z;
   const rightX = -cd.z, rightZ = cd.x;
-  const crouchMul = p.move.crouching ? 0.65 : 1;
-  const spreadMul = crouchMul * (g.input.aim ? 0.55 : 1) * (g.scope ? 0.08 : 1) * (1 + Math.min(1, Math.hypot(p.vx, p.vz) / 8) * 0.6);
+  const aimingNow = Boolean(g.input.aim || g.touch.aim || g.scope);
+  const recoilBase = ('recoil' in w ? w.recoil : 0.014) ?? 0.014;
+  const shotStats = registerPlayerShot(g.recoilState, recoilBase, aimingNow, p.move.crouching);
+  const movePenalty = 1 + Math.min(0.45, Math.hypot(p.vx, p.vz) / 14);
+  const spreadMul = shotStats.spreadMul * (g.scope ? 0.08 : 1) * movePenalty;
+
+  // Magnetic soft aim-assist: cleanly aligns shots near target torso/head so aiming feels realistic and effortless
+  const candidates: AimTargetCandidate[] = [];
+  for (const ped of g.peds) {
+    if (ped.dead) continue;
+    const dxp = ped.x - ox, dzp = ped.z - oz;
+    if (dxp * dxp + dzp * dzp > w.range * w.range) continue;
+    candidates.push({
+      id: ped.id,
+      x: ped.x,
+      y: ped.y,
+      z: ped.z,
+      heightScale: ped.rig.root.scale.y,
+      hostile: ped.hostile || ped.kind === 'gang' || ped.kind === 'cop' || ped.kind === 'guard',
+    });
+  }
+  const assist = computeAimAssist(ox, oy, oz, cd.x, cd.y, cd.z, candidates, aimingNow, g.scope, w.range);
+  const baseDx = assist.dx, baseDy = assist.dy, baseDz = assist.dz;
+  const lockedSpreadScale = assist.locked && w.pellets === 1 ? 0.42 : 1.0;
+
   for (let i = 0; i < w.pellets; i++) {
-    const sx = (Math.random() - 0.5) * 2 * w.spread * spreadMul, sy = (Math.random() - 0.5) * 2 * w.spread * spreadMul;
-    let dx = cd.x + rightX * sx, dy = cd.y + sy, dz = cd.z + rightZ * sx;
+    const sx = (Math.random() - 0.5) * 2 * w.spread * spreadMul * lockedSpreadScale;
+    const sy = (Math.random() - 0.5) * 2 * w.spread * spreadMul * lockedSpreadScale;
+    let dx = baseDx + rightX * sx, dy = baseDy + sy, dz = baseDz + rightZ * sx;
     const l = Math.hypot(dx, dy, dz);
     dx /= l; dy /= l; dz /= l;
     const h = castRay(g, ox, oy, oz, dx, dy, dz, w.range, p.vehicle, null);
@@ -179,7 +226,7 @@ export function playerFire(g: Game) {
   g.audio.shot(p.weapon, 1, 0);
   g.alarm(p.x, p.z, silenced ? 16 : p.weapon === 'pistol' ? 45 : 75, !silenced);
   g.onViolenceEvent(p.x, p.z, silenced ? 16 : 44, 'gun', true);
-  g.kick(('recoil' in w ? w.recoil : 0.014) ?? 0.014);
+  g.kick(shotStats.pitchKick);
   g.playerFiring = true;
   g.firingT = 0.4;
   if (g.wanted === 0 && !silenced) {
@@ -227,11 +274,13 @@ export function playerMelee(g: Game) {
     if (d > reach || (dx * fx + dz * fz) / (d || 1) < cone) continue;
     const l = d || 1;
     const wasBlocking = o.state === 'brawl' && (o.meleeAI.blocking || o.meleeAI.phase === 'dodge_slip');
+    const wasDeadMelee = o.dead;
     o.hit(g, dmgBase + Math.random() * 5, dx / l, dz / l, true, false, {
       katana: p.weapon === 'katana',
       meleeKind: isFists ? 'fists' : 'melee',
       blunt: isBlunt,
     });
+    if (!wasDeadMelee && o.dead) g.onPlayerKilledPed(o.x, o.z);
     if (wasBlocking) {
       blockedAny = true;
       o.vx += (dx / l) * knock * 0.32;
@@ -272,6 +321,10 @@ export function npcShoot(g: Game, p: Ped, acc: number) {
 
 export function explode(g: Game, x: number, y: number, z: number, radius: number, dmg: number, src: Vehicle | null, byPlayer = true) {
   g.fx.explosion(x, y, z, radius * 0.6);
+  if (g.interior) {
+    const gy = g.groundAt(x, z, y);
+    g.recordIndoorImpact({ kind: 'scorch', x, y: gy + 0.025, z, nx: 0, ny: 1, nz: 0, radius: Math.min(2.6, Math.max(1.1, radius * 0.28)) });
+  }
   const cd = Math.hypot(x - g.camX, z - g.camZ);
   g.audio.explosion(clamp(1 - cd / 220, 0.08, 1));
   g.shake(clamp(1.2 - cd / 60, 0, 1.2));

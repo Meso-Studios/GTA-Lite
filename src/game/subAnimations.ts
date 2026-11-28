@@ -677,3 +677,98 @@ export function evaluateViolenceReaction(inp: ViolenceReactionInput): ViolenceRe
   return 'flee';
 }
 
+export interface OrganicMotionInput {
+  clockSec: number;
+  speed: number;
+  stridePhase: number;
+  turnRate: number;
+  aiming: boolean;
+  recoilKick: number; // 0..1 damped firing impulse
+  airborne: boolean;
+  seedOffset: number; // unique per character so crowds don't breathe in unison
+}
+
+export interface OrganicMotionOverlay {
+  chestBreathY: number;
+  pelvisShiftX: number;
+  pelvisRollZ: number;
+  spineCounterTwistY: number;
+  headStabilizeYaw: number;
+  headStabilizeRoll: number;
+  heelStrikeKneeL: number;
+  heelStrikeKneeR: number;
+  shoulderDropL: number;
+  shoulderDropR: number;
+  recoilLeanBack: number;
+  recoilArmKickX: number;
+}
+
+/**
+ * Advanced biomechanical secondary-motion layer applied on top of locomotion & combat poses:
+ * - Organic idle thoracic breathing + subtle postural micro-sway
+ * - Pelvic lateral weight-shift onto stance foot + natural hip drop
+ * - Spine/pelvis counter-rotation during walking/running
+ * - Vestibulo-ocular head stabilization during turns (head stays level & tracks heading)
+ * - Asymmetric heel-strike / toe-off knee flexion refinement
+ * - Crisp damped firearm recoil kickback
+ */
+export function evaluateOrganicMotionOverlay(inp: OrganicMotionInput): OrganicMotionOverlay {
+  const t = inp.clockSec + inp.seedOffset;
+  const spd01 = clamp01(inp.speed / 6.2);
+  const idle01 = 1 - clamp01(inp.speed / 1.4);
+  const grounded = inp.airborne ? 0 : 1;
+
+  // 1. Thoracic breathing (faster and deeper when sprinting/exerted, calm sinusoidal at idle)
+  const breathFreq = 1.65 + spd01 * 2.1;
+  const breathWave = Math.sin(t * breathFreq);
+  const chestBreathY = (0.0085 * idle01 + 0.013 * spd01) * breathWave;
+
+  // 2. Natural idle micro-weight shift + active stride pelvic shift onto stance leg
+  const idleShift = Math.sin(t * 0.55) * 0.016 * idle01;
+  const strideSin = Math.sin(inp.stridePhase);
+  const strideCos = Math.cos(inp.stridePhase);
+  const pelvisShiftX = (idleShift + strideSin * 0.038 * clamp01(inp.speed / 2.6)) * grounded;
+  const pelvisRollZ = (-strideSin * 0.052 * clamp01(inp.speed / 3.4) + Math.sin(t * 0.55) * 0.014 * idle01) * grounded;
+
+  // 3. Spine/pelvis counter-rotation (pelvis rotates forward with leading hip; thorax counter-rotates with opposite arm)
+  const aimStiff = inp.aiming ? 0.35 : 1.0;
+  const spineCounterTwistY = -strideCos * 0.14 * clamp01(inp.speed / 3.8) * aimStiff * grounded;
+
+  // 4. Vestibulo-ocular head stabilization: head anticipates turns & stays upright against body bank
+  const turnClamp = Math.max(-4.5, Math.min(4.5, inp.turnRate));
+  const headStabilizeYaw = turnClamp * 0.075 * (0.4 + 0.6 * spd01);
+  const headStabilizeRoll = -pelvisRollZ * 0.65 + turnClamp * 0.032 * spd01;
+
+  // 5. Asymmetric heel-strike cushioning & push-off knee bend (eliminates stiff pendulum legs)
+  const strikeL = Math.max(0, Math.sin(inp.stridePhase + 0.55)) * Math.max(0, Math.cos(inp.stridePhase));
+  const strikeR = Math.max(0, Math.sin(inp.stridePhase + Math.PI + 0.55)) * Math.max(0, Math.cos(inp.stridePhase + Math.PI));
+  const strideAmp = clamp01(inp.speed / 3.2) * grounded;
+  const heelStrikeKneeL = strikeL * 0.19 * strideAmp;
+  const heelStrikeKneeR = strikeR * 0.19 * strideAmp;
+
+  // 6. Subtle shoulder relaxation / breathing elevation
+  const shoulderDropL = breathWave * 0.012 + strideCos * 0.028 * strideAmp;
+  const shoulderDropR = breathWave * 0.012 - strideCos * 0.028 * strideAmp;
+
+  // 7. Damped firing recoil kickback
+  const rk = clamp01(inp.recoilKick);
+  const recoilLeanBack = -rk * 0.085;
+  const recoilArmKickX = -rk * 0.24;
+
+  return {
+    chestBreathY,
+    pelvisShiftX,
+    pelvisRollZ,
+    spineCounterTwistY,
+    headStabilizeYaw,
+    headStabilizeRoll,
+    heelStrikeKneeL,
+    heelStrikeKneeR,
+    shoulderDropL,
+    shoulderDropR,
+    recoilLeanBack,
+    recoilArmKickX,
+  };
+}
+
+

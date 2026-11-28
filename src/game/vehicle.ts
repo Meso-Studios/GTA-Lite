@@ -439,6 +439,7 @@ export class Vehicle {
         handbrake: this.hand,
         sandFactor: sandF,
         isPlayer: this.mode === 'player',
+        sensitivity: g?.carSensitivity ?? 1.0,
       },
       dt,
     );

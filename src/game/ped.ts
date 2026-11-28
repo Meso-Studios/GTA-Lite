@@ -40,6 +40,7 @@ export class Ped {
   static nid = 1;
   id = Ped.nid++;
   kind: PedKind;
+  look: Look;
   rig: HumanRig;
   x = 0; z = 0; y = 0; yaw = 0; vx = 0; vz = 0;
   hp = 40; maxHp = 40;
@@ -117,6 +118,7 @@ export class Ped {
 
   constructor(kind: PedKind, look: Look) {
     this.kind = kind;
+    this.look = { ...look };
     this.rig = createHuman(look);
     this.rig.kindHint = kind;
     this.speed = 1.25 + Math.random() * 0.5;
@@ -336,7 +338,7 @@ export class Ped {
       else if (this.kind === 'cop') g.crime(2, 'assault');
       if (this.hostile) { this.aggro = true; g.alertAround(this, 28); }
     }
-    const groundY = g.groundAt(this.x, this.z);
+    const groundY = g.groundAt(this.x, this.z, this.y);
     const hitY = this.y + (headshot ? 1.62 : 1.18);
     // Check for a nearby wall behind the victim along the exit vector for realistic vertical wall blood splatter
     const dLen = Math.hypot(dx, dz) || 1;
@@ -361,6 +363,30 @@ export class Ped {
       wallHit,
       isBlunt && !opts?.katana,
     );
+    if (this.indoor && (!isBlunt || effDmg >= 14)) {
+      g.recordIndoorImpact({
+        kind: 'blood',
+        x: this.x,
+        y: groundY + 0.02,
+        z: this.z,
+        nx: 0,
+        ny: 1,
+        nz: 0,
+        radius: this.hp <= 0 ? 0.65 : 0.32,
+      });
+      if (wallHit) {
+        g.recordIndoorImpact({
+          kind: 'blood',
+          x: wallHit.x,
+          y: wallHit.y,
+          z: wallHit.z,
+          nx: wallHit.nx,
+          ny: 0,
+          nz: wallHit.nz,
+          radius: 0.32,
+        });
+      }
+    }
     if (this.hp <= 0) {
       const imp = computeRagdollImpulse(dx, dz, effDmg, headshot, !!opts?.explosive);
       this.kill(g, imp.vx, imp.vy, imp.vz, byPlayer, imp.headWhip);
@@ -392,8 +418,20 @@ export class Ped {
     const dx = vx, dz = vz;
     this.rag = new Ragdoll(this.rig, Math.min(1.25, Math.hypot(vx, vz) * 0.16 + 0.35), dx, vy * 0.55, dz, headWhip);
     this.rig.hips.position.y = 0;
-    const gh = g.groundAt(this.x, this.z);
+    const gh = g.groundAt(this.x, this.z, this.y);
     g.fx.bloodPuddle(this.x, gh, this.z, headWhip > 2 ? 1.35 : 0.95);
+    if (this.indoor) {
+      g.recordIndoorImpact({
+        kind: 'blood',
+        x: this.x,
+        y: gh + 0.02,
+        z: this.z,
+        nx: 0,
+        ny: 1,
+        nz: 0,
+        radius: 0.72,
+      });
+    }
     if (this.tag === 'playerbody') return;
     if (byPlayer) {
       if (this.kind === 'civ' || this.kind === 'tourist') g.crime(1, 'murder');
@@ -995,7 +1033,7 @@ export class Ped {
 
   ragdoll(dt: number, g: Game) {
     this.deadT += dt;
-    const gh = g.groundAt(this.x, this.z);
+    const gh = g.groundAt(this.x, this.z, this.y);
     if (this.rag) {
       this.rag.gy = gh;
       if (this.rag.active) {
@@ -1007,24 +1045,26 @@ export class Ped {
             if (nx !== undefined && nz !== undefined) {
               g.fx.bloodSplatter(ix, iy, iz, -nx * impSp, -1.5, -nz * impSp, nx, 0, nz);
             } else {
-              g.fx.bloodPuddle(ix, g.groundAt(ix, iz), iz, clamp(0.48 + impSp * 0.1, 0.48, 1.45));
+              g.fx.bloodPuddle(ix, g.groundAt(ix, iz, iy), iz, clamp(0.48 + impSp * 0.1, 0.48, 1.45));
             }
           },
           (sx, sy, sz, vx, vz) => {
             g.fx.bloodSmear(sx, sy, sz, vx, vz);
           },
         );
-        // keep collision roughly in sync for world edges
         this.x = this.rag.parts[2].p.x;
         this.z = this.rag.parts[2].p.z;
         this.y = this.rag.parts[2].p.y;
       }
-      // subtle settle twitch
       if (this.rag.settled && this.deadT < 4) {
         const tw = Math.sin(this.deadT * 9) * Math.exp(-this.deadT * 1.6) * 0.05;
         this.rag.parts[3].p.x += tw; this.rag.parts[4].p.x -= tw;
         this.rag.apply();
       }
+    } else {
+      // Restored persisted body lying flat on its exact floor/basement/mezzanine elevation
+      this.rig.root.position.set(this.x, gh + 0.18, this.z);
+      this.rig.root.rotation.set(this.restX || Math.PI / 2, this.yaw, 0);
     }
     const r = this.rig.root;
     const dCam = Math.hypot(this.x - g.camX, this.z - g.camZ);

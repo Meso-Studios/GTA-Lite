@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { Game, HudState } from '../game/Game';
 import type { PhoneAppId, SnapNovaPost } from '../game/phoneSystem';
 import { MISSIONS } from '../game/missions';
+import { SIDE_QUESTS, type SideQuestCategory } from '../game/sideQuests';
 
 interface PhoneOverlayProps {
   game: Game;
@@ -50,6 +51,7 @@ export function PhoneOverlay({
   const [photoFilter, setPhotoFilter] = useState<SnapNovaPost['filter']>('none');
   const [photoCaption, setPhotoCaption] = useState('');
   const [statusNote, setStatusNote] = useState<string | null>(null);
+  const [questCat, setQuestCat] = useState<'all' | SideQuestCategory>('all');
   const [, setTick] = useState(0);
   const msgEndRef = useRef<HTMLDivElement>(null);
 
@@ -115,6 +117,7 @@ export function PhoneOverlay({
     { id: 'messages', label: 'Messages', bg: 'bg-emerald-600', icon: 'MSG', badge: hud.phoneUnread },
     { id: 'contacts', label: 'Contacts', bg: 'bg-sky-600', icon: 'CALL' },
     { id: 'missions', label: 'Contracts', bg: 'bg-amber-600', icon: 'JOBS', badge: MISSIONS.length - hud.completedMissions.length },
+    { id: 'quests', label: 'Side Quests', bg: 'bg-indigo-600', icon: 'SIDE', badge: SIDE_QUESTS.length - hud.sideQuests.completedIds.length },
     { id: 'camera', label: 'Camera', bg: 'bg-orange-500', icon: 'CAM' },
     { id: 'snapnova', label: 'SnapNova', bg: 'bg-pink-600', icon: 'FEED' },
     { id: 'bank', label: 'NovaBank', bg: 'bg-teal-600', icon: 'BANK' },
@@ -188,7 +191,15 @@ export function PhoneOverlay({
             ‹ Home
           </button>
           <span className="text-xs font-extrabold uppercase tracking-[0.2em] text-white/90">
-            {app === 'snapnova' ? 'SnapNova' : app === 'bank' ? 'NovaBank' : app === 'missions' ? 'Contracts' : app}
+            {app === 'snapnova'
+              ? 'SnapNova'
+              : app === 'bank'
+                ? 'NovaBank'
+                : app === 'missions'
+                  ? 'Contracts'
+                  : app === 'quests'
+                    ? 'Side Quests'
+                    : app}
           </span>
           <div className="w-12 text-right">
             {app === 'snapnova' && (
@@ -266,6 +277,12 @@ export function PhoneOverlay({
                 <span>Story Contracts</span>
                 <span className="font-bold text-emerald-300">
                   {hud.completedMissions.length} / {MISSIONS.length}
+                </span>
+              </div>
+              <div className="mt-0.5 flex items-center justify-between">
+                <span>Side Quests</span>
+                <span className="font-bold text-indigo-300">
+                  {hud.sideQuests.completedIds.length} / {hud.sideQuests.totalCount}
                 </span>
               </div>
               <div className="mt-0.5 flex items-center justify-between">
@@ -783,6 +800,116 @@ export function PhoneOverlay({
           </div>
         )}
 
+        {/* ---------------- SIDE QUESTS ---------------- */}
+        {app === 'quests' && (
+          <div className="space-y-2.5 p-3" data-testid="phone-side-quests">
+            {hud.sideQuests.active && (
+              <div className="rounded-xl border border-sky-400/60 bg-sky-500/15 p-3">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="text-[10px] font-black uppercase tracking-widest text-sky-300">
+                    TRACKING · {hud.sideQuests.active.category}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      game.cancelSideQuest();
+                      setTick((t) => t + 1);
+                    }}
+                    className="rounded bg-red-600/90 px-2 py-0.5 text-[10px] font-bold text-white hover:bg-red-500"
+                  >
+                    Cancel
+                  </button>
+                </div>
+                <div className="mt-0.5 text-sm font-extrabold text-white">{hud.sideQuests.active.title}</div>
+                <div className="text-[11px] text-white/80">{hud.sideQuests.active.objectiveText}</div>
+                {hud.sideQuests.active.requiredCount > 1 && (
+                  <div className="mt-1.5 text-[10px] font-bold text-sky-300">
+                    Progress: {hud.sideQuests.active.progress} / {hud.sideQuests.active.requiredCount}
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div className="flex items-center justify-between px-1 text-[10px] font-bold uppercase tracking-widest text-white/55">
+              <span>{SIDE_QUESTS.length} San Nova Side Quests</span>
+              <span className="text-emerald-300">{hud.sideQuests.completedIds.length} Done</span>
+            </div>
+
+            <div className="flex flex-wrap gap-1">
+              {(['all', 'casino', 'dealership', 'marksman', 'vigilante', 'courier', 'motorsport', 'rescue'] as const).map((cat) => (
+                <button
+                  key={cat}
+                  type="button"
+                  onClick={() => setQuestCat(cat)}
+                  className={`rounded px-2 py-0.5 text-[9px] font-extrabold uppercase tracking-wider transition ${
+                    questCat === cat
+                      ? 'bg-indigo-500 text-white'
+                      : 'bg-white/10 text-white/70 hover:bg-white/20'
+                  }`}
+                >
+                  {cat}
+                </button>
+              ))}
+            </div>
+
+            {SIDE_QUESTS.filter((q) => questCat === 'all' || q.category === questCat).map((q) => {
+              const done = hud.sideQuests.completedIds.includes(q.id);
+              const isActive = hud.sideQuests.active?.id === q.id;
+              return (
+                <div
+                  key={q.id}
+                  data-sidequest-card={q.id}
+                  className={`rounded-xl border p-2.5 transition ${
+                    isActive
+                      ? 'border-sky-400 bg-sky-500/15'
+                      : done
+                        ? 'border-emerald-500/35 bg-emerald-950/25'
+                        : 'border-white/10 bg-[#121928]'
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span className="truncate text-xs font-extrabold text-white">{q.title}</span>
+                        {done && (
+                          <span className="rounded bg-emerald-500 px-1.5 py-0.5 text-[9px] font-black text-black">
+                            DONE
+                          </span>
+                        )}
+                      </div>
+                      <div className="mt-0.5 text-[10px] font-semibold uppercase tracking-wider text-indigo-300">
+                        {q.category} · {q.district} · {q.giver}
+                      </div>
+                    </div>
+                    <span className="shrink-0 rounded bg-emerald-600/25 px-2 py-0.5 text-[11px] font-black text-emerald-300">
+                      ${q.reward.toLocaleString()}
+                    </span>
+                  </div>
+                  <p className="mt-1.5 text-[11px] leading-snug text-white/75">{q.summary}</p>
+                  <div className="mt-2 flex items-center justify-between gap-2">
+                    <span className="truncate text-[10px] font-semibold text-sky-200/85">{q.objectiveText}</span>
+                    <button
+                      type="button"
+                      data-accept-sidequest={q.id}
+                      onClick={() => {
+                        game.acceptSideQuest(q.id);
+                        setTick((t) => t + 1);
+                      }}
+                      className={`shrink-0 rounded-lg px-2.5 py-1 text-[11px] font-extrabold transition ${
+                        isActive
+                          ? 'bg-sky-400 text-black'
+                          : 'bg-indigo-500 text-white hover:bg-indigo-400'
+                      }`}
+                    >
+                      {isActive ? 'Tracking' : done ? 'Replay' : 'Accept'}
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
         {/* ---------------- SETTINGS ---------------- */}
         {app === 'settings' && (
           <div className="space-y-2 p-3">
@@ -863,6 +990,74 @@ export function PhoneOverlay({
                 </span>
               </button>
             ))}
+
+            <div className="space-y-2.5 rounded-xl border border-white/10 bg-white/5 p-3">
+              <div>
+                <div className="flex justify-between text-[10px] font-bold uppercase tracking-wider text-white/75">
+                  <span>Car Steering Sensitivity</span>
+                  <span className="text-amber-300">{hud.carSensitivity.toFixed(2)}×</span>
+                </div>
+                <input
+                  type="range"
+                  min={0.25}
+                  max={2.0}
+                  step={0.05}
+                  value={hud.carSensitivity}
+                  onChange={(e) => {
+                    game.setCarSensitivity(+e.target.value);
+                    setTick((t) => t + 1);
+                  }}
+                  className="mt-1 w-full accent-amber-400"
+                />
+              </div>
+              <div>
+                <div className="flex justify-between text-[10px] font-bold uppercase tracking-wider text-white/75">
+                  <span>PBR Microtexture Fidelity</span>
+                  <span className="text-sky-300">{Math.round(hud.microFidelity * 100)}% ({hud.microResolution}px)</span>
+                </div>
+                <input
+                  type="range"
+                  min={0.25}
+                  max={2.0}
+                  step={0.05}
+                  value={hud.microFidelity}
+                  onChange={(e) => {
+                    game.setMicroFidelity(+e.target.value);
+                    setTick((t) => t + 1);
+                  }}
+                  className="mt-1 w-full accent-sky-400"
+                />
+              </div>
+              <div>
+                <div className="flex items-center justify-between text-[10px] font-bold uppercase tracking-wider text-white/75">
+                  <span>Motion Blur ({Math.round(hud.motionBlurIntensity * 100)}%)</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      game.setMotionBlurEnabled(!hud.motionBlurEnabled);
+                      setTick((t) => t + 1);
+                    }}
+                    className={`rounded px-2 py-0.5 text-[10px] font-black ${
+                      hud.motionBlurEnabled ? 'bg-emerald-500 text-black' : 'bg-white/15 text-white/70'
+                    }`}
+                  >
+                    {hud.motionBlurEnabled ? 'ON' : 'OFF'}
+                  </button>
+                </div>
+                <input
+                  type="range"
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  value={hud.motionBlurIntensity}
+                  onChange={(e) => {
+                    game.setMotionBlurIntensity(+e.target.value);
+                    setTick((t) => t + 1);
+                  }}
+                  className="mt-1 w-full accent-fuchsia-400"
+                />
+              </div>
+            </div>
           </div>
         )}
       </div>

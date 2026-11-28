@@ -11,8 +11,8 @@ import * as T from './textures';
 import { World } from './world';
 import {
   BCtx, Door, Lot, MapRect, Place, PropSpawn, addAirport, addBank, addBeachfront, addBoardwalkWheel, addBuilding,
-  addContainers, addCrane, addGas, addGunShop, addHospital, addHouse, addLamp, addLittleHavanaBlock, addPark,
-  addParkingGarage, addPaySpray, addPolice, addRuralGasStation, addSilos, addStripMallBlock, addSuburbanDistrict, addTower, addTree,
+  addCarDealership, addCasino, addContainers, addCrane, addGas, addGunShop, addHospital, addHouse, addLamp, addLittleHavanaBlock, addPark,
+  addParkingGarage, addPaySpray, addPolice, addRuralGasStation, addSilos, addStripMallBlock, addSuburbanDistrict, addSurfaceParkingLot, addTower, addTree,
   addWarehouse, addWynwoodArtsBlock, beachProps, buildingInLot, splitLots,
 } from './buildings';
 import type { FacadeStyle } from './textures';
@@ -20,6 +20,7 @@ import { buildInfrastructure } from './infra';
 import { buildInteriors, Room } from './interiors';
 import { microtextures } from './microtextures';
 import { ATM_LOCATIONS, BANK_BRANCHES } from './bankingSystem';
+import { buildRealisticGrassField } from './grassField';
 
 export interface ParkingSpot { x: number; z: number; yaw: number; used: boolean; id: number; police?: boolean }
 export interface CityData {
@@ -58,23 +59,23 @@ export function buildCity(): CityData {
     const t = T.makeFacade(s, 100 + i * 17);
     const m = s === 'glass'
       ? new THREE.MeshPhysicalMaterial({
-        map: t.map, bumpMap: t.bump, bumpScale: 0.05,
+        map: t.map, bumpMap: t.bump, bumpScale: 0.08,
         emissiveMap: t.emissive, emissive: 0xffffff, emissiveIntensity: 0, vertexColors: true,
-        roughness: 0.07, metalness: 0.78, clearcoat: 1.0, clearcoatRoughness: 0.06, envMapIntensity: 2.15,
+        roughness: 0.24, metalness: 0.36, clearcoat: 0.16, clearcoatRoughness: 0.24, envMapIntensity: 0.52,
       })
       : new THREE.MeshStandardMaterial({
-        map: t.map, bumpMap: t.bump, bumpScale: 0.22,
+        map: t.map, bumpMap: t.bump, bumpScale: 0.28,
         emissiveMap: t.emissive, emissive: 0xffffff, emissiveIntensity: 0, vertexColors: true,
-        roughness: 0.74, metalness: 0.07, envMapIntensity: 0.92,
+        roughness: 0.90, metalness: 0.02, envMapIntensity: 0.22,
       });
     mats['f_' + s] = m;
     facadeMats.push(m);
   });
   const st = T.makeStorefront(55);
   mats.store = new THREE.MeshPhysicalMaterial({
-    map: st.map, bumpMap: st.bump, bumpScale: 0.1,
+    map: st.map, bumpMap: st.bump, bumpScale: 0.14,
     emissiveMap: st.emissive, emissive: 0xffffff, emissiveIntensity: 0, vertexColors: true,
-    roughness: 0.36, metalness: 0.16, clearcoat: 0.45, clearcoatRoughness: 0.18, envMapIntensity: 1.15,
+    roughness: 0.76, metalness: 0.06, clearcoat: 0.0, clearcoatRoughness: 0.52, envMapIntensity: 0.24,
   });
   facadeMats.push(mats.store as THREE.MeshStandardMaterial);
   const atlas = T.makeSignAtlas();
@@ -92,96 +93,100 @@ export function buildCity(): CityData {
   mats.leaf = new THREE.MeshStandardMaterial({ map: leafAtlas, alphaTest: 0.45, side: THREE.DoubleSide, vertexColors: true, roughness: 0.88, metalness: 0 });
   mats.leaf.userData.cast = false;
   mats.emit = new THREE.MeshBasicMaterial({ vertexColors: true, toneMapped: false });
-  mats.glass = new THREE.MeshPhysicalMaterial({ vertexColors: true, color: 0x9fb8c4, roughness: 0.06, metalness: 0.35, clearcoat: 1.0, clearcoatRoughness: 0.05, transparent: true, opacity: 0.44, envMapIntensity: 1.7 });
+  mats.glass = new THREE.MeshPhysicalMaterial({ vertexColors: true, color: 0xbcd4e2, roughness: 0.16, metalness: 0.12, clearcoat: 0.22, clearcoatRoughness: 0.14, transparent: true, opacity: 0.34, envMapIntensity: 0.48 });
   const floorWoodBump = T.makeFloorboardsBump();
   const upholsteryTex = T.makeUpholstery();
   const upholsteryBump = T.makeUpholsteryBump();
   const exitSignTex = T.makeExitSign();
-  mats.intWall = new THREE.MeshStandardMaterial({ map: T.makeWallPlaster(), vertexColors: true, roughness: 0.84 });
-  mats.intCeil = new THREE.MeshStandardMaterial({ map: T.makeCeilingTile(), vertexColors: true, roughness: 0.88 });
-  mats.intTrim = new THREE.MeshStandardMaterial({ map: T.makeWood(), vertexColors: true, roughness: 0.5 });
-  mats.intFloorWood = new THREE.MeshPhysicalMaterial({
+  mats.intWall = new THREE.MeshStandardMaterial({ map: T.makeWallPlaster(), vertexColors: true, roughness: 0.94, metalness: 0.0, envMapIntensity: 0.14 });
+  mats.intCeil = new THREE.MeshStandardMaterial({ map: T.makeCeilingTile(), vertexColors: true, roughness: 0.95, metalness: 0.0, envMapIntensity: 0.14 });
+  mats.intTrim = new THREE.MeshStandardMaterial({ map: T.makeWood(), vertexColors: true, roughness: 0.72, metalness: 0.0, envMapIntensity: 0.16 });
+  mats.intFloorWood = new THREE.MeshStandardMaterial({
     map: T.makeFloorboards(),
     bumpMap: floorWoodBump,
-    bumpScale: 0.08,
+    bumpScale: 0.05,
     vertexColors: true,
-    roughness: 0.34,
-    metalness: 0.04,
-    clearcoat: 0.38,
-    clearcoatRoughness: 0.18,
-    envMapIntensity: 1.0,
+    roughness: 0.68,
+    metalness: 0.0,
+    envMapIntensity: 0.18,
   });
   mats.intFloorWood.userData.cast = false;
   mats.intWood = new THREE.MeshStandardMaterial({
     map: T.makeWood(),
     bumpMap: floorWoodBump,
-    bumpScale: 0.04,
+    bumpScale: 0.03,
     vertexColors: true,
-    roughness: 0.42,
+    roughness: 0.70,
+    metalness: 0.0,
+    envMapIntensity: 0.18,
   });
-  mats.intAccent = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.32, metalness: 0.3 });
+  mats.intAccent = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.68, metalness: 0.06, envMapIntensity: 0.20 });
   mats.carpet = new THREE.MeshStandardMaterial({
     map: upholsteryTex,
     bumpMap: upholsteryBump,
-    bumpScale: 0.06,
+    bumpScale: 0.05,
     vertexColors: true,
-    roughness: 0.92,
+    roughness: 0.97,
+    metalness: 0.0,
+    envMapIntensity: 0.10,
   });
   mats.carpet2 = new THREE.MeshStandardMaterial({
     map: upholsteryTex,
     bumpMap: upholsteryBump,
-    bumpScale: 0.06,
+    bumpScale: 0.05,
     vertexColors: true,
-    roughness: 0.88,
+    roughness: 0.94,
+    metalness: 0.0,
+    envMapIntensity: 0.12,
   });
   mats.intExitSign = new THREE.MeshStandardMaterial({
     map: exitSignTex,
     emissiveMap: exitSignTex,
     emissive: 0xffffff,
-    emissiveIntensity: 1.55,
+    emissiveIntensity: 1.45,
     vertexColors: true,
-    roughness: 0.25,
+    roughness: 0.30,
   });
   mats.intExitSign.userData.cast = false;
   const intTileTex = T.makeInteriorTile();
   intTileTex.repeat.set(1, 1);
-  mats.intTile = new THREE.MeshPhysicalMaterial({ map: intTileTex, vertexColors: true, roughness: 0.24, metalness: 0.08, clearcoat: 0.42, clearcoatRoughness: 0.2, envMapIntensity: 1.05 });
+  mats.intTile = new THREE.MeshStandardMaterial({ map: intTileTex, vertexColors: true, roughness: 0.72, metalness: 0.0, envMapIntensity: 0.18 });
   mats.intTile.userData.cast = false;
   const marbleTex = T.makeInteriorMarble();
   marbleTex.repeat.set(1, 1);
-  mats.intMarble = new THREE.MeshPhysicalMaterial({ map: marbleTex, color: 0xf0eae0, vertexColors: true, roughness: 0.12, metalness: 0.16, clearcoat: 0.82, clearcoatRoughness: 0.09, envMapIntensity: 1.45 });
+  mats.intMarble = new THREE.MeshStandardMaterial({ map: marbleTex, color: 0xf4f0e8, vertexColors: true, roughness: 0.52, metalness: 0.02, envMapIntensity: 0.24 });
   mats.intMarble.userData.cast = false;
   const gravel = T.makeGravel();
-  mats.roof = new THREE.MeshStandardMaterial({ map: gravel, vertexColors: true, roughness: 0.98 });
-  mats.prop = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.8, metalness: 0.05 });
-  mats.propMetal = new THREE.MeshPhysicalMaterial({ vertexColors: true, roughness: 0.26, metalness: 0.78, clearcoat: 0.35, clearcoatRoughness: 0.18, envMapIntensity: 1.45 });
+  mats.roof = new THREE.MeshStandardMaterial({ map: gravel, vertexColors: true, roughness: 0.98, envMapIntensity: 0.14 });
+  mats.prop = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.86, metalness: 0.02, envMapIntensity: 0.18 });
+  mats.propMetal = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.42, metalness: 0.56, envMapIntensity: 0.45 });
   mats.red = new THREE.MeshBasicMaterial({ color: new THREE.Color(1.65, 0.12, 0.08), toneMapped: false });
-  const gSidewalk = new THREE.MeshStandardMaterial({ map: T.makeSidewalk(), bumpMap: T.makeSidewalkBump(), bumpScale: 0.08, vertexColors: true, roughness: 0.88 });
-  const gConc = new THREE.MeshStandardMaterial({ map: T.makeConcrete(), vertexColors: true, roughness: 0.9 });
-  const gAsph = new THREE.MeshStandardMaterial({ map: T.makeAsphaltLot(), vertexColors: true, roughness: 0.86 });
-  const gGrass = new THREE.MeshStandardMaterial({ map: T.makeGrass(), vertexColors: true, roughness: 0.98 });
-  const gSand = new THREE.MeshStandardMaterial({ map: T.makeSand(), bumpMap: T.makeSandBump(), bumpScale: 0.14, vertexColors: true, roughness: 0.95 });
-  const gWood = new THREE.MeshStandardMaterial({ map: T.makeWood(), vertexColors: true, roughness: 0.85 });
-  const runwayMat = new THREE.MeshStandardMaterial({ map: T.makeRunwayTexture(), bumpMap: T.makeRoadBump(), bumpScale: 0.07, vertexColors: true, roughness: 0.78 });
+  const gSidewalk = new THREE.MeshStandardMaterial({ map: T.makeSidewalk(), bumpMap: T.makeSidewalkBump(), bumpScale: 0.11, vertexColors: true, roughness: 0.94, envMapIntensity: 0.16 });
+  const gConc = new THREE.MeshStandardMaterial({ map: T.makeConcrete(), vertexColors: true, roughness: 0.94, envMapIntensity: 0.16 });
+  const gAsph = new THREE.MeshStandardMaterial({ map: T.makeAsphaltLot(), vertexColors: true, roughness: 0.94, envMapIntensity: 0.18 });
+  const gGrass = new THREE.MeshStandardMaterial({ map: T.makeGrass(), vertexColors: true, roughness: 0.98, envMapIntensity: 0.12 });
+  const gSand = new THREE.MeshStandardMaterial({ map: T.makeSand(), bumpMap: T.makeSandBump(), bumpScale: 0.16, vertexColors: true, roughness: 0.97, envMapIntensity: 0.14 });
+  const gWood = new THREE.MeshStandardMaterial({ map: T.makeWood(), vertexColors: true, roughness: 0.88, envMapIntensity: 0.18 });
+  const runwayMat = new THREE.MeshStandardMaterial({ map: T.makeRunwayTexture(), bumpMap: T.makeRoadBump(), bumpScale: 0.08, vertexColors: true, roughness: 0.92, envMapIntensity: 0.18 });
   for (const m of [gSidewalk, gConc, gAsph, gGrass, gSand, gWood, runwayMat]) m.userData.cast = false;
   Object.assign(mats, { g_sidewalk: gSidewalk, conc: gConc, g_asph: gAsph, g_grass: gGrass, g_sand: gSand, wood: gWood, runway: runwayMat });
-  mats.water = new THREE.MeshPhysicalMaterial({ color: 0x2c7ea6, roughness: 0.06, metalness: 0.35, clearcoat: 0.9, clearcoatRoughness: 0.06, vertexColors: true, envMapIntensity: 1.8 });
-  mats.pool = new THREE.MeshPhysicalMaterial({ color: 0x35c4e6, roughness: 0.05, metalness: 0.12, clearcoat: 0.8, emissive: 0x0a4a5a, emissiveIntensity: 0.65 });
+  mats.water = new THREE.MeshPhysicalMaterial({ color: 0x2c7ea6, roughness: 0.16, metalness: 0.14, clearcoat: 0.35, clearcoatRoughness: 0.18, vertexColors: true, envMapIntensity: 0.72 });
+  mats.pool = new THREE.MeshPhysicalMaterial({ color: 0x35c4e6, roughness: 0.12, metalness: 0.08, clearcoat: 0.32, emissive: 0x0a4a5a, emissiveIntensity: 0.45, envMapIntensity: 0.65 });
   mats.water.userData.cast = false; mats.pool.userData.cast = false;
   const roadBump = T.makeRoadBump();
   const roadRough = T.makeRoadRoughness();
   roadRough.repeat.set(1, 1);
   const roadMat = new THREE.MeshPhysicalMaterial({
-    map: T.makeRoad(), bumpMap: roadBump, bumpScale: 0.085,
-    roughnessMap: roadRough, roughness: 0.85, metalness: 0.12,
-    clearcoat: 0.46, clearcoatRoughness: 0.17, envMapIntensity: 1.42, vertexColors: true,
+    map: T.makeRoad(), bumpMap: roadBump, bumpScale: 0.11,
+    roughnessMap: roadRough, roughness: 0.95, metalness: 0.0,
+    clearcoat: 0.0, clearcoatRoughness: 0.85, envMapIntensity: 0.18, vertexColors: true,
   });
   const interMat = new THREE.MeshPhysicalMaterial({
-    map: T.makeIntersection(), bumpMap: roadBump, bumpScale: 0.085,
-    roughnessMap: roadRough, roughness: 0.85, metalness: 0.12,
-    clearcoat: 0.46, clearcoatRoughness: 0.17, envMapIntensity: 1.42, vertexColors: true,
+    map: T.makeIntersection(), bumpMap: roadBump, bumpScale: 0.11,
+    roughnessMap: roadRough, roughness: 0.95, metalness: 0.0,
+    clearcoat: 0.0, clearcoatRoughness: 0.85, envMapIntensity: 0.18, vertexColors: true,
   });
-  const xwMat = new THREE.MeshStandardMaterial({ map: T.makeCrosswalk(), vertexColors: true, roughness: 0.85, transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 });
+  const xwMat = new THREE.MeshStandardMaterial({ map: T.makeCrosswalk(), vertexColors: true, roughness: 0.88, transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 });
   for (const m of [roadMat, interMat, xwMat]) m.userData.cast = false;
   Object.assign(mats, { road: roadMat, inter: interMat, xwalk: xwMat });
   microtextures.registerCityMaterials(mats);
@@ -276,8 +281,8 @@ export function buildCity(): CityData {
   const ocean = new THREE.Mesh(
     new THREE.PlaneGeometry(14000, 9000).rotateX(-Math.PI / 2),
     new THREE.MeshPhysicalMaterial({
-      color: 0x09688a, roughness: 0.035, metalness: 0.44, clearcoat: 1.0, clearcoatRoughness: 0.035,
-      normalMap: waterNormal, normalScale: new THREE.Vector2(1.15, 1.15), envMapIntensity: 2.7,
+      color: 0x0e6b8c, roughness: 0.16, metalness: 0.24, clearcoat: 0.35, clearcoatRoughness: 0.16,
+      normalMap: waterNormal, normalScale: new THREE.Vector2(0.95, 0.95), envMapIntensity: 1.15,
     }),
   );
   ocean.position.set(0, -0.42, 4800);
@@ -369,7 +374,7 @@ export function buildCity(): CityData {
 
   // ---------------------------------------------------------------- core city blocks
   const shift = (lot: Lot, bx: number, bz: number): Lot => ({ x0: lot.x0 + bx, x1: lot.x1 + bx, z0: lot.z0 + bz, z1: lot.z1 + bz, faces: lot.faces });
-  const mapColors: Record<string, string> = { R: '#5b6b4a', C: '#6c675e', M: '#6c675e', D: '#6c675e', B: '#6c675e', L: '#596068', P: '#4f7a3a', I: '#5b5d60', H: '#6c675e', Q: '#6c675e', T: '#8a8160', K: '#55575c', S: '#55575c', Y: '#55575c', G: '#6c675e' };
+  const mapColors: Record<string, string> = { R: '#5b6b4a', C: '#6c675e', M: '#6c675e', D: '#6c675e', B: '#6c675e', L: '#596068', V: '#b5923e', A: '#4c6d8c', P: '#4f7a3a', I: '#5b5d60', H: '#6c675e', Q: '#6c675e', T: '#8a8160', K: '#55575c', S: '#55575c', Y: '#55575c', G: '#6c675e' };
   for (let bj = 0; bj < NB; bj++)
     for (let bi = 0; bi < NB; bi++) {
       const bx = blockCenter(bi), bz = blockCenter(bj);
@@ -391,10 +396,16 @@ export function buildCity(): CityData {
         }
         case 'M': {
           const dist: 'havana' | 'wynwood' | 'downtown' = bi <= 2 ? 'havana' : bi >= 6 ? 'wynwood' : 'downtown';
-          for (const lot of lotsOf(rng.chance(0.5) ? 2 : 3, 2, 4)) {
+          const midLots = lotsOf(rng.chance(0.5) ? 2 : 3, 2, 4);
+          midLots.forEach((lot, idx) => {
+            // Dedicate realistic urban surface parking lots on selected midtown parcels
+            if (idx === midLots.length - 1 && (bi + bj) % 3 === 1) {
+              addSurfaceParkingLot(ctx, lot);
+              return;
+            }
             const style = styleMid();
             buildingInLot(ctx, lot, { floors: rng.int(6, 14), style, store: true, fire: true, ad: rng.chance(0.25), district: dist });
-          }
+          });
           break;
         }
         case 'C':
@@ -423,14 +434,18 @@ export function buildCity(): CityData {
               { x0: -42, x1: -18, z0: -42, z1: 42, faces: 8 | 4 | 1 }, { x0: 18, x1: 42, z0: -42, z1: 42, faces: 2 | 4 | 1 }, { x0: -14, x1: 14, z0: -2, z1: 42, faces: 1 },
             ].map((l) => shift(l, bx, bz));
           } else lots = lotsOf(3, rng.chance(0.5) ? 2 : 3, 4);
-          for (const lot of lots) {
+          lots.forEach((lot, idx) => {
+            if (t === 'C' && idx === 0 && (bi + bj) % 2 === 0) {
+              addSurfaceParkingLot(ctx, lot);
+              return;
+            }
             if (rng.chance(0.05)) {
               addTree(ctx, (lot.x0 + lot.x1) / 2, (lot.z0 + lot.z1) / 2, 3);
-              continue;
+              return;
             }
             const style = rng.pick(['brick', 'apartment', 'stone', 'brick'] as FacadeStyle[]);
             buildingInLot(ctx, lot, { floors: rng.int(2, 5), style, store: true, fire: true, ad: rng.chance(0.15), district: 'strip' });
-          }
+          });
           break;
         }
         case 'R': {
@@ -469,6 +484,8 @@ export function buildCity(): CityData {
         case 'Q': addPolice(ctx, bx, bz); break;
         case 'B': addBank(ctx, bx, bz); break;
         case 'L': addParkingGarage(ctx, bx, bz); break;
+        case 'V': addCasino(ctx, bx, bz, bi === 5 ? 'ROYAL PALMS CASINO' : 'GOLDEN SANDS CASINO'); break;
+        case 'A': addCarDealership(ctx, bx, bz, bi === 6 ? 'APEX MOTORS' : 'NOVA AUTO GALLERY'); break;
         case 'S': {
           addGas(ctx, bx, bz);
           for (const s of [-1, 1]) addBuilding(ctx, { cx: bx + s * 33, cz: bz - 8, w: 14, d: 38, floors: 3, style: 'apartment', store: true, faces: s > 0 ? 2 : 8, fire: false });
@@ -507,19 +524,68 @@ export function buildCity(): CityData {
   segs.forEach((s, si) => {
     const rx = -s.dz, rz = s.dx;
     const at = (a: number, lat: number): [number, number] => [s.x0 + s.dx * a + rx * lat, s.z0 + s.dz * a + rz * lat];
+    const bannerCols = [0xc83e4d, 0x2563eb, 0xd97706, 0x0f766e, 0x7c3aed];
     for (let i = 0; i < 2; i++) {
       const side = (i + si) % 2 ? 1 : -1;
       const [lx, lz] = at(26 + i * 42, side * (RW + 1.4));
       addLamp(ctx, lx, lz, -rx * side, -rz * side);
+      // Hanging fabric streetlamp district banner (mounted flush to lamp mast)
+      const byaw = Math.atan2(-rx * side, -rz * side);
+      const bCol = bannerCols[(si + i) % bannerCols.length];
+      batch.add('propMetal', box(0.06, 0.06, 0.72, lx - rx * side * 0.42, 5.45, lz - rz * side * 0.42, 0x3a3f46, byaw), chunk(lx, lz));
+      batch.add('prop', box(0.05, 1.38, 0.56, lx - rx * side * 0.44, 4.08, lz - rz * side * 0.44, bCol, byaw), chunk(lx, lz));
     }
     const dist = Math.hypot(s.x0 + s.dx * 47, s.z0 + s.dz * 47);
-    const treeP = dist < 150 ? 0.4 : 0.8;
+    const treeP = dist < 150 ? 0.45 : 0.8;
     for (const side of [-1, 1]) {
       for (let a = 20; a < s.len - 18; a += 22) {
         if (!rng.chance(treeP)) continue;
         const aa = a + rng.range(-2, 2) + (side > 0 ? 6 : 0);
         const [tx, tz] = at(aa, side * (RW + 2.35));
         addTree(ctx, tx, tz, rng.chance(0.15) ? 2 : -1, 0.8);
+        // Cast-iron square sidewalk tree grate seated flush around tree trunk
+        batch.add('propMetal', box(1.65, 0.04, 1.65, tx, SIDEWALK_Y + 0.005, tz, 0x2d3238), chunk(tx, tz));
+      }
+
+      // Rich Sidewalk Streetscape Details: wooden/cast-iron benches, newspaper boxes, parking meters, storm grates & cafe seating
+      const faceYaw = Math.atan2(-rx * side, -rz * side);
+      const benchA = side > 0 ? 34 : 58;
+      if (rng.chance(0.58)) {
+        const [bx3, bz3] = at(benchA, side * (RW + 3.4));
+        const bCh = chunk(bx3, bz3);
+        batch.add('wood', box(1.85, 0.08, 0.48, bx3, SIDEWALK_Y + 0.46, bz3, 0x7d5533, faceYaw), bCh);
+        batch.add('wood', box(1.85, 0.42, 0.07, bx3 + rx * side * 0.22, SIDEWALK_Y + 0.56, bz3 + rz * side * 0.22, 0x7d5533, faceYaw), bCh);
+        for (const off of [-0.72, 0.72]) {
+          batch.add('propMetal', box(0.08, 0.46, 0.48, bx3 + s.dx * off, SIDEWALK_Y, bz3 + s.dz * off, 0x2a2f36, faceYaw), bCh);
+        }
+        world.addBox(bx3 - 0.95, bx3 + 0.95, bz3 - 0.5, bz3 + 0.5, SIDEWALK_Y + 0.95);
+      }
+      // Colorful sidewalk newspaper & mail boxes near street corners
+      if (rng.chance(0.42)) {
+        const [nx, nz] = at(18, side * (RW + 1.35));
+        const nCh = chunk(nx, nz);
+        batch.add('propMetal', box(0.52, 1.12, 0.46, nx, SIDEWALK_Y, nz, 0x1d4ed8, faceYaw), nCh);
+        batch.add('prop', box(0.46, 1.02, 0.42, nx + s.dx * 0.58, SIDEWALK_Y, nz + s.dz * 0.58, 0xd97706, faceYaw), nCh);
+        batch.add('prop', box(0.46, 1.02, 0.42, nx + s.dx * 1.12, SIDEWALK_Y, nz + s.dz * 1.12, 0xb91c1c, faceYaw), nCh);
+      }
+      // Curb storm-drain grates & street manhole covers (realistic urban street detail!)
+      const [gx, gz] = at(22, side * (RW - 0.55));
+      batch.add('propMetal', box(0.65, 0.02, 0.95, gx, 0.02, gz, 0x2b3036, faceYaw), chunk(gx, gz));
+      if (side === 1) {
+        const [mx, mz] = at(s.len * 0.52, 0);
+        batch.add('propMetal', cyl(0.44, 0.44, 0.025, mx, 0.02, mz, 0x32373e, 10), chunk(mx, mz));
+      }
+      // Sidewalk cafe bistro table + umbrella in lively downtown/commercial zones
+      if (dist < 280 && rng.chance(0.32)) {
+        const [cx3, cz3] = at(48, side * (RW + 3.9));
+        const cCh = chunk(cx3, cz3);
+        batch.add('propMetal', cyl(0.04, 0.04, 2.25, cx3, SIDEWALK_Y, cz3, 0x3b424c, 6), cCh);
+        batch.add('prop', cyl(0.58, 0.58, 0.06, cx3, SIDEWALK_Y + 0.74, cz3, 0xf2ede4, 10), cCh);
+        const uCol = bannerCols[(si + (side > 0 ? 1 : 3)) % bannerCols.length];
+        const umb = new THREE.ConeGeometry(1.18, 0.42, 8);
+        umb.translate(cx3, SIDEWALK_Y + 2.25, cz3);
+        batch.add('prop', finish(umb, uCol), cCh);
+        world.addCircle(cx3, cz3, 0.65, SIDEWALK_Y + 2.4, 'cafe');
       }
     }
     if (rng.chance(0.4)) {
@@ -559,12 +625,20 @@ export function buildCity(): CityData {
       batch.add('prop', box(1.6, 0.5, 0.06, wx, 1.0, wz, 0xf39c12, Math.atan2(rx, rz)), chunk(wx, wz));
     }
     for (const dirSign of [1, -1]) {
+      let meterIdx = 0;
       for (let a = 30; a < s.len - 24; a += 6.4) {
         if (!rng.chance(0.4)) continue;
         const lat = PARK_OFF * dirSign;
         const [px, pz] = at(a, lat);
         const yaw = Math.atan2(s.dx * dirSign, s.dz * dirSign);
         parking.push({ x: px, z: pz, yaw, used: false, id: spotId++ });
+        // Sidewalk stainless parking meter alongside parked curb bays
+        if (meterIdx++ % 2 === 0) {
+          const [mx, mz] = at(a, (RW + 0.65) * dirSign);
+          const mCh = chunk(mx, mz);
+          batch.add('propMetal', cyl(0.035, 0.04, 1.15, mx, SIDEWALK_Y, mz, 0x4b5563, 6), mCh);
+          batch.add('propMetal', box(0.16, 0.24, 0.12, mx, SIDEWALK_Y + 1.15, mz, 0x374151, yaw), mCh);
+        }
       }
     }
   });
@@ -630,8 +704,10 @@ export function buildCity(): CityData {
     ctx.doors.push({ x: br.x, z: br.z, yaw: br.doorYaw, name: br.name, kind: 'bank' });
   }
 
-  // ---------------------------------------------------------------- build batches
+  // ---------------------------------------------------------------- build batches & real 3D grass blades
   batch.build(group, mats);
+  const grassField = buildRealisticGrassField(world, rng);
+  group.add(grassField.mesh);
 
   // instanced traffic lenses
   const lens = new THREE.InstancedMesh(new THREE.SphereGeometry(0.17, 8, 6), new THREE.MeshBasicMaterial({ toneMapped: false }), lensPos.length);
@@ -678,50 +754,50 @@ export function buildCity(): CityData {
       pools.visible = n > 0.04;
     },
     setRtx(enabled: boolean) {
-      // Toggle Simulated RTX wet-street reflections, high-gloss clearcoat & mirror facades
-      const cc = enabled ? 0.46 : 0.0;
-      const rEnv = enabled ? 1.42 : 0.4;
+      // Natural physically-grounded non-shiny outdoor material response (matte asphalt/brick, satin glass, crisp relief)
+      const cc = 0.0;
+      const rEnv = enabled ? 0.20 : 0.14;
       roadMat.clearcoat = cc;
-      roadMat.clearcoatRoughness = enabled ? 0.17 : 0.65;
+      roadMat.clearcoatRoughness = 0.85;
       roadMat.roughnessMap = enabled ? roadRough : null;
-      roadMat.roughness = enabled ? 0.85 : 0.92;
-      roadMat.metalness = enabled ? 0.12 : 0.02;
+      roadMat.roughness = enabled ? 0.95 : 0.97;
+      roadMat.metalness = 0.0;
       roadMat.envMapIntensity = rEnv;
       roadMat.needsUpdate = true;
       interMat.clearcoat = cc;
-      interMat.clearcoatRoughness = enabled ? 0.17 : 0.65;
+      interMat.clearcoatRoughness = 0.85;
       interMat.roughnessMap = enabled ? roadRough : null;
-      interMat.roughness = enabled ? 0.85 : 0.92;
-      interMat.metalness = enabled ? 0.12 : 0.02;
+      interMat.roughness = enabled ? 0.95 : 0.97;
+      interMat.metalness = 0.0;
       interMat.envMapIntensity = rEnv;
       interMat.needsUpdate = true;
       const fGlass = mats.f_glass as THREE.MeshPhysicalMaterial;
       if (fGlass) {
-        fGlass.clearcoat = enabled ? 1.0 : 0.0;
-        fGlass.clearcoatRoughness = enabled ? 0.05 : 0.3;
-        fGlass.metalness = enabled ? 0.8 : 0.42;
-        fGlass.roughness = enabled ? 0.06 : 0.3;
-        fGlass.envMapIntensity = enabled ? 2.3 : 0.65;
+        fGlass.clearcoat = enabled ? 0.16 : 0.0;
+        fGlass.clearcoatRoughness = enabled ? 0.24 : 0.38;
+        fGlass.metalness = enabled ? 0.36 : 0.24;
+        fGlass.roughness = enabled ? 0.24 : 0.38;
+        fGlass.envMapIntensity = enabled ? 0.52 : 0.32;
         fGlass.needsUpdate = true;
       }
-      const pm = mats.propMetal as THREE.MeshPhysicalMaterial;
+      const pm = mats.propMetal as THREE.MeshStandardMaterial;
       if (pm) {
-        pm.clearcoat = enabled ? 0.65 : 0.0;
-        pm.roughness = enabled ? 0.18 : 0.4;
-        pm.envMapIntensity = enabled ? 2.1 : 0.6;
+        pm.roughness = enabled ? 0.48 : 0.54;
+        pm.envMapIntensity = enabled ? 0.34 : 0.24;
         pm.needsUpdate = true;
       }
       const stM = mats.store as THREE.MeshPhysicalMaterial;
       if (stM) {
-        stM.clearcoat = enabled ? 0.72 : 0.0;
-        stM.clearcoatRoughness = enabled ? 0.12 : 0.4;
-        stM.envMapIntensity = enabled ? 1.6 : 0.5;
+        stM.clearcoat = 0.0;
+        stM.clearcoatRoughness = 0.62;
+        stM.roughness = 0.76;
+        stM.envMapIntensity = enabled ? 0.24 : 0.18;
         stM.needsUpdate = true;
       }
       if (ocean.material instanceof THREE.MeshPhysicalMaterial) {
-        ocean.material.roughness = enabled ? 0.04 : 0.24;
-        ocean.material.clearcoat = enabled ? 1.0 : 0.0;
-        ocean.material.envMapIntensity = enabled ? 2.5 : 0.85;
+        ocean.material.roughness = enabled ? 0.16 : 0.28;
+        ocean.material.clearcoat = enabled ? 0.35 : 0.0;
+        ocean.material.envMapIntensity = enabled ? 1.15 : 0.62;
         ocean.material.needsUpdate = true;
       }
     },
@@ -730,6 +806,7 @@ export function buildCity(): CityData {
     },
     update(dt: number, time: number) {
       void dt;
+      grassField.update(time);
       if (ocean.material instanceof THREE.MeshStandardMaterial && ocean.material.normalMap) {
         ocean.material.normalMap.offset.set(time * 0.004, time * 0.0026);
       }

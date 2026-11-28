@@ -107,15 +107,15 @@ export const PIER_END = CORE_PIER_END;
 
 // District map (rows = j from north to south, cols = i from west to east)
 // R residential, C low-rise commercial, M mid-rise, D downtown towers, B bank, L parking garage,
-// P park, I industrial, H hospital, Q police, T beachfront, K port, S gas, Y pay'n'spray, G gun shop
+// V casino resort, A car dealership, P park, I industrial, H hospital, Q police, T beachfront, K port, S gas, Y pay'n'spray, G gun shop
 export const DISTRICTS: string[] = [
   'RRRRCCIII',
   'RRPRCMIII',
   'RHRQMMCII',
-  'RCMDDDMCI',
-  'RCMDBDMCI',
-  'RCMDDLMCC',
-  'RRCMMCSYI',
+  'RCADDDMCI',
+  'RCMDBDACI',
+  'RCVDDLMCC',
+  'RRCMMVSYI',
   'RRRCGCCKK',
   'TTTTTTKKK',
 ];

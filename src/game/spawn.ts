@@ -293,8 +293,70 @@ export function streamCrowds(g: Game, dt: number) {
 
 // ------------------------------------------------------------------ police
 let policeT = 0;
+let indoorPoliceT = 0;
+const BREACH_SHOUTS = [
+  'San Nova PD! Clear the doorway — hands up!',
+  'Police! Breaching the building, drop the weapon!',
+  'Suspect spotted inside! Move in!',
+  'San Nova PD! Nowhere to run, surrender now!',
+];
+
 export function updatePolice(g: Game, dt: number) {
   policeT -= dt;
+  indoorPoliceT -= dt;
+
+  // Police enter buildings when player has a wanted level inside an interior!
+  if (g.interior) {
+    if (g.wanted > 0 && indoorPoliceT <= 0) {
+      const activeIndoorCops = g.peds.filter((p) => p.indoor && p.kind === 'cop' && !p.dead).length;
+      const maxIndoorCops = Math.min(6, g.wanted + 1);
+      if (activeIndoorCops < maxIndoorCops) {
+        const room = g.interior.room;
+        // Breach through Main Exit or Side Exit doors (choosing one not right on top of the player if possible)
+        const entryExits = room.exits.slice(0, 2);
+        const breachExit = entryExits.find((e) => Math.hypot(e.x - g.playerX, e.z - g.playerZ) > 3.5) ?? entryExits[0];
+        const batch = Math.min(maxIndoorCops - activeIndoorCops, g.wanted >= 3 ? 2 : 1);
+        for (let i = 0; i < batch; i++) {
+          const spread = (i - (batch - 1) * 0.5) * 1.15;
+          const sx = breachExit.x + Math.cos(breachExit.yaw) * spread;
+          const sz = breachExit.z - Math.sin(breachExit.yaw) * spread;
+          const p = new Ped('cop', copLook(rng));
+          p.indoor = true;
+          p.indoorRole = 'guard';
+          p.indoorHomeX = sx;
+          p.indoorHomeZ = sz;
+          p.indoorBaseYaw = breachExit.yaw;
+          p.mission = true;
+          p.x = sx;
+          p.z = sz;
+          p.y = breachExit.y;
+          p.yaw = Math.atan2(g.playerX - sx, g.playerZ - sz);
+          p.hostile = true;
+          p.aggro = true;
+          p.state = 'attack';
+          p.hp = p.maxHp = 60 + g.wanted * 6;
+          p.arm(g.wanted >= 5 ? 'carbine' : g.wanted >= 4 ? 'rifle' : g.wanted >= 3 ? 'smg' : 'pistol');
+          p.dmg = g.wanted >= 4 ? 6 : 5;
+          p.accuracy = 0.84 + g.wanted * 0.06;
+          p.speed = 4.6;
+          p.sight = 48;
+          p.freeCityLastHint = BREACH_SHOUTS[(p.id + i) % BREACH_SHOUTS.length];
+          p.place(sx, sz);
+          p.rig.root.position.set(p.x, p.y, p.z);
+          p.rig.root.rotation.set(0, p.yaw, 0);
+          upgradeHumanToGlb(p.rig);
+          g.addPed(p);
+        }
+        g.audio.door();
+        g.ev.onToast('San Nova PD officers breached the building!', 'warn');
+        indoorPoliceT = Math.max(4.5, 9.5 - g.wanted * 1.1);
+      } else {
+        indoorPoliceT = 2.0;
+      }
+    }
+    return;
+  }
+
   const want = [0, 2, 3, 5, 7, 9][g.wanted];
   let cops = 0;
   for (const v of g.vehicles) {

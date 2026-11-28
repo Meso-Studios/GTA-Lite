@@ -64,30 +64,30 @@ function buildSkyReflectionScene(phase: RtxEnvPhase | 'flat'): THREE.Scene {
   };
 
   if (phase === 'day') {
-    // Crisp tropical sun hotspot + azure zenith contrast + vivid turquoise ocean reflection band + skyline contrast
-    addPanel(0xfff7e0, 8.2, 22, 18, 12, 8.0, 8.0);
-    addPanel(0xd8f0ff, 2.2, -18, 16, -14, 18, 7);
-    addPanel(0x1ac8ee, 1.6, 0, -3.5, 24, 38, 5.0);
-    addPanel(0xffe0b2, 1.35, -24, 3.5, 6, 16, 4.5);
-    addPanel(0x1f2b3a, 0.75, 24, 2.0, -10, 20, 4.2);
-    addPanel(0x283648, 0.75, -16, 2.0, 20, 18, 3.8);
+    // Natural coastal sky & soft sun bounce (no chrome-mirror glare on matte architecture)
+    addPanel(0xfff6e2, 2.9, 22, 18, 12, 9.0, 9.0);
+    addPanel(0xd8eefc, 1.35, -18, 16, -14, 18, 7);
+    addPanel(0x3ba8c6, 0.9, 0, -3.5, 24, 38, 5.0);
+    addPanel(0xf5dfbe, 0.85, -24, 3.5, 6, 16, 4.5);
+    addPanel(0x283340, 0.55, 24, 2.0, -10, 20, 4.2);
+    addPanel(0x2f3c4c, 0.55, -16, 2.0, 20, 18, 3.8);
   } else if (phase === 'sunset') {
-    // Fiery Leonida golden-hour sun + coral/magenta horizon ribbon + warm Art Deco neon glints
-    addPanel(0xff9b38, 8.5, 26, 7, 10, 9.5, 6.8);
-    addPanel(0xff4a7a, 2.8, 18, 4, -18, 22, 5.2);
-    addPanel(0xff8e42, 2.5, -22, 6, 12, 20, 5.2);
-    addPanel(0x5d4eff, 1.7, -10, 18, -16, 20, 8);
-    addPanel(0x18e0ff, 2.4, -18, 1.5, -18, 12, 2.4);
-    addPanel(0xff2ea8, 2.4, 16, 1.5, 20, 12, 2.4);
+    // Warm golden-hour sun + natural horizon sky reflection
+    addPanel(0xffa652, 3.2, 26, 7, 10, 10.0, 7.0);
+    addPanel(0xe86c84, 1.45, 18, 4, -18, 22, 5.2);
+    addPanel(0xf09a5c, 1.35, -22, 6, 12, 20, 5.2);
+    addPanel(0x524b9e, 1.0, -10, 18, -16, 20, 8);
+    addPanel(0x38b6d4, 1.15, -18, 1.5, -18, 12, 2.4);
+    addPanel(0xd45698, 1.15, 16, 1.5, 20, 12, 2.4);
   } else {
-    // Vice Neon Night: vivid magenta, electric cyan, warm sodium streetlights & skyline window bands
-    addPanel(0xff289c, 4.8, 22, 4, 10, 14, 3.2);
-    addPanel(0x14e0ff, 4.6, -22, 4, -10, 14, 3.2);
-    addPanel(0xff9c32, 3.5, 10, 3, -22, 12, 2.6);
-    addPanel(0x7444ff, 2.9, -12, 5, 22, 14, 3.2);
-    addPanel(0xffdca0, 3.2, 0, 12, 24, 6, 2.2);
-    addPanel(0xffdca0, 2.9, 24, 10, -8, 5, 2.2);
-    addPanel(0x74a4ff, 1.9, -16, 22, 8, 9, 6);
+    // Balanced night city sky with restrained neon & sodium accents
+    addPanel(0xe04894, 2.3, 22, 4, 10, 14, 3.2);
+    addPanel(0x2ec4e0, 2.2, -22, 4, -10, 14, 3.2);
+    addPanel(0xe89c46, 1.8, 10, 3, -22, 12, 2.6);
+    addPanel(0x664ec8, 1.45, -12, 5, 22, 14, 3.2);
+    addPanel(0xffe0ac, 1.65, 0, 12, 24, 6, 2.2);
+    addPanel(0xffe0ac, 1.5, 24, 10, -8, 5, 2.2);
+    addPanel(0x6b94d8, 1.15, -16, 22, 8, 9, 6);
   }
 
   return sc;

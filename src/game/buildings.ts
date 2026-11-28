@@ -19,7 +19,7 @@ import { World } from './world';
 export interface MapRect { x0: number; z0: number; x1: number; z1: number; c: string }
 export interface Place { x: number; z: number; yaw?: number; r?: number }
 export interface PropSpawn { kind: 'cone' | 'barrel' | 'xbarrel' | 'bin' | 'crate'; x: number; z: number }
-export interface Door { x: number; z: number; yaw: number; name: string; kind: 'shop' | 'diner' | 'office' | 'apartment' | 'bank' | 'police' | 'hospital' | 'gun' | 'garage' | 'parking' }
+export interface Door { x: number; z: number; yaw: number; name: string; kind: 'shop' | 'diner' | 'office' | 'apartment' | 'bank' | 'police' | 'hospital' | 'gun' | 'garage' | 'parking' | 'casino' | 'dealership' }
 export interface BCtx {
   b: Batcher;
   world: World;
@@ -59,6 +59,8 @@ export function allocateStore(c: BCtx, preferredDistrict?: StoreDef['district'])
 }
 
 export function doorKind(name: string): Door['kind'] {
+  if (name.includes('CASINO')) return 'casino';
+  if (name.includes('APEX MOTORS') || name.includes('AUTO GALLERY') || name.includes('DEALERSHIP') || name.includes('SHOWROOM')) return 'dealership';
   if (name === 'BANK' || name.includes('BANK') || name.includes('CAPITAL') || name.includes('CHECKS')) return 'bank';
   if (name === 'POLICE') return 'police';
   if (name === 'HOSPITAL' || name.includes('CLINIC') || name.includes('DENTAL')) return 'hospital';
@@ -336,8 +338,8 @@ export function addBuilding(c: BCtx, o: BOpts) {
   }
   if (o.store && y0 === 0) {
     const st = r.pick(SHELLS);
-    c.b.add('store', walls(w + 0.3, 4.4, d + 0.3, cx, 0, cz, st, [r.range(0, 1), r.range(0, 1), r.range(0, 1), r.range(0, 1)], 7, 4.4), ch);
-    c.b.add('prop', box(w + 0.7, 0.35, d + 0.7, cx, 4.4, cz, 0x6a6b70), ch);
+    c.b.add('store', walls(w + 0.28, 3.85, d + 0.28, cx, 0, cz, st, [r.range(0, 1), r.range(0, 1), r.range(0, 1), r.range(0, 1)], 7, 3.85), ch);
+    c.b.add('prop', box(w + 0.6, 0.28, d + 0.6, cx, 3.85, cz, 0x6a6b70), ch);
     const faces = o.faces ?? 15;
     let firstUsed = false;
     for (let f = 0; f < 4; f++) {
@@ -345,13 +347,13 @@ export function addBuilding(c: BCtx, o: BOpts) {
       if (!(faces & bit)) continue;
       const fi = faceInfo(cx, cz, w, d, f);
       const tx = Math.cos(fi.yaw), tz = -Math.sin(fi.yaw);
-      // Pack 1 to 3 distinct GTA-6 storefronts per street-facing facade!
-      const bays = o.sign !== undefined ? 1 : Math.max(1, Math.min(3, Math.floor(fi.len / 9.5)));
+      // Named civic/brand buildings keep 1 unified identity on every face; wide retail strips get distinct bays
+      const bays = o.sign !== undefined ? 1 : Math.max(1, Math.min(3, Math.floor(fi.len / 11.5)));
       const baySpan = fi.len / bays;
       for (let bIdx = 0; bIdx < bays; bIdx++) {
-        const sDef = (!firstUsed && o.sign)
+        const sDef = o.sign !== undefined
           ? null
-          : (!firstUsed && primaryStore)
+          : (bays === 1 || !firstUsed) && primaryStore
             ? primaryStore
             : allocateStore(c, o.district);
         firstUsed = true;
@@ -361,9 +363,9 @@ export function addBuilding(c: BCtx, o: BOpts) {
         const sx = fi.px + fi.nx * 0.16 + tx * off;
         const sz = fi.pz + fi.nz * 0.16 + tz * off;
         if (o.sign !== null) {
-          const signW = Math.min(6.4, baySpan * 0.84);
-          const signY = floors >= 2 ? 5.35 : 3.95;
-          c.b.add('sign', sign(signW, 1.35, sx, signY, sz, fi.yaw, signUV(sDef ? sDef.id : unitName)), ch);
+          const signW = Math.min(5.6, baySpan * 0.78);
+          const signY = floors >= 2 ? 4.65 : 3.55;
+          c.b.add('sign', sign(signW, 1.08, sx, signY, sz, fi.yaw, signUV(sDef ? sDef.id : unitName)), ch);
         }
         doorDone = true;
         c.doors.push({
@@ -374,7 +376,7 @@ export function addBuilding(c: BCtx, o: BOpts) {
           kind: unitKind,
         });
       }
-      if (r.chance(0.65)) awning(c, cx, cz, w, d, f, 3.55);
+      if (r.chance(0.55) && !o.sign) awning(c, cx, cz, w, d, f, 3.25);
     }
   }
   if (!o.store && !doorDone && y0 === 0 && floors > 0) {
@@ -395,34 +397,90 @@ export function addBuilding(c: BCtx, o: BOpts) {
       }
     }
   }
+  // 3D Architectural Exterior Relief on EVERY building (plinths, corner piers, floor-slab stringcourses, sills, doorway canopies)
+  {
+    const trimCol =
+      style === 'brick' ? 0xd2c4b2 :
+      style === 'stone' ? 0xe5ddd0 :
+      style === 'glass' ? 0x3b4654 :
+      style === 'office' ? 0xcad0d6 :
+      style === 'industrial' ? 0x565c62 :
+      0xe8ded0;
+    const trimMat = style === 'glass' || style === 'industrial' ? 'propMetal' : 'prop';
+
+    // 1. Ground-level architectural granite/limestone plinth skirt
+    if (y0 === 0) {
+      c.b.add('conc', box(w + 0.44, 0.56, d + 0.44, cx, 0, cz, 0x8e8c86), ch);
+    }
+
+    // 2. Full-height 3D corner piers / quoins so silhouettes have real architectural depth
+    const pierW = style === 'glass' ? 0.34 : 0.52;
+    for (const sx of [-1, 1]) {
+      for (const sz of [-1, 1]) {
+        c.b.add(
+          trimMat,
+          box(pierW, H, pierW, cx + sx * (w / 2 + 0.04), y0, cz + sz * (d / 2 + 0.04), trimCol),
+          ch,
+        );
+      }
+    }
+
+    // 3. Intermediate vertical facade pilasters along wider elevations
+    if (w >= BAY * 3) {
+      const divs = Math.min(4, Math.floor(w / (BAY * 2)));
+      for (let i = 1; i < divs; i++) {
+        const px = cx - w / 2 + (w * i) / divs;
+        c.b.add(trimMat, box(0.32, H, 0.24, px, y0, cz + d / 2 + 0.08, trimCol), ch);
+        c.b.add(trimMat, box(0.32, H, 0.24, px, y0, cz - d / 2 - 0.08, trimCol), ch);
+      }
+    }
+    if (d >= BAY * 3) {
+      const divs = Math.min(4, Math.floor(d / (BAY * 2)));
+      for (let i = 1; i < divs; i++) {
+        const pz = cz - d / 2 + (d * i) / divs;
+        c.b.add(trimMat, box(0.24, H, 0.32, cx + w / 2 + 0.08, y0, pz, trimCol), ch);
+        c.b.add(trimMat, box(0.24, H, 0.32, cx - w / 2 - 0.08, y0, pz, trimCol), ch);
+      }
+    }
+
+    // 4. Horizontal floor-slab stringcourses / window-sill belt ledges (every 1 floor on low/mid-rise, every 2 floors on towers)
+    const stepFl = floors > 12 ? 3 : floors > 6 ? 2 : 1;
+    for (let fl = 1; fl < floors; fl += stepFl) {
+      const ly = y0 + fl * FLOOR_H - 0.14;
+      c.b.add(trimMat, box(w + 0.38, 0.24, d + 0.38, cx, ly, cz, trimCol), ch);
+    }
+
+    // 5. Crisp projecting roof cornice & coping band on ALL buildings
+    c.b.add(trimMat, box(w + 0.72, 0.44, d + 0.72, cx, y0 + H - 0.36, cz, trimCol), ch);
+
+    // 6. Recessed-look street-facing storefront transom & entry canopy brackets
+    if (o.store && y0 === 0) {
+      const faces = o.faces ?? 15;
+      for (let f = 0; f < 4; f++) {
+        if (!(faces & [1, 2, 4, 8][f])) continue;
+        const fi = faceInfo(cx, cz, w, d, f);
+        const cw = Math.max(3.6, fi.len * 0.76);
+        const mx = fi.px + fi.nx * 0.58;
+        const mz = fi.pz + fi.nz * 0.58;
+        c.b.add('propMetal', box(cw, 0.16, 1.05, mx, 3.68, mz, 0x2e343c, fi.yaw), ch);
+      }
+    }
+  }
   if (floors > 4 && y0 === 0) {
-    // Architectural cornice & bespoke style flourishes so buildings look diverse and handmade
-    c.b.add('prop', box(w + 0.6, 0.5, d + 0.6, cx, H - 0.5, cz, 0xb8b2a4), ch);
+    // Bespoke skyline flourishes per architectural style
     if (style === 'glass' && floors >= 6) {
-      // Modern structural mullions + recessed penthouse sky-lounge crown
-      for (let i = -1; i <= 1; i += 2) {
-        c.b.add('propMetal', box(0.32, H, 0.32, cx + i * (w / 2 + 0.08), 0, cz + d / 2 + 0.08, 0x2a3440), ch);
-        c.b.add('propMetal', box(0.32, H, 0.32, cx + i * (w / 2 + 0.08), 0, cz - d / 2 - 0.08, 0x2a3440), ch);
-      }
-      c.b.add('propMetal', box(w + 0.35, 0.36, d + 0.35, cx, H * 0.5, cz, 0x323d4a), ch);
-      c.b.add('emit', box(w + 0.3, 0.16, d + 0.3, cx, H - 0.18, cz, 0x5ee6ff), ch);
+      c.b.add('propMetal', box(w + 0.42, 0.38, d + 0.42, cx, H * 0.5, cz, 0x323d4a), ch);
+      c.b.add('emit', box(w + 0.3, 0.14, d + 0.3, cx, H - 0.14, cz, 0x5ee6ff), ch);
     } else if (style === 'stone' && floors >= 5) {
-      // Classical pilasters + stepped limestone parapet crown
-      for (const sx of [-0.36, 0, 0.36]) {
-        c.b.add('prop', box(0.65, H - 0.6, 0.32, cx + sx * w, 0.4, cz + d / 2 + 0.14, 0xe8dfd0), ch);
-        c.b.add('prop', box(0.65, H - 0.6, 0.32, cx + sx * w, 0.4, cz - d / 2 - 0.14, 0xe8dfd0), ch);
-      }
       c.b.add('prop', box(w * 0.68, 1.8, d * 0.68, cx, H + 0.4, cz, 0xd8cfc0), ch);
     } else if (style === 'brick' && floors >= 5) {
-      // Classic masonry corner quoins + dark-iron cornice dentils
-      c.b.add('prop', box(w + 0.9, 0.72, d + 0.9, cx, H - 0.65, cz, 0x4b3d36), ch);
+      c.b.add('prop', box(w + 0.92, 0.56, d + 0.92, cx, H - 0.56, cz, 0x4b3d36), ch);
       c.b.add('prop', box(w * 0.52, 2.2, d * 0.52, cx, H + 0.4, cz, 0x8a5b4a), ch);
     } else if (style === 'apartment' && floors >= 5) {
-      // Art Deco stepped central fin & cantilevered balconies
       c.b.add('prop', box(1.2, H + 1.8, 0.55, cx, 0.4, cz + d / 2 + 0.22, 0xf6efe6), ch);
       for (let fl = 2; fl < Math.min(floors, 7); fl += 2) {
-        c.b.add('prop', box(w * 0.32, 0.18, 1.2, cx - w * 0.24, fl * FLOOR_H, cz + d / 2 + 0.6, 0xe8e4dc), ch);
-        c.b.add('propMetal', box(w * 0.32, 0.9, 0.08, cx - w * 0.24, fl * FLOOR_H + 0.18, cz + d / 2 + 1.15, 0x2b3038), ch);
+        c.b.add('prop', box(w * 0.34, 0.18, 1.25, cx - w * 0.24, fl * FLOOR_H, cz + d / 2 + 0.62, 0xe8e4dc), ch);
+        c.b.add('propMetal', box(w * 0.34, 0.9, 0.08, cx - w * 0.24, fl * FLOOR_H + 0.18, cz + d / 2 + 1.18, 0x2b3038), ch);
       }
     }
   }
@@ -709,23 +767,33 @@ export function addBigBlock(c: BCtx, cx: number, cz: number, w: number, d: numbe
 
 export function addHospital(c: BCtx, bx: number, bz: number) {
   const cx = bx, cz = bz - 8;
-  const r = addBuilding(c, { cx, cz, w: 70, d: 42, floors: 6, style: 'office', tint: 0xf4f6f8, store: true, faces: 1, sign: 'HOSPITAL', heli: true, roof: 'big' });
+  const r = addBuilding(c, { cx, cz, w: 70, d: 42, floors: 6, style: 'office', tint: 0xf6f8fa, store: false, faces: 1, sign: 'HOSPITAL', heli: true, roof: 'big' });
   const ch = c.chunk(cx, cz);
-  c.b.add('prop', box(14, 0.5, 8, cx, 4.6, cz + r.d / 2 + 4, 0xe74c3c), ch);
-  for (const sx of [-6, 6]) c.b.add('prop', box(0.4, 4.6, 0.4, cx + sx, 0.16, cz + r.d / 2 + 7.6, 0xdddddd), ch);
-  // red cross on the facade
-  c.b.add('prop', box(1.6, 5, 0.3, cx - 28, 14, cz + r.d / 2 + 0.2, 0xd62828), ch);
-  c.b.add('prop', box(5, 1.6, 0.3, cx - 28, 15.7, cz + r.d / 2 + 0.2, 0xd62828), ch);
+  const frontZ = cz + r.d / 2;
+  // Clean glazed medical atrium entrance canopy + single coherent HOSPITAL sign (no mismatched street shops)
+  c.b.add('glass', box(12.4, 3.6, 0.25, cx, 0.16, frontZ + 0.18, 0x9ac2d8), ch);
+  c.b.add('propMetal', box(12.8, 0.24, 0.32, cx, 3.76, frontZ + 0.22, 0xd4dbe2), ch);
+  c.b.add('prop', box(14.5, 0.45, 7.6, cx, 4.1, frontZ + 3.8, 0xd93832), ch);
+  c.b.add('sign', sign(8.2, 1.45, cx, 4.95, frontZ + 7.65, 0, signUV('HOSPITAL')), ch);
+  for (const sx of [-6.2, 6.2]) c.b.add('prop', box(0.36, 4.1, 0.36, cx + sx, 0.16, frontZ + 7.2, 0xe8edf2), ch);
+  // Crisp red cross emblem on main facade
+  c.b.add('prop', box(1.5, 4.8, 0.28, cx - 26, 13.5, frontZ + 0.2, 0xd62828), ch);
+  c.b.add('prop', box(4.8, 1.5, 0.28, cx - 26, 15.15, frontZ + 0.2, 0xd62828), ch);
   c.places.hospital = { x: bx, z: bz + 44.5 };
   for (const [tx, tz] of [[-38, 36], [38, 36], [-20, 38], [20, 38]]) addTree(c, bx + tx, bz + tz, 0);
   c.b.add('prop', box(9, 0.02, 4, bx + 25, 0.19, bz + 30, 0x444444), ch);
 }
 export function addPolice(c: BCtx, bx: number, bz: number) {
   const cx = bx, cz = bz - 14;
-  const r = addBuilding(c, { cx, cz, w: 56, d: 28, floors: 4, style: 'stone', tint: 0xb8c4d6, store: true, faces: 1, sign: 'POLICE', roof: 'big' });
+  const r = addBuilding(c, { cx, cz, w: 56, d: 28, floors: 4, style: 'stone', tint: 0xc8d2de, store: false, faces: 1, sign: 'POLICE', roof: 'big' });
   const ch = c.chunk(cx, cz);
-  c.b.add('prop', box(0.25, 14, 0.25, cx + 30, 0.16, cz + r.d / 2 + 6, 0xdddddd), ch);
-  c.b.add('prop', box(4, 2.4, 0.06, cx + 32, 11.4, cz + r.d / 2 + 6, 0x3355aa), ch);
+  const frontZ = cz + r.d / 2;
+  c.b.add('glass', box(8.6, 3.4, 0.24, cx, 0.16, frontZ + 0.18, 0x6e8da8), ch);
+  c.b.add('prop', box(11.0, 0.4, 4.2, cx, 3.65, frontZ + 2.1, 0x263f6e), ch);
+  c.b.add('sign', sign(7.4, 1.35, cx, 4.45, frontZ + 4.25, 0, signUV('POLICE')), ch);
+  for (const sx of [-4.8, 4.8]) c.b.add('prop', box(0.32, 3.65, 0.32, cx + sx, 0.16, frontZ + 3.9, 0xd4dbe2), ch);
+  c.b.add('prop', box(0.25, 14, 0.25, cx + 30, 0.16, frontZ + 6, 0xdddddd), ch);
+  c.b.add('prop', box(4, 2.4, 0.06, cx + 32, 11.4, frontZ + 6, 0x3355aa), ch);
   c.b.add('prop', box(r.w, 0.02, 20, cx, 0.19, bz + 28, 0x45464a), ch);
   for (let i = 0; i < 6; i++) c.b.add('prop', box(0.12, 0.02, 5, cx - 25 + i * 10, 0.2, bz + 30, 0xf2f2f2), ch);
   c.places.police = { x: bx, z: bz + 22 };
@@ -897,6 +965,7 @@ export function addParkingGarage(c: BCtx, bx: number, bz: number) {
   c.b.add('propMetal', box(2.8, 2.6, 2.6, cx - 8.2, 0.2, front + 3.4, 0x1e293b), ch);
   c.b.add('glass', box(2.5, 1.25, 2.68, cx - 8.2, 1.18, front + 3.4, 0x38bdf8), ch);
   c.b.add('emit', box(2.1, 0.18, 2.1, cx - 8.2, 2.52, front + 3.4, 0xfff0b8), ch);
+  c.b.add('propMetal', box(0.42, 1.18, 0.42, cx - 6.5, 0.2, front + 3.8, 0xfacc15), ch);
   c.b.add('prop', box(4.2, 0.14, 0.14, cx - 4.4, 1.15, front + 3.8, 0xef4444), ch);
 
   // Decorative palms along the street corners
@@ -910,6 +979,222 @@ export function addParkingGarage(c: BCtx, bx: number, bz: number) {
   pushRect(c, cx, cz, W, D, '#7d8590');
   c.places.parking = { x: cx, z: front + 9.5 };
   c.doors.push({ x: cx, z: front + 5.2, yaw: 0, name: 'SAN NOVA PARKING GARAGE', kind: 'parking' });
+}
+
+/**
+ * Handcrafted Grand Art-Deco Resort Casino ("ROYAL PALMS CASINO" / "GOLDEN SANDS CASINO"):
+ * Tiered limestone & gold resort tower, fluted golden colonnade, cantilevered valet porte-cochère,
+ * illuminated crown fins, reflecting fountain plaza, tropical palms, and enterable casino interior.
+ */
+export function addCasino(c: BCtx, bx: number, bz: number, name = 'ROYAL PALMS CASINO') {
+  const ch = c.chunk(bx, bz);
+  const cx = bx;
+  const cz = bz - 6;
+  const W = 68;
+  const D = 44;
+  const podiumH = 11.5;
+  const front = cz + D / 2;
+
+  // Travertine stone plaza + red carpet valet approach
+  c.b.add('intMarble', flat(bx - 42, bz - 42, bx + 42, bz + 42, 0.20, (x, z) => [x / 4, z / 4], 0xe8e0d0), ch);
+  c.b.add('carpet', flat(cx - 5.5, front, cx + 5.5, bz + 42, 0.22, (x, z) => [x / 2, z / 2], 0x8f1d28), ch);
+
+  // Main Grand Casino Podium (creamy limestone + brass fluted columns + deep window bays)
+  c.b.add('f_stone', walls(W, podiumH, D, cx, 0.2, cz, 0xf2e8d4, [0, 0.25, 0.5, 0.75]), ch);
+  c.b.add('prop', box(W + 1.6, 0.85, D + 1.6, cx, podiumH + 0.1, cz, 0xd8c9a8), ch);
+  c.b.add('propMetal', box(W + 1.8, 0.34, D + 1.8, cx, podiumH + 0.95, cz, 0xc8a248), ch);
+  c.b.add('emit', box(W + 1.4, 0.18, D + 1.4, cx, podiumH + 1.32, cz, 0xffd66b), ch);
+
+  // Fluted golden architectural pilasters along front facade
+  for (let i = -5; i <= 5; i++) {
+    const px = cx + i * 6.0;
+    c.b.add('propMetal', cyl(0.42, 0.48, podiumH, px, 0.2, front + 0.42, 0xc9a34c, 10), ch);
+    c.b.add('prop', box(1.25, 0.65, 1.25, px, 0.2, front + 0.42, 0xe8dfd0), ch);
+  }
+
+  // Sweeping Cantilevered Valet Porte-Cochère Canopy + Marquee Sign
+  c.b.add('propMetal', box(24, 1.45, 11.5, cx, 5.8, front + 5.7, 0x1c222a), ch);
+  c.b.add('propMetal', box(24.6, 0.32, 12.1, cx, 7.25, front + 5.7, 0xd4af37), ch);
+  c.b.add('emit', box(23.2, 0.22, 0.32, cx, 6.45, front + 11.55, 0xffe066), ch);
+  c.b.add('emit', box(19.5, 0.12, 8.6, cx, 5.72, front + 5.6, 0xfff3cc), ch);
+  for (const px of [cx - 10.5, cx + 10.5]) {
+    c.b.add('propMetal', cyl(0.45, 0.52, 5.8, px, 0.2, front + 10.4, 0xd4af37, 12), ch);
+    c.world.addCircle(px, front + 10.4, 0.62, 6.2, 'pillar');
+  }
+  c.b.add('sign', sign(19.5, 2.75, cx, 9.15, front + 0.85, 0, signUV(name)), ch);
+  c.b.add('sign', sign(16.0, 2.1, cx, 6.55, front + 11.62, 0, signUV(name)), ch);
+
+  // Recessed Grand Glass Revolving-Door Entrance
+  c.b.add('glass', box(12.4, 4.8, 0.4, cx, 0.2, front + 0.22, 0x6ba8c4), ch);
+  c.b.add('propMetal', box(12.8, 0.36, 0.55, cx, 5.0, front + 0.25, 0xd4af37), ch);
+
+  // Stepped Art-Deco Resort Hotel Tower rising behind Casino Podium
+  const tw = 38;
+  const td = 24;
+  const th = 34;
+  c.b.add('f_stone', walls(tw, th, td, cx, podiumH + 0.2, cz - 4, 0xf6ecda, [0.1, 0.35, 0.6, 0.85]), ch);
+  c.b.add('prop', box(tw * 0.68, 7.5, td * 0.68, cx, podiumH + th + 0.2, cz - 4, 0xe8dcc2), ch);
+  c.b.add('propMetal', box(tw * 0.42, 4.2, td * 0.42, cx, podiumH + th + 7.7, cz - 4, 0xc9a34c), ch);
+  c.b.add('emit', box(0.65, 11.5, 0.65, cx, podiumH + th + 11.8, cz - 4, 0xffe484), ch);
+  // Illuminated vertical Art-Deco tower ribs
+  for (const rx of [-12, 0, 12]) {
+    c.b.add('emit', box(0.32, th - 2, 0.28, cx + rx, podiumH + 1.5, cz - 4 + td / 2 + 0.16, 0xffd66b), ch);
+  }
+
+  // Twin Reflecting Fountains flanking Valet Approach + Royal Palms
+  for (const fx of [cx - 21, cx + 21]) {
+    const fz = front + 12.5;
+    c.b.add('prop', cyl(4.8, 5.2, 0.72, fx, 0.2, fz, 0xe5ddd0, 16), ch);
+    c.b.add('pool', cyl(4.2, 4.2, 0.56, fx, 0.32, fz, 0x35c4e6, 16), ch);
+    c.b.add('propMetal', cyl(0.65, 1.05, 1.85, fx, 0.4, fz, 0xd4af37, 12), ch);
+    c.b.add('emit', sph(0.55, fx, 2.35, fz, 0xbef5ff, 1, 1.35, 1, 10), ch);
+    c.world.addCircle(fx, fz, 5.3, 2.4, 'fountain');
+  }
+  for (const [tx, tz] of [[-35, 32], [-26, 36], [26, 36], [35, 32], [-36, -24], [36, -24]]) {
+    addTree(c, bx + tx, bz + tz, 3, 1.18);
+  }
+
+  c.world.addBox(cx - W / 2, cx + W / 2, cz - D / 2, front + 0.35, podiumH + th + 4);
+  pushRect(c, cx, cz, W, D, '#d4af37');
+  if (!c.places.casino) c.places.casino = { x: cx, z: bz + 46 };
+  c.doors.push({ x: cx, z: front + 4.2, yaw: 0, name, kind: 'casino' });
+}
+
+/**
+ * Handcrafted Modern Luxury Car Dealership ("APEX MOTORS" / "NOVA AUTO GALLERY"):
+ * Wraparound double-height glass showroom pavilion, dark brushed-aluminum cantilevered roof fascia,
+ * 3 outdoor elevated display turntables with sculpted exotic supercars, tall brand pylon, and showroom interior.
+ */
+export function addCarDealership(c: BCtx, bx: number, bz: number, name = 'APEX MOTORS') {
+  const ch = c.chunk(bx, bz);
+  const cx = bx;
+  const cz = bz - 9;
+  const W = 62;
+  const D = 34;
+  const H = 9.2;
+  const front = cz + D / 2;
+
+  // Clean slate-gray paved display forecourt
+  c.b.add('g_asph', flat(bx - 42, bz - 42, bx + 42, bz + 42, 0.19, (x, z) => [x / 5, z / 5], 0xd8dde2), ch);
+
+  // Rear architectural showroom core + wraparound double-height curtain-wall glass front
+  c.b.add('f_office', walls(W - 4, H - 0.6, D - 10, cx, 0.2, cz - 4.5, 0xf2f4f7, [0, 0.25, 0.5, 0.75]), ch);
+  c.b.add('glass', box(W, H - 1.2, 0.35, cx, 0.2, front, 0x8cc6dc), ch);
+  c.b.add('glass', box(0.35, H - 1.2, D, cx - W / 2, 0.2, cz, 0x8cc6dc), ch);
+  c.b.add('glass', box(0.35, H - 1.2, D, cx + W / 2, 0.2, cz, 0x8cc6dc), ch);
+  // Structural matte-graphite steel mullions & deep cantilevered roof canopy
+  for (let i = -5; i <= 5; i++) {
+    c.b.add('propMetal', box(0.28, H - 0.8, 0.42, cx + i * 6.0, 0.2, front + 0.08, 0x262c34), ch);
+  }
+  c.b.add('propMetal', box(W + 6.5, 1.35, D + 9.5, cx, H - 0.85, cz + 2.5, 0x1e242c), ch);
+  c.b.add('emit', box(W + 6.7, 0.18, 0.24, cx, H - 0.15, front + 7.28, 0xef4444), ch);
+  c.b.add('prop', box(W + 4.0, 0.35, D + 6.0, cx, H + 0.5, cz + 2.0, 0xcfd4da), ch);
+  // Cantilever support columns
+  for (const sx of [-28, -10, 10, 28]) {
+    c.b.add('propMetal', cyl(0.28, 0.32, H - 0.85, cx + sx, 0.2, front + 5.8, 0x2e3640, 10), ch);
+    c.world.addCircle(cx + sx, front + 5.8, 0.42, H, 'pillar');
+  }
+  c.b.add('sign', sign(18.5, 2.5, cx, H - 0.2, front + 7.42, 0, signUV(name)), ch);
+
+  // 3 Outdoor Illuminated Circular Display Pedestals with Sculpted Exotic Supercars!
+  const displayCars: [number, number, number, number][] = [
+    [-20, front + 16, 0.38, 0xd62834],
+    [0, front + 19, -0.22, 0xf8fafc],
+    [20, front + 16, -0.45, 0x2563eb],
+  ];
+  for (const [ox, oz, yaw, col] of displayCars) {
+    const px = cx + ox;
+    c.b.add('conc', cyl(3.8, 4.1, 0.42, px, 0.2, oz, 0xdce2e8, 18), ch);
+    c.b.add('emit', cyl(3.92, 3.92, 0.08, px, 0.56, oz, 0x38bdf8, 18), ch);
+    // Low-slung sculpted supercar silhouette seated flush on pedestal
+    c.b.add('propMetal', box(2.05, 0.52, 4.55, px, 0.86, oz, col, yaw), ch);
+    c.b.add('propMetal', box(1.92, 0.24, 1.65, px, 1.32, oz, col, yaw), ch);
+    c.b.add('glass', box(1.74, 0.38, 2.05, px, 1.34, oz, 0x162230, yaw), ch);
+    c.b.add('propMetal', box(1.96, 0.08, 0.42, px - Math.sin(yaw) * 1.95, 1.56, oz - Math.cos(yaw) * 1.95, 0x181c22, yaw), ch);
+    c.world.addCircle(px, oz, 4.1, 1.8, 'display_car');
+  }
+
+  // Tall Roadside Brand Totem Pylon at Street Corner
+  const pyx = bx + 35;
+  const pyz = bz + 34;
+  c.b.add('propMetal', box(2.4, 11.2, 0.9, pyx, 0.2, pyz, 0x1e242c), ch);
+  c.b.add('emit', box(0.22, 10.6, 0.96, pyx - 1.25, 0.4, pyz, 0xef4444), ch);
+  c.b.add('sign', sign(6.2, 1.55, pyx, 9.2, pyz + 0.52, 0, signUV(name)), ch);
+  c.world.addBox(pyx - 1.4, pyx + 1.4, pyz - 0.7, pyz + 0.7, 11.4);
+
+  for (const [tx, tz] of [[-36, 34], [-36, -30], [36, -30]]) {
+    addTree(c, bx + tx, bz + tz, 3, 1.05);
+  }
+
+  c.world.addBox(cx - W / 2, cx + W / 2, cz - D / 2, front + 0.3, H + 1.2);
+  pushRect(c, cx, cz, W, D, '#4a6b8c');
+  if (!c.places.dealership) c.places.dealership = { x: cx, z: bz + 46 };
+  c.doors.push({ x: cx, z: front + 3.8, yaw: 0, name, kind: 'dealership' });
+}
+
+/**
+ * Realistic ground-level Outdoor Surface Parking Lot for commercial & midtown city blocks:
+ * Paved asphalt pad, perimeter low concrete curb with open entry lane, painted white parking stalls,
+ * concrete wheel stops, overhead parking-lot light poles, automated pay kiosk, and parked vehicles.
+ */
+export function addSurfaceParkingLot(c: BCtx, lot: Lot) {
+  const cx = (lot.x0 + lot.x1) / 2;
+  const cz = (lot.z0 + lot.z1) / 2;
+  const w = Math.max(14, lot.x1 - lot.x0);
+  const d = Math.max(14, lot.z1 - lot.z0);
+  const ch = c.chunk(cx, cz);
+
+  // Asphalt lot surface + perimeter low curb rails
+  c.b.add('g_asph', flat(lot.x0 + 0.3, lot.z0 + 0.3, lot.x1 - 0.3, lot.z1 - 0.3, 0.19, (px, pz) => [px / 5, pz / 5]), ch);
+  c.b.add('conc', box(w - 0.6, 0.24, 0.36, cx, 0.18, lot.z0 + 0.5, 0xa8aeb4), ch);
+  c.b.add('conc', box(0.36, 0.24, d - 0.6, lot.x0 + 0.5, 0.18, cz, 0xa8aeb4), ch);
+  c.b.add('conc', box(0.36, 0.24, d - 0.6, lot.x1 - 0.5, 0.18, cz, 0xa8aeb4), ch);
+
+  // Painted parking stalls along top & bottom rows + concrete wheel stops
+  const stallSpacing = 3.4;
+  const cols = Math.max(3, Math.floor((w - 4) / stallSpacing));
+  const rowWidth = cols * stallSpacing;
+  const startX = cx - rowWidth / 2;
+  const carCols = [0xd62834, 0x2563eb, 0xf8fafc, 0x475569, 0x10b981, 0xf59e0b, 0x1e293b];
+
+  for (let i = 0; i <= cols; i++) {
+    const sx = startX + i * stallSpacing;
+    c.b.add('prop', box(0.12, 0.025, 4.8, sx, 0.205, lot.z0 + 3.4, 0xf1f5f9), ch);
+    if (d > 20) {
+      c.b.add('prop', box(0.12, 0.025, 4.8, sx, 0.205, lot.z1 - 3.4, 0xf1f5f9), ch);
+    }
+    if (i < cols) {
+      const midX = sx + stallSpacing * 0.5;
+      c.b.add('conc', box(1.85, 0.14, 0.22, midX, 0.2, lot.z0 + 1.35, 0xb8bec6), ch);
+      if (c.rng.chance(0.48)) {
+        const col = carCols[(i + Math.floor(Math.abs(cx))) % carCols.length];
+        c.b.add('propMetal', box(1.92, 0.6, 4.15, midX, 0.42, lot.z0 + 3.45, col), ch);
+        c.b.add('glass', box(1.62, 0.46, 1.95, midX, 1.02, lot.z0 + 3.45, 0x1e293b), ch);
+        c.b.add('propMetal', box(1.52, 0.08, 1.45, midX, 1.48, lot.z0 + 3.45, col), ch);
+        for (const wx of [-0.96, 0.96]) for (const wz of [-1.28, 1.28]) {
+          c.b.add('prop', cyl(0.32, 0.32, 0.22, midX + wx, 0.52, lot.z0 + 3.45 + wz, 0x14161a, 10).rotateZ(Math.PI / 2), ch);
+        }
+        c.world.addBox(midX - 1.05, midX + 1.05, lot.z0 + 1.3, lot.z0 + 5.6, 1.65);
+      }
+      if (d > 20) {
+        c.b.add('conc', box(1.85, 0.14, 0.22, midX, 0.2, lot.z1 - 1.35, 0xb8bec6), ch);
+      }
+    }
+  }
+
+  // Yellow center driving lane divider + Pay-to-Park Kiosk + Lot Light Standards
+  c.b.add('prop', box(Math.max(4, w - 6), 0.025, 0.16, cx, 0.205, cz, 0xfacc15), ch);
+  for (const lx of [lot.x0 + 2.4, lot.x1 - 2.4]) {
+    c.b.add('propMetal', cyl(0.1, 0.13, 6.2, lx, 0.19, cz, 0x3b424c, 8), ch);
+    c.b.add('propMetal', box(1.2, 0.14, 0.4, lx, 6.3, cz, 0x262c34), ch);
+    c.b.add('emit', box(1.05, 0.08, 0.3, lx, 6.24, cz, 0xfff3cc), ch);
+    c.world.addCircle(lx, cz, 0.2, 6.4, 'pole');
+  }
+  // Pay kiosk at corner
+  c.b.add('propMetal', box(0.9, 1.85, 0.72, lot.x0 + 1.4, 0.19, lot.z1 - 1.8, 0x1e3a8a), ch);
+  c.b.add('emit', box(0.55, 0.45, 0.06, lot.x0 + 1.4, 1.15, lot.z1 - 1.42, 0x38bdf8), ch);
+  c.world.addBox(lot.x0 + 0.9, lot.x0 + 1.9, lot.z1 - 2.2, lot.z1 - 1.4, 2.0);
+  pushRect(c, cx, cz, w, d, '#5b616a');
 }
 export function addPark(c: BCtx, bx: number, bz: number) {
   const r = c.rng;
